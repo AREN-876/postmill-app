@@ -4678,5 +4678,12 @@
   "studio_kling_kling_ai_landing_hl0": "Direct integration — your klingai.com API key, no aggregator markup",
   "studio_kling_kling_ai_landing_hl1": "Kling 3.0 / 2.6 video with optional native audio, up to 1080p",
   "studio_kling_kling_ai_landing_hl2": "Text-to-video and image-to-video with first/last-frame control",
-  "studio_kling_kling_ai_landing_hl3": "Kling V3 text-to-image up to 2K in eight aspect ratios"
+  "studio_kling_kling_ai_landing_hl3": "Kling V3 text-to-image up to 2K in eight aspect ratios",
+  "max_chat_id_help": "Enter the test channel chat_id from a bot_added event or channel update. The bot must be an administrator with posting rights. No message is sent when connecting.",
+  "max_channel_id": "MAX channel chat_id",
+  "max_validate_channel": "Validate test channel",
+  "max_setup_step_1": "Create a separate test bot and copy its token here.",
+  "max_setup_step_2": "Add the bot as an administrator of a test channel with permission to post messages.",
+  "max_setup_step_3": "Enter the exact chat_id from a bot_added event or an update for that channel. Channels cannot be enumerated.",
+  "max_setup_step_4": "Connect performs read-only identity, channel and membership checks. It sends no message."
 }

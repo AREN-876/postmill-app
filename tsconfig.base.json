@@ -535,6 +535,12 @@
       "@postmill-ai/provider-mastodon/*": [
         "libraries/providers/mastodon/src/*"
       ],
+      "@postmill-ai/provider-max": [
+        "libraries/providers/max/src"
+      ],
+      "@postmill-ai/provider-max/*": [
+        "libraries/providers/max/src/*"
+      ],
       "@postmill-ai/provider-matrix": [
         "libraries/providers/matrix/src"
       ],

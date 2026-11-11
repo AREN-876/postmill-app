@@ -6,12 +6,12 @@ kernel vitest alias. One row per **module** (multi-module packages — e.g. `ope
 get multiple rows). The `has-spec?` column reflects whether the **package** contains any
 `*.spec.ts` / `*.int-spec.ts` under `src/**`.
 
-- **Modules:** 192  (== `providerModules.length`)
-- **Packages:** 164  (== real package dirs under `libraries/providers/`, excluding `kernel` and `node_modules`)
-  - Note: `ls -d libraries/providers/*/ | grep -v kernel | wc -l` = **165** on a clean checkout because it also counts the `node_modules/` dir; **164** are real packages. (After a local `--coverage` run a gitignored `coverage/` dir also appears, making the raw count **166** — both `node_modules/` and `coverage/` are non-package artifacts.)
-- **Packages with at least one spec:** 139 / 164  (media adapters + the magnific content pack gained recorded-fixture `*.int-spec.ts` behavioral tests via the shared `kernel/src/testing/media-int-helpers.ts`)
+- **Modules:** 193  (== `providerModules.length`)
+- **Packages:** 165  (== real package dirs under `libraries/providers/`, excluding `kernel` and `node_modules`)
+  - Count only directories containing `package.json`; exclude `kernel`, caches and coverage outputs.
+- **Packages with at least one spec:** 140 / 165  (media adapters + the magnific content pack gained recorded-fixture `*.int-spec.ts` behavioral tests via the shared `kernel/src/testing/media-int-helpers.ts`)
 
-Modules per domain: ai=30, auth=10, comms=5, contentpack=4, email=7, media=37, payments=4, shortlink=20, social=45, storage=14, vpn=16
+Modules per domain: ai=30, auth=10, comms=5, contentpack=4, email=7, media=37, payments=4, shortlink=20, social=46, storage=14, vpn=16
 
 | package | domain | providerId | version | status | has-spec? |
 |---|---|---|---|---|---|
@@ -152,6 +152,7 @@ Modules per domain: ai=30, auth=10, comms=5, contentpack=4, email=7, media=37, p
 | linkedin-page | social | linkedin-page | v1 | active | no |
 | listmonk | social | listmonk | v1 | active | no |
 | mastodon | social | mastodon | v1 | active | no |
+| max | social | max | v1 | active | yes |
 | matrix | social | matrix | v1 | active | yes |
 | medium | social | medium | v1 | active | no |
 | mewe | social | mewe | v1 | active | no |
