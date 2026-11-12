@@ -420,6 +420,19 @@ export class MaxOccurrences {
     );
   }
   async pending() {
+    // Post creation commits before startWorkflow initializes the journal. A
+    // process can die in that gap; these QUEUE roots have never acquired a send
+    // attempt. Initialize under the same parent lock, preserving legacy guards.
+    const uninitialized = await this.db.post.findMany({
+      where: {
+        state: 'QUEUE', parentPostId: null, deletedAt: null,
+        publishDate: { lte: new Date() },
+        integration: { providerIdentifier: 'max', disabled: false, deletedAt: null },
+        maxOccurrences: { none: {} },
+      },
+      select: { id: true, organizationId: true },
+    });
+    for (const p of uninitialized) await this.initial(p.id, p.organizationId, false);
     const stale = await this.db.$transaction((tx: any) =>
       tx.maxDeliveryOccurrence.findMany({
         where: {

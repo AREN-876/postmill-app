@@ -287,6 +287,32 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     await db.maxDeliveryOccurrence.update({where:{id:o.id},data:{updatedAt:new Date(Date.now()-4*3600000)}});
     expect((await repo.pendingMaxOccurrences()).map(x=>x.id)).not.toContain(o.id);
   });
+  it('recovers a crash after QUEUE commit but before journal initialization, without duplicate attempts', async () => {
+    const post = await createPost('max', 'QUEUE');
+    const draft = await createPost('max', 'DRAFT');
+    const published = await createPost('max', 'PUBLISHED');
+    const ordinary = await createPost('telegram', 'QUEUE');
+    const sweeps = await Promise.all([repo.pendingMaxOccurrences(), repo.pendingMaxOccurrences()]);
+    const o = await db.maxDeliveryOccurrence.findFirstOrThrow({ where: { postId: post.id } });
+    expect(sweeps.every(rows => rows.some(row => row.id === o.id))).toBe(true);
+    expect(o.state).toBe('READY');
+    expect(o.attempt).toBe(0);
+    expect(await db.maxDeliveryOccurrence.count({ where: { postId: { in: [draft.id, published.id, ordinary.id] } } })).toBe(0);
+    const send = vi.fn(async () => [receipt(post.id)]);
+    const results = await Promise.allSettled([activity(post, send, undefined, o.id)(), activity(post, send, undefined, o.id)()]);
+    expect(results.some(result => result.status === 'fulfilled')).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await db.maxDeliveryOccurrence.count({ where: { postId: post.id } })).toBe(1);
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({ where: { id: o.id } })).state).toBe('CONFIRMED');
+  });
+  it('initialization recovery preserves an uncertain legacy guard on a queued post', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({ where: { id: post.id }, data: { maxDelivery: { state: 'STARTED', attempt: 1 } } });
+    expect(await repo.pendingMaxOccurrences()).toEqual([]);
+    const o = await db.maxDeliveryOccurrence.findFirstOrThrow({ where: { postId: post.id } });
+    expect(o.state).toBe('REVIEW');
+    expect(o.attempt).toBe(1);
+  });
   it('long series uses separate rows, bounded Post summary and one child per parent', async () => {
     const post = await createPost(); await db.post.update({where:{id:post.id},data:{intervalInDays:1,publishDate:new Date(Date.now()-40*86400000)}});
     let o=await repo.initialMaxOccurrence(post.id,org);

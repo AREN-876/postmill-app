@@ -83,7 +83,9 @@ const runPostPublish = (postActivity: PostActivity) =>
       if (!maxOccurrenceId) return;
       const plan = await step.run('max-occurrence-plan', () => postActivity.planMaxOccurrence(postId, organizationId, maxOccurrenceId));
       if (!plan) return;
-      await step.sleep('max-occurrence-due', Math.max(0, new Date(plan.current.scheduledAt).getTime() - Date.now()));
+      // Inngest timers have second resolution. Round the absolute deadline up
+      // so a fractional-second due date cannot fail the journal's not-before guard.
+      await step.sleepUntil('max-occurrence-due', new Date(Math.ceil(new Date(plan.current.scheduledAt).getTime() / 1000) * 1000));
       const fresh = await step.run('max-occurrence-ready', () => postActivity.planMaxOccurrence(postId, organizationId, maxOccurrenceId));
       if (!fresh) return;
       // Persist/dispatch the next intent before attempting this one. An unknown

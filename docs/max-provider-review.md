@@ -1,4 +1,4 @@
-> Latest PR #2 implementation: [occurrence-aware periodic scheduling](max-occurrence-scheduling.md). Historical per-Post results below are superseded by the final section.
+> Latest validation: [isolated frontend/backend/PostgreSQL/Inngest review](max-final-integration-review.md), including two minimal fixes found after `a38291c0`. Implementation: [occurrence-aware periodic scheduling](max-occurrence-scheduling.md). Historical per-Post results below are superseded by the final sections.
 
 # MAX MVP review — Issue #1
 

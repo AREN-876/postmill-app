@@ -1,7 +1,7 @@
 # MAX periodic occurrences — PR #2, Postmill v1.4.0
 
 This supersedes the per-Post journal described in the earlier recovery implementation.
-It uses the existing `intervalInDays`, `post/publish` Inngest function, `step.sleep`, repeat
+It uses the existing `intervalInDays`, `post/publish` Inngest function, `step.sleepUntil`, repeat
 event payload and hourly missing-post-finder. No additional scheduler/cron/queue is registered.
 Telegram/VK keep their existing event IDs, claim path and scheduling behavior.
 
@@ -73,7 +73,10 @@ Notification/webhook delivery itself is not exactly-once; receivers can deduplic
 occurrenceId. Lost step acknowledgement may omit a success notification, rather than
 fabricating another publication. The durable receipt remains queryable.
 
-Recovery scans due READY rows and terminal rows whose successor was not planned. Old
+Recovery first initializes due MAX QUEUE roots with no occurrence (a crash between
+the post commit and asynchronous workflow initialization). Parent-row locking and
+the stable initial ID make concurrent sweeps safe; legacy delivery guards remain intact.
+It then scans due READY rows and terminal rows whose successor was not planned. Old
 CONFIRMED history with a planned successor is not scanned on every sweep. Stale STARTED rows
 become REVIEW after three hours; recovery never re-enqueues them. It may resume the next
 READY occurrence. Generic Post QUEUE recovery excludes MAX and remains unchanged for other
@@ -149,3 +152,6 @@ A future rollout must quiesce old workers and old jobs before migration/new code
 workers cannot enforce these guards. Restoring a database to an older backup can lose the
 external delivery evidence and is outside the guarantee. This is a Draft review change,
 not approval for live MAX connectivity, merge or deployment.
+
+MAX waits until the persisted absolute occurrence deadline rounded up to the next whole second (less than one second late).
+Inngest timers have whole-second resolution and can otherwise wake before the journal's not-before guard; ordinary providers retain their existing scheduling behavior.

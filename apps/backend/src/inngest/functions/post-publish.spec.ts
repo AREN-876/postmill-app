@@ -111,6 +111,7 @@ describe('createPostPublishFunctions', () => {
 const makeStep = () => ({
   run: vi.fn(async (_id: string, fn: () => any) => fn()),
   sleep: vi.fn(async () => {}),
+  sleepUntil: vi.fn(async () => {}),
   sendEvent: vi.fn(async () => {}),
 });
 
@@ -439,6 +440,37 @@ describe('runPostPublish handler', () => {
       planMaxOccurrence:vi.fn(async()=>({current:{id:'occ-1',state:'READY',scheduledAt:new Date(0)},next:null}))});
     await getHandler(activity)({step:makeStep(),event:runEvent({maxOccurrenceId:'occ-1'})});
     expect(activity.notifyPostPublished).not.toHaveBeenCalled();expect(activity.sendWebhooks).not.toHaveBeenCalled();
+  });
+  it('MAX waits for the absolute millisecond deadline before claiming a scheduled release', async () => {
+    vi.useFakeTimers();
+    try {
+      const due = new Date('2026-11-12T07:09:21.706Z');
+      vi.setSystemTime(new Date('2026-11-12T07:09:02.043Z'));
+      const post = rootPost();
+      post.integration.providerIdentifier = 'max';
+      const activity = makeActivity({
+        getPost: vi.fn(async () => post),
+        getPostsList: vi.fn(async () => [post]),
+        planMaxOccurrence: vi.fn(async () => ({ current: { id: 'occ-1', state: 'READY', scheduledAt: due.toISOString() }, next: null })),
+        postSocial: vi.fn(async () => {
+          // Matches the PostgreSQL journal's not-before condition. A relative
+          // 19.663s wait is serialized as 19s by the SDK and fails this guard.
+          expect(Date.now()).toBeGreaterThanOrEqual(due.getTime());
+          return [];
+        }),
+      });
+      const step = makeStep();
+      step.sleepUntil.mockImplementation(async (...args: any[]) => {
+        // Exercise the real Dev Server's whole-second timer resolution.
+        vi.setSystemTime(Math.floor(args[1].getTime() / 1000) * 1000);
+      });
+      await getHandler(activity)({ step, event: runEvent({ maxOccurrenceId: 'occ-1' }) });
+      expect(step.sleepUntil).toHaveBeenCalledWith('max-occurrence-due', new Date('2026-11-12T07:09:22.000Z'));
+      expect(step.sleep).not.toHaveBeenCalled();
+      expect(activity.postSocial).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('MAX uncertain delivery schedules the next occurrence but never reports success',async()=>{
     const post=rootPost();post.integration.providerIdentifier='max';
