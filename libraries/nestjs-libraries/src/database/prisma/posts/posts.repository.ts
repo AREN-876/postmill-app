@@ -607,6 +607,57 @@ export class PostsRepository {
     });
   }
 
+  // MAX-only CAS journal. Committed before any external provider call. A
+  // process/step retry must never cross a prior STARTED marker automatically.
+  async beginMaxDelivery(id: string, orgId: string, target: Record<string, string> = {}) {
+    const row = await this._post.model.post.findFirst({
+      where: { id, organizationId: orgId, deletedAt: null, integration: { providerIdentifier: 'max' } },
+    });
+    if (!row) return { blocked: true };
+    const journal = row.maxDelivery as any;
+    if (journal?.state === 'CONFIRMED') {
+      const receipt = journal.receipt;
+      return receipt?.id === id && typeof receipt.postId === 'string' && receipt.postId
+        ? { receipt } : { blocked: true };
+    }
+    if (row.state !== 'PUBLISHING' || (journal && journal.state !== 'READY')) return { blocked: true };
+    const next = { state: 'STARTED', attempt: (journal?.attempt ?? 0) + 1,
+      startedAt: new Date().toISOString(), target: { integrationId: row.integrationId, ...target }, history: journal?.history ?? [] };
+    const { count } = await this._post.model.post.updateMany({
+      where: { id, organizationId: orgId, deletedAt: null, state: 'PUBLISHING',
+        maxDelivery: journal ? { equals: journal } : { equals: Prisma.DbNull } },
+      data: { maxDelivery: next },
+    });
+    return count === 1 ? { attempt: next.attempt } : { blocked: true };
+  }
+
+  async confirmMaxDelivery(id: string, orgId: string, attempt: number, receipt: { id: string; postId: string; releaseURL: string; status: string }) {
+    const row = await this._post.model.post.findFirst({ where: { id, organizationId: orgId } });
+    const journal = row?.maxDelivery as any;
+    // Receipt and terminal post state are ONE database commit. Even a lost DB
+    // acknowledgement cannot cause a second provider call on step replay.
+    const { count } = await this._post.model.post.updateMany({
+      where: { id, organizationId: orgId, maxDelivery: { path: ['state'], equals: 'STARTED' },
+        AND: [{ maxDelivery: { path: ['attempt'], equals: attempt } }] },
+      data: { maxDelivery: { state: 'CONFIRMED', attempt, receipt, target: journal?.target ?? {}, history: journal?.history ?? [] },
+        state: 'PUBLISHED', releaseId: receipt.postId, releaseURL: receipt.releaseURL, error: null },
+    });
+    if (count !== 1) throw new Error('MAX receipt was not persisted; operator review required');
+  }
+
+  async authorizeMaxRetry(id: string, orgId: string, attempt: number, actorId: string) {
+    const row = await this._post.model.post.findFirst({ where: { id, organizationId: orgId, state: 'ERROR', deletedAt: null,
+      integration: { providerIdentifier: 'max' } } });
+    const journal = row?.maxDelivery as any;
+    if (!journal || journal.state !== 'STARTED' || journal.attempt !== attempt) return false;
+    const { count } = await this._post.model.post.updateMany({
+      where: { id, organizationId: orgId, state: 'ERROR', maxDelivery: { equals: journal } },
+      data: { maxDelivery: { state: 'READY', attempt, history: [...(journal.history ?? []),
+        { ...journal, history: undefined, reviewedBy: actorId, reviewedAt: new Date().toISOString(), decision: 'retry-risk-accepted' }] } },
+    });
+    return count === 1;
+  }
+
   // 0.7: atomic publish state-claim. Flips exactly one QUEUE post to PUBLISHING and
   // returns the affected row count — the worker aborts the run when count === 0 so a
   // recovery enqueue racing a live run (or a "post now" during sleep) can't double-post.
@@ -619,16 +670,20 @@ export class PostsRepository {
     return count;
   }
 
-  // 0.7 follow-up: recover posts orphaned in PUBLISHING by a terminal Inngest run
-  // loss *after* the atomic claim (the claim moves QUEUE -> PUBLISHING, but if the
-  // run then dies unrecoverably the row is stuck: the missing-post finder only
-  // matches QUEUE). Reset stale PUBLISHING rows (same >3h grace / 2-day floor as the
-  // finder) back to QUEUE so the finder re-enqueues them; the atomic claim on the
-  // re-run — plus the `post/cancel` the recovery sends first — keeps it
-  // double-publish-safe if the original run were somehow still alive.
+  // Recover ordinary providers and provably unstarted MAX work normally.
+  // A MAX STARTED marker survives crashes and cannot be automatically requeued.
+  // Quarantine it after the grace period, without the old finder's two-day floor.
   async resetStalePublishingToQueue(): Promise<number> {
+    await this._post.model.post.updateMany({
+      where: { state: 'PUBLISHING', integration: { providerIdentifier: 'max' },
+        maxDelivery: { path: ['state'], equals: 'STARTED' },
+        updatedAt: { lt: dayjs.utc().subtract(3, 'hour').toDate() } },
+      data: { state: 'ERROR', error: 'MAX delivery unknown: operator review required; automatic resend blocked' },
+    });
     const { count } = await this._post.model.post.updateMany({
       where: {
+        OR: [{ integration: { providerIdentifier: { not: 'max' } } },
+          { maxDelivery: { equals: Prisma.DbNull } }, { maxDelivery: { path: ['state'], equals: 'READY' } }],
         state: 'PUBLISHING',
         deletedAt: null,
         publishDate: {
@@ -668,6 +723,8 @@ export class PostsRepository {
         // 4.4a: org scoping is REQUIRED on the publish-path mutators — always
         // scope the write so a mis-threaded id can't touch another org's row.
         organizationId: orgId,
+        ...(state === 'PUBLISHED' ? {} : { OR: [{ integration: { providerIdentifier: { not: 'max' } } }, { maxDelivery: { equals: Prisma.DbNull } },
+          { maxDelivery: { path: ['state'], not: 'CONFIRMED' } }] }),
       },
       data: {
         state,
@@ -682,6 +739,13 @@ export class PostsRepository {
           },
         },
       },
+    }).catch(async err => {
+      if (err?.code === 'P2025') {
+        const confirmed = await this._post.model.post.findFirst({ where: { id, organizationId: orgId,
+          maxDelivery: { path: ['state'], equals: 'CONFIRMED' } }, include: { integration: { select: { providerIdentifier: true } } } });
+        if (confirmed) return confirmed;
+      }
+      throw err;
     });
 
     if (state === 'ERROR' && err && body) {
@@ -1371,6 +1435,9 @@ export class PostsRepository {
       where: {
         id,
         organizationId: orgId,
+        state: 'ERROR',
+        OR: [{ integration: { providerIdentifier: { not: 'max' } } },
+          { maxDelivery: { equals: Prisma.DbNull } }, { maxDelivery: { path: ['state'], equals: 'READY' } }],
       },
       data: {
         state: State.QUEUE,

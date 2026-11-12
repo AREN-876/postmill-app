@@ -91,6 +91,14 @@ The icon is a local monogram fallback, not an official MAX brand asset.
 Not implemented: image/video uploads, attachments/buttons, three-part stories, Mini App links,
 comments, analytics/watchlists, channel discovery, token refresh, MAX-specific scheduling and
 idempotency. Postmill's existing scheduling facilities were not exercised. StoryGo, both VPSs,
-Docker Compose, database schema/migrations and GigaChat configuration are untouched.
+Docker Compose and GigaChat configuration are untouched. The subsequent database safety
+migration is described in the crash-recovery section below.
 
 See [the implementation brief](../max-provider-brief.md) for the permitted scope and later milestones.
+
+## Crash recovery
+
+The HTTP no-retry policy is supplemented by a durable Post.maxDelivery journal. Uncertain
+deliveries are stopped for operator review; confirmed receipts are reused on replay.
+See [MAX delivery recovery](../max-delivery-recovery.md) for the migration, operator procedure
+and limitations. This change adds a nullable JSONB column; no production migration was applied.

@@ -107,6 +107,11 @@ export class PostsService {
     return this._postRepository.resetStalePublishingToQueue();
   }
 
+  beginMaxDelivery(id: string, orgId: string, target: Record<string, string>) { return this._postRepository.beginMaxDelivery(id, orgId, target); }
+  confirmMaxDelivery(id: string, orgId: string, attempt: number, receipt: any) {
+    return this._postRepository.confirmMaxDelivery(id, orgId, attempt, receipt);
+  }
+
   updatePost(id: string, postId: string, releaseURL: string, orgId: string) {
     return this._postRepository.updatePost(id, postId, releaseURL, orgId);
   }
@@ -2129,7 +2134,7 @@ export class PostsService {
     return { days: daysArray, gaps };
   }
 
-  async retryPost(orgId: string, postId: string) {
+  async retryPost(orgId: string, postId: string, review?: { expectedAttempt?: number; confirmation?: string }, actorId?: string) {
     const post = await this._postRepository.getPostById(postId, orgId);
     if (!post || post.organizationId !== orgId) {
       throw new BadRequestException('Post not found');
@@ -2137,6 +2142,14 @@ export class PostsService {
 
     if (post.state !== State.ERROR) {
       throw new BadRequestException('Post is not in an error state');
+    }
+
+    if (post.integration?.providerIdentifier === 'max' && post.maxDelivery && (post.maxDelivery as any).state !== 'READY') {
+      if (review?.confirmation !== 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' ||
+          !Number.isInteger(review.expectedAttempt) || !actorId ||
+          !(await this._postRepository.authorizeMaxRetry(postId, orgId, review.expectedAttempt!, actorId))) {
+        throw new BadRequestException('MAX delivery requires operator review and explicit attempt-bound confirmation');
+      }
     }
 
     let publishDate = post.publishDate;

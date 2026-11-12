@@ -2637,6 +2637,12 @@ paths:
           in: path
           schema:
             type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryPostDto"
       responses:
         "201":
           description: ""
@@ -10691,6 +10697,14 @@ components:
           type: string
       required:
         - releaseId
+    RetryPostDto:
+      type: object
+      properties:
+        expectedAttempt:
+          type: number
+          minimum: 0
+        confirmation:
+          type: string
     ShouldShortlinkDto:
       type: object
       properties:

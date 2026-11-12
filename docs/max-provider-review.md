@@ -119,3 +119,55 @@ Files changed for this review iteration:
 - `agents/providers/social.md`
 - `docs/user-guide/max.md`
 - `docs/max-provider-review.md`
+
+## MAX crash-recovery follow-up (2026-11-12)
+
+This follow-up supersedes the original MVP's no-schema-change limitation. It adds one
+nullable `Post.maxDelivery` JSONB column and an additive migration, tested only on an
+isolated local PostgreSQL database. No migration was applied to the shared development DB,
+VPS or production. No merge/deployment occurred.
+
+Design comparison, all failure boundaries, rollout precautions, operator confirmation API,
+and remaining risks: [MAX delivery recovery contract](max-delivery-recovery.md).
+
+Latest verification:
+
+| Check | Passed | Failed |
+| --- | ---: | ---: |
+| Real PostgreSQL migration/recovery/activity integration | 12 | 0 |
+| Affected posts/activity unit suites | 93 | 0 |
+| Backend regression | 1153 | 0 |
+| Provider/kernel selection | 1861 | 0 |
+
+Also passed: Prisma Client generation, backend build, frontend TypeScript check,
+changed-file ESLint, additive migration destructive guard, OpenAPI generation/drift check
+and whitespace checks.
+The tests simulate process-loss boundaries through injected failures and fresh activity
+calls against the durable database. They do not kill an Inngest cloud worker or contact
+MAX. The provider selection still includes 22 existing Minimax cases due to substring
+filter matching. Full UI/browser E2E and deployment were not performed.
+
+The manual retry is an authenticated API operation with an explicit attempt-bound
+acknowledgement, not a new UI dialog. Existing retry clicks cannot authorize a STARTED
+attempt. A known published message should not be retried; operator-supplied-mid finalization
+is not implemented in this change. Automatic eventual delivery and exactly-once are not
+claimed. Old workers must be quiesced for a future rollout and before authorizing a retry.
+
+Changed implementation files:
+
+- `libraries/nestjs-libraries/src/database/prisma/schema.prisma`
+- `libraries/nestjs-libraries/src/database/prisma/migrations/20261112080000_max_delivery_guard/migration.sql`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.repository.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.service.spec.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/max-delivery.int-spec.ts`
+- `libraries/nestjs-libraries/src/inngest/activities/post.activity.ts`
+- `libraries/nestjs-libraries/src/dtos/posts/retry.post.dto.ts`
+- `apps/backend/src/api/routes/posts.controller.ts`
+
+Documentation: `agents/jobs.md`, `docs/user-guide/max.md`, this report, and
+`docs/max-delivery-recovery.md`.
+
+The generated `openapi.yml` documents the optional retry request body; existing providers
+can keep retrying without a body. The generator used a separate empty local database,
+which was removed after generation.

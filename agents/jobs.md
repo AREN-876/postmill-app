@@ -265,3 +265,11 @@ has an integration spec (`inngest-run.repository.int-spec.ts`, run via
 - [ ] Factory spec written with `vi.mock` on `inngest.client` + `captureFunctionHandler`/`createMockStep`; asserts id, trigger, step ids, activity calls.
 - [ ] New function appears in the Inngest dev UI (http://localhost:8288) after backend restart.
 - [ ] Did NOT add `@nestjs/schedule` `@Cron` for new work — Inngest cron instead.
+
+## MAX crash recovery
+
+MAX uses the Post.maxDelivery PostgreSQL journal before provider invocation; do not clear it
+in recovery, edits or generic retry. STARTED claims require operator review, CONFIRMED replays
+return the saved receipt. Ordinary providers retain their recovery behavior. See
+[delivery recovery contract](../docs/max-delivery-recovery.md) for failure boundaries, migration
+requirements and attempt-bound manual authorization.

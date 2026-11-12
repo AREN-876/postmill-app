@@ -488,6 +488,7 @@ model Post {
   title                      String?
   description                String?
   parentPostId               String?
+  maxDelivery                Json?                     // MAX-only durable attempt/receipt and operator history
   releaseId                  String?
   releaseURL                 String?
   settings                   String?

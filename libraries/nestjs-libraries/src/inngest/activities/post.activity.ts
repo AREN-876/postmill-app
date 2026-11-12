@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { PostsService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.service';
 import { NotificationService } from '@postmill-ai/nestjs-libraries/database/prisma/notifications/notification.service';
@@ -161,9 +162,8 @@ export class PostActivity {
   }
 
   async searchForMissingThreeHoursPosts() {
-    // 0.7 follow-up: first reclaim any post orphaned in PUBLISHING (a terminal run
-    // loss after the atomic claim) back to QUEUE, so the finder below re-enqueues it
-    // this same sweep. Idempotent — safe on Inngest step retry.
+    // Requeue safe orphaned claims, but quarantine uncertain MAX deliveries.
+    // The durable MAX journal is never cleared by the missing-post sweep.
     await this._postService.resetStalePublishingToQueue();
     const list = await this._postService.searchForMissingThreeHoursPosts();
     for (const post of list) {
@@ -545,6 +545,13 @@ export class PostActivity {
       );
     }
 
+    const maxAttempt = integration.providerIdentifier === 'max'
+      ? await this._postService.beginMaxDelivery(posts[0].id, integration.organizationId, {
+        integrationId: integration.id, chatId: integration.internalId, version: integration.providerVersion ?? 'v1',
+        textSha256: createHash('sha256').update(postPayload[0].message).digest('hex'),
+      }) : undefined;
+    if (maxAttempt?.receipt) return [maxAttempt.receipt];
+    if (maxAttempt && (maxAttempt.blocked || !Number.isInteger(maxAttempt.attempt))) throw new BadBodyError('max', '{}', '', 'MAX delivery unknown or already in progress: operator review required');
     let postNow;
     try {
       postNow = await runWithVpnDispatcher(vpnDispatcher, () =>
@@ -556,6 +563,10 @@ export class PostActivity {
           clientInformation
         )
       );
+      if (maxAttempt) {
+        if (!postNow?.[0]?.postId) throw new BadBodyError('max', '{}', '', 'MAX delivery unconfirmed; operator review required');
+        await this._postService.confirmMaxDelivery(posts[0].id, integration.organizationId, maxAttempt.attempt, postNow[0]);
+      }
       this._socialBreaker.recordSuccess(breakerKey);
     } catch (err) {
       // Only count infra-class failures (timeouts, 5xx, network) toward the breaker.
