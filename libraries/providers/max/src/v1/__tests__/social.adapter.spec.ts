@@ -209,7 +209,7 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
     checks();
     wire.mockResolvedValueOnce(response(data));
     await expect(provider.post(chatId, token, [post])).rejects.toThrow(
-      'unexpected response',
+      'not confirmed',
     );
   });
   it.each([
@@ -253,7 +253,7 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
     expect(error).toBeInstanceOf(Error);
     expect(JSON.stringify(error)).not.toContain(token);
     expect(String(error.stack)).not.toContain(token);
-    expect(wire.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(status >= 500 || status === 429 ? 4 : 1);
+    expect(wire.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
   });
 
   it('uses the shared retry path and recovers from rate limiting', async () => {

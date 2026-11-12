@@ -18,7 +18,8 @@ poll updates, send a `/connect` message, or publish anything during connection.
 
 Connection reads `/me`, `/chats/{chat_id}`, and `/chats/{chat_id}/members/me`. It requires a
 matching active **channel**, bot membership, and either ownership or administrator status
-with the explicit `post_edit_delete_message` permission. Missing, malformed or ambiguous
+with the current `write` permission or the legacy `post_edit_delete_message` alias.
+Administrator status is still required unless the bot is the owner. Missing, malformed or ambiguous
 rights fail closed; being able to read a chat is insufficient. Unsafe numeric ids in JSON
 responses are rejected to avoid precision loss. No operational credentials are included.
 
@@ -40,20 +41,28 @@ as an HTTPS `max.ru` URL; an absent/invalid public URL remains empty rather than
 
 401 means the static token must be replaced/reconnected; no refresh endpoint is invented.
 403 means membership or posting rights must be checked. Expected connection auth/permission
-rejections use the handled channel-auth path. 429 and 5xx use the existing bounded retry path
-(currently up to four HTTP attempts, with shared backoff). Parse, malformed-response and
-transport failures do not produce a successful post result. Upstream error bodies, request
-bodies and token-echoing transport messages are discarded before an error leaves the adapter.
+rejections use the handled channel-auth path. Read-only GET requests retain the existing bounded
+429/5xx retry path (currently up to four HTTP attempts with shared backoff). Message POST
+requests explicitly set `retryPolicy: 'none'`, consumed by `SocialAbstract.fetch` before the
+HTTP transport: 429, 5xx and rate-limit error bodies cannot trigger a resend. POST redirects
+are also rejected. The shared defaults and retry behavior of other providers are unchanged.
 
-The inherited POST retries do **not** provide exactly-once delivery. An ambiguous response or
-retry can duplicate a message: durable idempotency/reconciliation and partial-failure handling
-are later work. No autonomous publishing or scheduling worker is enabled by this change.
+Transport failures, timeouts, invalid JSON or a missing message id after POST are ambiguous:
+the adapter raises a sanitized non-retriable publish error and tells the operator to check
+the channel before a manual retry. It neither returns success nor automatically resends the
+message, including at the workflow level. Upstream error/request bodies and token-echoing
+transport messages are discarded before an error leaves the adapter.
+
+There is still no durable idempotency/reconciliation contract or exactly-once guarantee.
+A manual retry or a separate publish job can duplicate a previously accepted message; an
+operator must resolve ambiguous outcomes first. No autonomous publishing or scheduling
+worker is enabled by this change.
 
 ## Validation (offline MAX API)
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm exec vitest run --root libraries/providers /workspace/postmill-app/libraries/providers/max/src kernel/src/__tests__/all-providers.conformance.spec.ts kernel/src/__tests__/kernel.metadata.spec.ts kernel/src/__tests__/oauth-state.guard.spec.ts --maxWorkers=2
+pnpm exec vitest run --root libraries/providers /workspace/postmill-app/libraries/providers/max/src kernel/src/domains/social-base.spec.ts kernel/src/__tests__/all-providers.conformance.spec.ts kernel/src/__tests__/kernel.metadata.spec.ts kernel/src/__tests__/oauth-state.guard.spec.ts --maxWorkers=2
 pnpm exec vitest run --root libraries/nestjs-libraries src/integrations/org-provider-config.manager.spec.ts --maxWorkers=1
 pnpm exec vitest run --root apps/frontend src/components/composer src/components/settings/channels --maxWorkers=2
 pnpm exec vitest run --root apps/backend --maxWorkers=1
@@ -64,7 +73,8 @@ pnpm exec tsc --noEmit -p apps/frontend/tsconfig.json --incremental false
 All MAX requests in adapter and kernel integration tests are intercepted at the shared HTTP
 port and answered with synthetic fixtures. Tests cover token/channel validation, permission
 revocation, payload/response mapping, unsupported features, 4000/4001 boundaries, 401/403/429/5xx,
-retry recovery/exhaustion, malformed JSON/responses and token-safe errors. The kernel integration
+GET retry recovery/exhaustion, single-attempt POST failures, modern/legacy write permissions,
+malformed JSON/responses and token-safe errors. The kernel integration
 runs registration → resolution → bridge → adapter → HTTP port, without PostgreSQL or migrations.
 UI tests cover the existing settings flow, explicit chat id, nonce, credential-set enablement
 and text-only composer policy. Full browser E2E and a production Next.js bundle are not claimed.

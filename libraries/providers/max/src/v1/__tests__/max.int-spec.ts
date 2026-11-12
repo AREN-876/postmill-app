@@ -7,7 +7,7 @@ import { installTransport, response, wire } from './transport';
 // Kernel -> bridge -> MAX -> SocialAbstract -> synthetic wire. No DB or MAX API.
 describe('MAX registered kernel integration', () => {
   beforeEach(installTransport);
-  it('resolves the registered v1 module, connects read-only, and prepares/sends a text fixture', async () => {
+  it.each(['write', 'post_edit_delete_message'])('resolves the registered v1 module and posts a fixture with %s permission', async permission => {
     const kernel = new ProviderKernel();
     const maxModule = providerModules.find(
       (m) => m.manifest.domain === 'social' && m.manifest.providerId === 'max',
@@ -25,7 +25,7 @@ describe('MAX registered kernel integration', () => {
     wire.mockImplementation(async (url: string, init: RequestInit) => {
       expect(init.headers).toMatchObject({ Authorization: token });
       if (url.endsWith('/me') && url.includes('/members/'))
-        return response(member);
+        return response({ ...member, permissions: [permission] });
       if (url.endsWith('/me')) return response(bot);
       if (url.endsWith(`/chats/${chatId}`)) return response(chat);
       if (url.endsWith(`/messages?chat_id=${chatId}&disable_link_preview=true`)) return response(sent);

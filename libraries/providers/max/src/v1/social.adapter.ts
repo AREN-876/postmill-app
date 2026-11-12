@@ -24,6 +24,8 @@ const errors = {
   request: 'MAX rejected the request. Check the channel and text.',
   transport: 'MAX request failed. Check connectivity and try again.',
   response: 'MAX returned an unexpected response.',
+  delivery:
+    'MAX delivery was not confirmed. Automatic resend is disabled; check the channel before retrying manually.',
 };
 
 /** Text-only MAX Bot API. No channel discovery, uploads or OAuth. */
@@ -120,12 +122,19 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         `${API}${path}`,
         {
           method: text === undefined ? 'GET' : 'POST',
+          // A message write has no idempotency/reconciliation contract. Keep
+          // GET retries, but never resend POST (including via HTTP redirects).
+          ...(text === undefined
+            ? {}
+            : { retryPolicy: 'none' as const, redirect: 'error' as const }),
           headers: { Authorization: token, 'Content-Type': 'application/json' },
           ...(text === undefined ? {} : { body: JSON.stringify({ text }) }),
         },
         'max-api',
       );
-      const data = await response.json().catch(() => this.fail(errors.response));
+      const data = await response
+        .json()
+        .catch(() => this.fail(errors.response));
       if (
         !data ||
         typeof data !== 'object' ||
@@ -143,7 +152,12 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         error instanceof Error && Object.values(errors).includes(error.message)
           ? error.message
           : errors.transport;
-      this.fail(message);
+      this.fail(
+        text !== undefined &&
+          [errors.retry, errors.transport, errors.response].includes(message)
+          ? errors.delivery
+          : message,
+      );
     }
   }
 
@@ -176,7 +190,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         member.is_owner === true ||
         (member.is_admin === true &&
           Array.isArray(member.permissions) &&
-          member.permissions.includes('post_edit_delete_message'))
+          (member.permissions.includes('write') ||
+            member.permissions.includes('post_edit_delete_message')))
       )
     ) {
       this.fail(errors.forbidden);
@@ -190,10 +205,13 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   ) {
     const id = this.chatId(params.code);
     const token = this.token(info?.client_id || info?.token);
-    const chat = await this.channel(id, token).catch(error => {
+    const chat = await this.channel(id, token).catch((error) => {
       // Expected credential/permission rejection uses the handled channel-auth
       // path (409), not a Sentry application exception.
-      if (error instanceof Error && [errors.auth, errors.forbidden].includes(error.message)) {
+      if (
+        error instanceof Error &&
+        [errors.auth, errors.forbidden].includes(error.message)
+      ) {
         throw new NotEnoughScopes(error.message);
       }
       throw error;
@@ -254,7 +272,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     );
     const message = data.message;
     if (typeof message?.body?.mid !== 'string' || !message.body.mid.trim())
-      this.fail(errors.response);
+      this.fail(errors.delivery);
     let releaseURL = '';
     if (typeof message.url === 'string') {
       try {
