@@ -2580,6 +2580,29 @@ paths:
           description: ""
       tags:
         - Campaigns
+  /posts/{id}/max-occurrences:
+    get:
+      operationId: PostsController_listMaxOccurrences
+      parameters:
+        - name: id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: cursor
+          required: false
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ""
+          content:
+            application/json:
+              schema:
+                type: object
+      tags:
+        - Posts
   /posts/{id}/statistics:
     get:
       operationId: PostsController_getStatistics
@@ -10700,6 +10723,8 @@ components:
     RetryPostDto:
       type: object
       properties:
+        occurrenceId:
+          type: string
         expectedAttempt:
           type: number
           minimum: 0

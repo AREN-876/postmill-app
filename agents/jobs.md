@@ -273,3 +273,7 @@ in recovery, edits or generic retry. STARTED claims require operator review, CON
 return the saved receipt. Ordinary providers retain their recovery behavior. See
 [delivery recovery contract](../docs/max-delivery-recovery.md) for failure boundaries, migration
 requirements and attempt-bound manual authorization.
+
+MAX periodic deliveries use the same post/publish factory and intervalInDays. All MAX events
+must carry a persisted maxOccurrenceId; never reconstruct it from a stale event or clear a
+CONFIRMED receipt for a repeat. See [occurrence contract](../docs/max-occurrence-scheduling.md).

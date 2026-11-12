@@ -11,6 +11,12 @@ import dayjs from 'dayjs';
 import { Integration } from '@prisma/client';
 import { capitalize, sortBy } from 'lodash';
 
+const repeatEvent = (postId: string, organizationId: string, taskQueue: string, maxConcurrentJob: number, id: string, maxOccurrenceId?: string, maxDeliveryAttempt?: number) => ({
+  name: 'post/publish' as const, id,
+  data: { postId, organizationId, taskQueue, maxConcurrentJob, postNow: true, repeat: true,
+    ...(maxOccurrenceId ? { maxOccurrenceId, maxDeliveryAttempt } : {}) },
+});
+
 const MAX_RETRIES = 5;
 
 // Minimal runtime context for the metadata-only bridge used to derive task
@@ -69,7 +75,24 @@ const runPostPublish = (postActivity: PostActivity) =>
       return;
     }
 
-    if (!postNow && (firstPost as any).state !== 'QUEUE') {
+    const isMax = (firstPost as any).integration?.providerIdentifier === 'max';
+    if (event.data.maxOccurrenceId && !isMax) return;
+    const maxOccurrenceId = isMax ? event.data.maxOccurrenceId : undefined;
+    if (isMax) {
+      // Unstamped pre-occurrence repeat events cannot mint new send intents.
+      if (!maxOccurrenceId) return;
+      const plan = await step.run('max-occurrence-plan', () => postActivity.planMaxOccurrence(postId, organizationId, maxOccurrenceId));
+      if (!plan) return;
+      await step.sleep('max-occurrence-due', Math.max(0, new Date(plan.current.scheduledAt).getTime() - Date.now()));
+      const fresh = await step.run('max-occurrence-ready', () => postActivity.planMaxOccurrence(postId, organizationId, maxOccurrenceId));
+      if (!fresh) return;
+      // Persist/dispatch the next intent before attempting this one. An unknown
+      // delivery blocks only this occurrence, never the entire periodic series.
+      if (fresh.next?.state === 'READY') await step.sendEvent('max-repeat-post', repeatEvent(postId, organizationId, taskQueue, maxConcurrentJob, `max_occurrence_${fresh.next.id}`, fresh.next.id, fresh.next.attempt + 1));
+      if (fresh.current.state !== 'READY') return;
+    }
+
+    if (!isMax && !postNow && (firstPost as any).state !== 'QUEUE') {
       // 4.4c — a duplicate/stale event on an already-PUBLISHED post is a no-op;
       // never flip a live post back to ERROR. Only QUEUE/DRAFT are unexpected here.
       if ((firstPost as any).state === 'PUBLISHED') {
@@ -87,7 +110,7 @@ const runPostPublish = (postActivity: PostActivity) =>
       return;
     }
 
-    if (!postNow) {
+    if (!isMax && !postNow) {
       const publishDate = dayjs((firstPost as any).publishDate);
       const sleepMs = publishDate.isBefore(dayjs())
         ? 0
@@ -98,7 +121,7 @@ const runPostPublish = (postActivity: PostActivity) =>
     // 0.7 — atomic publish claim. Repeat-posts re-enter the postNow path on an
     // already-PUBLISHED post, so they skip the QUEUE-requiring claim.
     const { repeat = false } = event.data;
-    if (!repeat) {
+    if (!isMax && !repeat) {
       const claimed = await step.run('claim-publish', () =>
         postActivity.claimForPublish(postId, organizationId)
       );
@@ -180,9 +203,8 @@ const runPostPublish = (postActivity: PostActivity) =>
         try {
           if (i === 0) {
             const result = await step.run('post-social', () =>
-              postActivity.postSocial(post.integration as Integration, [
-                postsList[i],
-              ])
+              isMax ? postActivity.postSocial(post.integration as Integration, [postsList[i]], maxOccurrenceId, event.data.maxDeliveryAttempt)
+                : postActivity.postSocial(post.integration as Integration, [postsList[i]])
             );
             // Empty result = the post was deleted after the claim; end the run
             // quietly (no update-post, no ERROR state, no failure notification).
@@ -215,7 +237,7 @@ const runPostPublish = (postActivity: PostActivity) =>
             postsResults.push(...result);
           }
 
-          await step.run('update-post', () =>
+          if (!isMax) await step.run('update-post', () =>
             postActivity.updatePost(
               postsList[i].id,
               postsResults[i].postId,
@@ -280,7 +302,8 @@ const runPostPublish = (postActivity: PostActivity) =>
           // and leave the already-PUBLISHED root live; a root (i===0) failure marks
           // the whole group ERROR.
           const isRoot = i === 0;
-          await step.run('mark-error', () =>
+          if (isMax) await step.run('max-occurrence-error', () => postActivity.failMaxOccurrence(postId, organizationId, maxOccurrenceId));
+          else await step.run('mark-error', () =>
             postActivity.changeState(
               isRoot ? postsList[0].id : postsList[i].id,
               'ERROR',
@@ -391,12 +414,9 @@ const runPostPublish = (postActivity: PostActivity) =>
       });
     }
 
-    await step.run('send-webhooks', () =>
-      postActivity.sendWebhooks(
-        postsList[0].id,
-        post.organizationId,
-        post.integration.id
-      )
+    await step.run('send-webhooks', () => isMax
+      ? postActivity.sendWebhooks(postsList[0].id, post.organizationId, post.integration.id, maxOccurrenceId)
+      : postActivity.sendWebhooks(postsList[0].id, post.organizationId, post.integration.id)
     );
 
     const internalPlugsList = await step.run('internal-plugs', () =>
@@ -407,7 +427,7 @@ const runPostPublish = (postActivity: PostActivity) =>
       postActivity.globalPlugs(post.integration)
     );
 
-    const repeatPost = !post.intervalInDays
+    const repeatPost = isMax || !post.intervalInDays
       ? []
       : [
           {
@@ -506,22 +526,10 @@ const runPostPublish = (postActivity: PostActivity) =>
       }
 
       if (todo.type === 'repeat-post') {
-        await step.sendEvent(`repeat-post-${currentIndex}`, {
-          name: 'post/publish',
-          data: {
-            taskQueue,
-            postId,
-            organizationId,
-            maxConcurrentJob,
-            postNow: true,
-            // 0.7 — the post is already PUBLISHED here; skip the QUEUE-requiring claim.
-            repeat: true,
-          },
-          // 4.4f — deterministic id so an executor retry can't emit a second event.
-          // Uses the post creation timestamp rather than startTime so the id is
-          // stable across retries and Inngest memoization boundaries.
-          id: `post_${post.id}_repeat_${currentIndex}_${post.createdAt.getTime()}`,
-        });
+        await step.sendEvent(`repeat-post-${currentIndex}`, repeatEvent(
+          postId, organizationId, taskQueue, maxConcurrentJob,
+          `post_${post.id}_repeat_${currentIndex}_${post.createdAt.getTime()}`,
+        ));
       }
     }
   };

@@ -1,3 +1,4 @@
+import { MaxOccurrences } from './max-occurrences';
 import { PrismaRepository, PrismaTransaction } from '@postmill-ai/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Post as PostBody } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
@@ -74,6 +75,7 @@ export class PostsRepository {
     return this._post.model.post.findMany({
       where: {
         integration: {
+          providerIdentifier: { not: 'max' },
           refreshNeeded: false,
           inBetweenSteps: false,
           disabled: false,
@@ -607,55 +609,22 @@ export class PostsRepository {
     });
   }
 
-  // MAX-only CAS journal. Committed before any external provider call. A
-  // process/step retry must never cross a prior STARTED marker automatically.
-  async beginMaxDelivery(id: string, orgId: string, target: Record<string, string> = {}) {
-    const row = await this._post.model.post.findFirst({
-      where: { id, organizationId: orgId, deletedAt: null, integration: { providerIdentifier: 'max' } },
-    });
-    if (!row) return { blocked: true };
-    const journal = row.maxDelivery as any;
-    if (journal?.state === 'CONFIRMED') {
-      const receipt = journal.receipt;
-      return receipt?.id === id && typeof receipt.postId === 'string' && receipt.postId
-        ? { receipt } : { blocked: true };
-    }
-    if (row.state !== 'PUBLISHING' || (journal && journal.state !== 'READY')) return { blocked: true };
-    const next = { state: 'STARTED', attempt: (journal?.attempt ?? 0) + 1,
-      startedAt: new Date().toISOString(), target: { integrationId: row.integrationId, ...target }, history: journal?.history ?? [] };
-    const { count } = await this._post.model.post.updateMany({
-      where: { id, organizationId: orgId, deletedAt: null, state: 'PUBLISHING',
-        maxDelivery: journal ? { equals: journal } : { equals: Prisma.DbNull } },
-      data: { maxDelivery: next },
-    });
-    return count === 1 ? { attempt: next.attempt } : { blocked: true };
+  private maxOccurrences() { return new MaxOccurrences(this._transaction.model); }
+  pauseMaxOccurrences(id: string, org: string) { return this.maxOccurrences().pause(id, org); }
+  maxWebhookSnapshot(id: string, org: string, occurrence: string) { return this.maxOccurrences().webhookSnapshot(id, org, occurrence); }
+  listMaxOccurrences(id: string, org: string, cursor?: string) { return this.maxOccurrences().list(id, org, cursor); }
+  initialMaxOccurrence(id: string, org: string) { return this.maxOccurrences().initial(id, org); }
+  planMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().plan(id, org, occurrence); }
+  pendingMaxOccurrences() { return this.maxOccurrences().pending(); }
+  failMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().fail(id, org, occurrence); }
+  beginMaxDelivery(id: string, org: string, target: Record<string,string> = {}, occurrence?: string, expectedAttempt?: number) {
+    return this.maxOccurrences().begin(id, org, occurrence, target, expectedAttempt);
   }
-
-  async confirmMaxDelivery(id: string, orgId: string, attempt: number, receipt: { id: string; postId: string; releaseURL: string; status: string }) {
-    const row = await this._post.model.post.findFirst({ where: { id, organizationId: orgId } });
-    const journal = row?.maxDelivery as any;
-    // Receipt and terminal post state are ONE database commit. Even a lost DB
-    // acknowledgement cannot cause a second provider call on step replay.
-    const { count } = await this._post.model.post.updateMany({
-      where: { id, organizationId: orgId, maxDelivery: { path: ['state'], equals: 'STARTED' },
-        AND: [{ maxDelivery: { path: ['attempt'], equals: attempt } }] },
-      data: { maxDelivery: { state: 'CONFIRMED', attempt, receipt, target: journal?.target ?? {}, history: journal?.history ?? [] },
-        state: 'PUBLISHED', releaseId: receipt.postId, releaseURL: receipt.releaseURL, error: null },
-    });
-    if (count !== 1) throw new Error('MAX receipt was not persisted; operator review required');
+  confirmMaxDelivery(id: string, org: string, attempt: number, receipt: any, occurrence: string) {
+    return this.maxOccurrences().confirm(id, org, occurrence, attempt, receipt);
   }
-
-  async authorizeMaxRetry(id: string, orgId: string, attempt: number, actorId: string) {
-    const row = await this._post.model.post.findFirst({ where: { id, organizationId: orgId, state: 'ERROR', deletedAt: null,
-      integration: { providerIdentifier: 'max' } } });
-    const journal = row?.maxDelivery as any;
-    if (!journal || journal.state !== 'STARTED' || journal.attempt !== attempt) return false;
-    const { count } = await this._post.model.post.updateMany({
-      where: { id, organizationId: orgId, state: 'ERROR', maxDelivery: { equals: journal } },
-      data: { maxDelivery: { state: 'READY', attempt, history: [...(journal.history ?? []),
-        { ...journal, history: undefined, reviewedBy: actorId, reviewedAt: new Date().toISOString(), decision: 'retry-risk-accepted' }] } },
-    });
-    return count === 1;
+  authorizeMaxRetry(id: string, org: string, attempt: number, actor: string, occurrence: string) {
+    return this.maxOccurrences().authorize(id, org, occurrence, attempt, actor);
   }
 
   // 0.7: atomic publish state-claim. Flips exactly one QUEUE post to PUBLISHING and
@@ -674,16 +643,9 @@ export class PostsRepository {
   // A MAX STARTED marker survives crashes and cannot be automatically requeued.
   // Quarantine it after the grace period, without the old finder's two-day floor.
   async resetStalePublishingToQueue(): Promise<number> {
-    await this._post.model.post.updateMany({
-      where: { state: 'PUBLISHING', integration: { providerIdentifier: 'max' },
-        maxDelivery: { path: ['state'], equals: 'STARTED' },
-        updatedAt: { lt: dayjs.utc().subtract(3, 'hour').toDate() } },
-      data: { state: 'ERROR', error: 'MAX delivery unknown: operator review required; automatic resend blocked' },
-    });
     const { count } = await this._post.model.post.updateMany({
       where: {
-        OR: [{ integration: { providerIdentifier: { not: 'max' } } },
-          { maxDelivery: { equals: Prisma.DbNull } }, { maxDelivery: { path: ['state'], equals: 'READY' } }],
+        integration: { providerIdentifier: { not: 'max' } },
         state: 'PUBLISHING',
         deletedAt: null,
         publishDate: {

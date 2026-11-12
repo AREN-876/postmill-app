@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   beforeAll,
   afterAll,
@@ -18,6 +19,8 @@ const db = new PrismaClient({ datasources: { db: { url: inject('dbUrl') } } });
 const org = 'max-recovery-test';
 let repo: PostsRepository;
 let migrated: any;
+let imported: any;
+let migrationDriftClean = false;
 beforeAll(async () => {
   await db.organization.create({
     data: { id: org, name: 'Offline recovery test' },
@@ -60,7 +63,23 @@ beforeAll(async () => {
     .split(';')
     .filter((s) => s.trim()))
     await db.$executeRawUnsafe(sql);
+  const confirmed = await createPost('max', 'PUBLISHED');
+  await db.post.update({ where: { id: confirmed.id }, data: { intervalInDays: 1, maxDelivery: {
+    state: 'CONFIRMED', attempt: 2, receipt: receipt(confirmed.id), history: [{ attempt: 1, reviewedBy: 'legacy-operator' }],
+  } } });
+  const unsent = await createPost('max', 'QUEUE');
+  await db.$executeRawUnsafe('DROP TABLE "MaxDeliveryAttempt"');
+  await db.$executeRawUnsafe('DROP TABLE "MaxDeliveryOccurrence"');
+  await db.$executeRawUnsafe('ALTER TABLE "Post" DROP COLUMN "maxScheduleRevision"');
+  const occurrenceSql = readFileSync(new URL('../migrations/20261112100000_max_occurrences/migration.sql', import.meta.url), 'utf8');
+  for (const sql of occurrenceSql.replace(/--[^\n]*/g,'').split(';').filter(s=>s.trim())) await db.$executeRawUnsafe(sql);
+  execFileSync('pnpm', ['dlx', 'prisma@6.5.0', 'migrate', 'diff', '--from-url', inject('dbUrl'), '--to-schema-datamodel', new URL('../schema.prisma', import.meta.url).pathname, '--exit-code'], { stdio: 'pipe' });
+  migrationDriftClean = true;
   migrated = await db.post.findUniqueOrThrow({ where: { id: legacy.id } });
+  const anchor = await repo.initialMaxOccurrence(confirmed.id, org);
+  imported = { anchor, plan: await repo.planMaxOccurrence(confirmed.id, org, anchor.id),
+    queued: await repo.initialMaxOccurrence(unsent.id, org) };
+
 });
 afterAll(async () => {
   await db.$disconnect();
@@ -90,6 +109,8 @@ function activity(
   post: any,
   send: any,
   confirmation = repo.confirmMaxDelivery.bind(repo),
+  occurrence?: string,
+  expectedAttempt = 1,
 ) {
   const integration: any = {
     id: post.integrationId,
@@ -122,7 +143,7 @@ function activity(
     {} as any,
     { isDeleted: async () => false } as any,
   );
-  return () => a.postSocial(integration, [post]);
+  return () => a.postSocial(integration, [post], occurrence, expectedAttempt);
 }
 async function stale(id: string) {
   await db.post.update({
@@ -131,124 +152,150 @@ async function stale(id: string) {
   });
 }
 
-describe('MAX crash recovery with PostgreSQL', () => {
-  it('fails closed on a malformed confirmed journal instead of resending', async () => {
-    const post = await createPost();
-    await db.post.update({ where: { id: post.id }, data: { maxDelivery: { state: 'CONFIRMED', attempt: 1 } } });
-    const send = vi.fn(async () => [receipt(post.id)]);
-    await expect(activity(post, send)()).rejects.toThrow('operator review');
-    expect(send).not.toHaveBeenCalled();
-  });
-  it('migration quarantines legacy attempts', () => {
+describe('MAX occurrence recovery with PostgreSQL', () => {
+  async function due(parent: any) {
+    const plan = await repo.planMaxOccurrence(parent.postId, org, parent.id);
+    return plan!.next;
+  }
+  it('exact SQL migration matches the Prisma schema',()=>{ expect(migrationDriftClean).toBe(true); });
+  it('imports the old journal and preserves legacy evidence', () => {
     expect(migrated.state).toBe('ERROR');
     expect(migrated.maxDelivery.state).toBe('STARTED');
   });
-  it('recovers guaranteed-unsent work and ordinary Telegram/VK claims normally', async () => {
-    for (const provider of ['max', 'telegram', 'vk'])
-      await createPost(provider);
-    expect(await repo.resetStalePublishingToQueue()).toBe(3);
-    expect(await db.post.count({ where: { state: 'QUEUE' } })).toBe(3);
+  it('legacy receipts/audit remain immutable anchors, not fabricated recurring releases', () => {
+    expect(imported.anchor.state).toBe('CONFIRMED');
+    expect(imported.anchor.legacy.history[0].reviewedBy).toBe('legacy-operator');
+    expect(imported.plan.next).toBeNull();
+    expect(imported.queued.state).toBe('READY');
   });
-  it.each(['telegram', 'vk'])('keeps the ordinary %s activity path independent of the MAX journal', async provider => {
-    const post = await createPost(provider); const send = vi.fn(async () => [receipt(post.id)]);
-    await expect(activity(post, send)()).resolves.toHaveLength(1);
-    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).maxDelivery).toBeNull();
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-  it('crash after external acceptance before receipt persistence never sends again', async () => {
+  it('publishes three independent sequential occurrences; replay never reuses a receipt as new success', async () => {
     const post = await createPost();
+    await db.post.update({ where: { id: post.id }, data: { intervalInDays: 1, publishDate: new Date(Date.now()-4*86400000) } });
+    let occurrence = await repo.initialMaxOccurrence(post.id, org);
+    const ids = new Set<string>(); const send = vi.fn(async () => [{ ...receipt(post.id), postId: `mid-${send.mock.calls.length}` }]);
+    for (let n=0;n<3;n++) {
+      ids.add(occurrence.id);
+      const next = await due(occurrence);
+      await expect(activity(post, send, undefined, occurrence.id)()).resolves.toHaveLength(1);
+      await expect(activity(post, send, undefined, occurrence.id)()).resolves.toEqual([]);
+      const saved = await db.maxDeliveryOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } });
+      expect(saved.state).toBe('CONFIRMED'); expect((saved.receipt as any).postId).toBe(`mid-${n+1}`);
+      occurrence = next;
+    }
+    expect(ids.size).toBe(3); expect(send).toHaveBeenCalledTimes(3);
+  });
+  it('an uncertain occurrence does not block the next scheduled occurrence', async () => {
+    const post = await createPost();
+    await db.post.update({ where: { id: post.id }, data: { intervalInDays: 1, publishDate: new Date(Date.now()-4*86400000) } });
+    const first = await repo.initialMaxOccurrence(post.id, org); const next = await due(first);
+    const failed = vi.fn(async () => { throw Error('synthetic timeout'); });
+    await expect(activity(post, failed, undefined, first.id)()).rejects.toThrow('timeout');
+    await repo.failMaxOccurrence(post.id, org, first.id);
     const send = vi.fn(async () => [receipt(post.id)]);
-    const run = activity(post, send, async () => {
-      throw Error('simulated DB outage after MAX acceptance');
+    await expect(activity(post, send, undefined, first.id)()).rejects.toThrow('operator review');
+    await expect(activity(post, send, undefined, next.id)()).resolves.toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    await repo.failMaxOccurrence(post.id, org, first.id);
+    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).state).toBe('PUBLISHED');
+  });
+  it('crash after acceptance before receipt persistence blocks only that occurrence', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id, org);
+    const send = vi.fn(async () => [receipt(post.id)]);
+    await expect(activity(post, send, async () => { throw Error('DB unavailable'); }, o.id)()).rejects.toThrow('DB unavailable');
+    await db.maxDeliveryOccurrence.update({ where: { id: o.id }, data: { updatedAt: new Date(Date.now()-4*3600000) } });
+    await repo.pendingMaxOccurrences();
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({ where: { id: o.id } })).state).toBe('REVIEW');
+    await expect(activity(post, send, undefined, o.id)()).rejects.toThrow('operator review'); expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('commit acknowledgement loss cannot resend or report another success', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id, org); const send = vi.fn(async () => [receipt(post.id)]);
+    await expect(activity(post, send, async (...args) => { await repo.confirmMaxDelivery(...args); throw Error('lost acknowledgement'); }, o.id)()).rejects.toThrow('lost acknowledgement');
+    await expect(activity(post, send, undefined, o.id)()).resolves.toEqual([]);
+    expect(send).toHaveBeenCalledTimes(1); expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).state).toBe('PUBLISHED');
+  });
+  it('eight parallel activities admit a single attempt', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id, org); const send = vi.fn(async () => [receipt(post.id)]);
+    await Promise.allSettled(Array.from({length:8}, () => activity(post, send, undefined, o.id)()));
+    expect(send).toHaveBeenCalledTimes(1); expect(await db.maxDeliveryAttempt.count({ where: { occurrenceId: o.id } })).toBe(1);
+  });
+  it('operator retry is bound to occurrence, attempt and organization, with normalized audit', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id, org);
+    await repo.beginMaxDelivery(post.id, org, {}, o.id, 1); await repo.failMaxOccurrence(post.id, org, o.id);
+    expect(await repo.authorizeMaxRetry(post.id, org, 99, 'operator', o.id)).toBe(false);
+    expect(await repo.authorizeMaxRetry(post.id, org, 1, 'operator', 'wrong')).toBe(false);
+    expect(await repo.authorizeMaxRetry(post.id, org, 1, 'operator', o.id)).toBe(true);
+    expect(await repo.authorizeMaxRetry(post.id, org, 1, 'operator', o.id)).toBe(false);
+    const staleSend = vi.fn();
+    await expect(activity(post, staleSend, undefined, o.id, 1)()).rejects.toThrow('operator review');
+    expect(staleSend).not.toHaveBeenCalled();
+    await activity(post, vi.fn(async () => [receipt(post.id)]), undefined, o.id, 2)();
+    const rows = await repo.listMaxOccurrences(post.id, org);
+    expect(rows[0].attempts).toHaveLength(2); expect(rows[0].attempts[0].reviewedBy).toBe('operator');
+    expect(await repo.listMaxOccurrences(post.id, 'other-org')).toEqual([]);
+  });
+  it.each(['content','intervalInDays','publishDate','integrationId'])('invalidates pending old events after editing %s', async field => {
+    const post = await createPost(); const old = await repo.initialMaxOccurrence(post.id, org);
+    const changes: any = { content: 'Changed text', intervalInDays: 2, publishDate: new Date(Date.now()+86400000), integrationId: 'max-other' };
+    if (field==='integrationId') await db.integration.upsert({ where:{id:'max-other'}, update:{}, create:{id:'max-other',organizationId:org,internalId:'other',name:'MAX other',providerIdentifier:'max',type:'social',token:'synthetic'} });
+    await db.post.update({where:{id:post.id},data:{[field]:changes[field]}});
+    expect(await repo.planMaxOccurrence(post.id,org,old.id)).toBeNull();
+    expect((await repo.initialMaxOccurrence(post.id,org)).id).not.toBe(old.id);
+    await expect(activity(post,vi.fn(),undefined,old.id)()).rejects.toThrow('operator review');
+  });
+  it('a cached MAX activity cannot send after the post changes to another provider', async()=>{
+    const post=await createPost();const o=await repo.initialMaxOccurrence(post.id,org);
+    await db.post.update({where:{id:post.id},data:{integrationId:'telegram'}});
+    const send=vi.fn(async()=>[receipt(post.id)]);
+    await expect(activity(post,send,undefined,o.id)()).rejects.toThrow('operator review');expect(send).not.toHaveBeenCalled();
+  });
+  it('pause/resume creates a new schedule revision; stale occurrence identities remain cancelled', async()=>{
+    const post=await createPost();const old=await repo.initialMaxOccurrence(post.id,org);
+    await db.post.update({where:{id:post.id},data:{state:'DRAFT'}});await repo.pauseMaxOccurrences(post.id,org);
+    await db.post.update({where:{id:post.id},data:{state:'QUEUE'}});
+    const next=await repo.initialMaxOccurrence(post.id,org);expect(next.id).not.toBe(old.id);
+    expect(await repo.planMaxOccurrence(post.id,org,old.id)).toBeNull();
+    const send=vi.fn(async()=>[receipt(post.id)]);await activity(post,send,undefined,next.id)();expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('per-occurrence webhooks use the delivered snapshot, never a later edited template', async()=>{
+    const post=await createPost();const o=await repo.initialMaxOccurrence(post.id,org);
+    await activity(post,vi.fn(async()=>[receipt(post.id)]),undefined,o.id)();
+    await db.post.update({where:{id:post.id},data:{content:'Never sent content'}});
+    const snapshot=await repo.maxWebhookSnapshot(post.id,org,o.id);
+    expect(snapshot.content).toBe('Synthetic text');expect(snapshot.releaseURL).toBe(receipt(post.id).releaseURL);
+    expect(await repo.maxWebhookSnapshot(post.id,'other-org',o.id)).toBeNull();
+  });
+  it('cancellation during an in-flight attempt retains its receipt without unpausing the template', async()=>{
+    const post=await createPost();const o=await repo.initialMaxOccurrence(post.id,org);
+    const send=vi.fn(async()=>{
+      await db.post.update({where:{id:post.id},data:{state:'DRAFT'}});await repo.pauseMaxOccurrences(post.id,org);
+      return [receipt(post.id)];
     });
-    await expect(run()).rejects.toThrow('DB outage');
-    await stale(post.id);
-    await repo.resetStalePublishingToQueue();
-    expect(
-      (await db.post.findUniqueOrThrow({ where: { id: post.id } })).state,
-    ).toBe('ERROR');
-    await expect(activity(post, send)()).rejects.toThrow('operator review');
-    expect(send).toHaveBeenCalledTimes(1);
+    await activity(post,send,undefined,o.id)();
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({where:{id:o.id}})).state).toBe('CONFIRMED');
+    expect((await db.post.findUniqueOrThrow({where:{id:post.id}})).state).toBe('DRAFT');
   });
-  it('timeout remains uncertain and requires review', async () => {
-    const post = await createPost();
-    const send = vi.fn(async () => {
-      throw Error('synthetic timeout');
-    });
-    await expect(activity(post, send)()).rejects.toThrow('timeout');
-    await stale(post.id);
-    await repo.resetStalePublishingToQueue();
-    await expect(activity(post, send)()).rejects.toThrow('operator review');
-    expect(send).toHaveBeenCalledTimes(1);
+  it('pause cancels pending occurrences and recovery never resurrects them', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id,org);
+    await db.post.update({where:{id:post.id},data:{state:'DRAFT'}});
+    expect(await repo.planMaxOccurrence(post.id,org,o.id)).toBeNull();
+    expect(await repo.pendingMaxOccurrences()).toEqual([]);
   });
-  it('atomically saves receipt and completion; step replay returns receipt without POST', async () => {
-    const post = await createPost();
-    const send = vi.fn(async () => [receipt(post.id)]);
-    const run = activity(post, send);
-    expect(await run()).toEqual([receipt(post.id)]);
-    expect(await run()).toEqual([receipt(post.id)]);
-    const row = await db.post.findUniqueOrThrow({ where: { id: post.id } });
-    expect(row.state).toBe('PUBLISHED');
-    expect(row.releaseId).toBe('synthetic-mid');
-    expect(JSON.stringify(row.maxDelivery)).not.toContain('synthetic-only');
-    expect((row.maxDelivery as any).target).toMatchObject({ chatId: '-123', integrationId: 'max', textSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
-    await repo.changeState(post.id, 'ERROR', org, 'late failed worker');
-    expect(
-      (await db.post.findUniqueOrThrow({ where: { id: post.id } })).state,
-    ).toBe('PUBLISHED');
-    expect(send).toHaveBeenCalledTimes(1);
+  it('recovery returns unsent occurrences and never uncertain ones', async () => {
+    const post = await createPost(); const o = await repo.initialMaxOccurrence(post.id,org);
+    expect((await repo.pendingMaxOccurrences()).map(x=>x.id)).toContain(o.id);
+    await repo.beginMaxDelivery(post.id,org,{},o.id,1);
+    await db.maxDeliveryOccurrence.update({where:{id:o.id},data:{updatedAt:new Date(Date.now()-4*3600000)}});
+    expect((await repo.pendingMaxOccurrences()).map(x=>x.id)).not.toContain(o.id);
   });
-  it('lost acknowledgement after the receipt commit replays the persisted result', async () => {
-    const post = await createPost();
-    const send = vi.fn(async () => [receipt(post.id)]);
-    await expect(
-      activity(post, send, async (...args) => {
-        await repo.confirmMaxDelivery(...args);
-        throw Error('lost commit acknowledgement');
-      })(),
-    ).rejects.toThrow('lost commit');
-    await expect(activity(post, send)()).resolves.toEqual([receipt(post.id)]);
-    expect(send).toHaveBeenCalledTimes(1);
+  it('long series uses separate rows, bounded Post summary and one child per parent', async () => {
+    const post = await createPost(); await db.post.update({where:{id:post.id},data:{intervalInDays:1,publishDate:new Date(Date.now()-40*86400000)}});
+    let o=await repo.initialMaxOccurrence(post.id,org);
+    for(let n=0;n<25;n++) { const [a,b]=await Promise.all([due(o),due(o)]);expect(a.id).toBe(b.id);o=a; }
+    expect(await db.maxDeliveryOccurrence.count({where:{postId:post.id}})).toBe(26);
   });
-  it('concurrent activities admit only one external attempt', async () => {
-    const post = await createPost();
-    const send = vi.fn(async () => [receipt(post.id)]);
-    const run = activity(post, send);
-    await Promise.allSettled(Array.from({ length: 8 }, () => run()));
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-  it('crash immediately after marker is conservatively quarantined, even without a send', async () => {
-    const post = await createPost();
-    await repo.beginMaxDelivery(post.id, org);
-    await stale(post.id);
-    await repo.resetStalePublishingToQueue();
-    expect(await repo.claimForPublish(post.id, org)).toBe(0);
-  });
-  it('manual authorization is org/attempt bound, single use and auditable', async () => {
-    const post = await createPost();
-    await repo.beginMaxDelivery(post.id, org);
-    await stale(post.id);
-    await repo.resetStalePublishingToQueue();
-    expect(
-      await repo.authorizeMaxRetry(post.id, 'other-org', 1, 'operator'),
-    ).toBe(false);
-    expect(await repo.authorizeMaxRetry(post.id, org, 99, 'operator')).toBe(
-      false,
-    );
-    expect(await repo.authorizeMaxRetry(post.id, org, 1, 'operator')).toBe(
-      true,
-    );
-    expect(await repo.authorizeMaxRetry(post.id, org, 1, 'operator')).toBe(
-      false,
-    );
-    await repo.retryPost(post.id, org, new Date());
-    await repo.claimForPublish(post.id, org);
-    const send = vi.fn(async () => [receipt(post.id)]);
-    await activity(post, send)();
-    const journal = (
-      await db.post.findUniqueOrThrow({ where: { id: post.id } })
-    ).maxDelivery as any;
-    expect(journal.attempt).toBe(2);
-    expect(journal.history[0].reviewedBy).toBe('operator');
+  it.each(['telegram','vk'])('ordinary %s claims and recovery remain unchanged', async provider => {
+    const post=await createPost(provider); expect(await repo.resetStalePublishingToQueue()).toBe(1);
+    expect(await repo.claimForPublish(post.id,org)).toBe(1);
+    const send=vi.fn(async()=>[receipt(post.id)]);await activity(post,send)();expect(send).toHaveBeenCalledTimes(1);
   });
 });

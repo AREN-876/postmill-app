@@ -1,3 +1,5 @@
+> Latest PR #2 implementation: [occurrence-aware periodic scheduling](max-occurrence-scheduling.md). Historical per-Post results below are superseded by the final section.
+
 # MAX MVP review — Issue #1
 
 Base: `feat/max-provider` at `9906d34c` (v1.4.0 plus approved brief).
@@ -171,3 +173,69 @@ Documentation: `agents/jobs.md`, `docs/user-guide/max.md`, this report, and
 The generated `openapi.yml` documents the optional retry request body; existing providers
 can keep retrying without a body. The generator used a separate empty local database,
 which was removed after generation.
+
+## Periodic occurrence implementation (2026-11-12)
+
+The accepted direction uses the common intervalInDays / post-publish / Inngest infrastructure.
+A normalized occurrence/attempt journal replaces the post-wide delivery gate. Each successor
+has a stable distinct ID and due date; replays preserve that identity. Normal repeat event IDs
+are stable per occurrence, while recovery can redispatch the same occurrence with a fresh
+transport event ID. The expected attempt generation also fences stale pre-authorization jobs.
+
+Two additive tables and a defaulted schedule revision preserve independent receipts and
+operator audit without a growing Post JSON map. The migration keeps old receipts/history as
+immutable legacy anchors. Legacy anchors do not guess periodic ordinals or emit new success;
+explicitly reschedule old templates with a future date to start the new periodic chain.
+No migration was applied to a shared dev DB, VPS or production.
+
+Final checks:
+
+| Check | Passed | Failed |
+| --- | ---: | ---: |
+| Real PostgreSQL migration/schema-drift/occurrence tests | 22 | 0 |
+| Affected posts and activity unit tests | 94 | 0 |
+| Backend, including 26 workflow cases | 1161 | 0 |
+| Selected provider/kernel suites | 1861 | 0 |
+
+Also passed: Prisma generation, backend build, frontend TypeScript check, changed-file ESLint,
+additive migration guard, exact SQL migration vs Prisma schema diff, OpenAPI generation/drift
+check and git whitespace check. Provider selection includes the existing 22 Minimax cases
+because of substring filtering. No tests skipped in these selected runs.
+
+PostgreSQL scenarios cover three sequential deliveries with distinct mids, replay, acceptance
+before failed receipt persistence, lost commit acknowledgement, concurrent activities,
+independent progress after an uncertain occurrence, operator retry and stale attempt fencing,
+channel/text/date/interval edits, pause/resume, late receipt after cancellation, 25 successor
+plans, legacy migration and Telegram/VK recovery. Workflow cases verify stable/distinct event
+IDs and absence of new success notifications/webhooks for unknown, duplicate, cancelled and
+legacy unstamped events. MAX webhooks use the confirmed attempt's actual content snapshot.
+
+Limits and rollout contract are detailed in the linked design. No real MAX requests/tokens,
+cloud Inngest execution, browser E2E, VPS/StoryGo changes, merge or deployment. API-only
+operator retry/review remains; unverified-mid reconciliation is not added. Unknown delivery
+is not automatically retried. Missed distinct slots may catch up and create a backlog.
+History guards must not be pruned without tombstones. A future rollout must drain old workers;
+exactly-once is not claimed. PR #2 remains a Draft review change.
+
+Changed files for this iteration:
+
+- `agents/jobs.md`
+- `apps/backend/src/api/routes/posts.controller.ts`
+- `apps/backend/src/inngest/functions/post-publish.spec.ts`
+- `apps/backend/src/inngest/functions/post-publish.ts`
+- `docs/max-delivery-recovery.md`
+- `docs/max-occurrence-scheduling.md`
+- `docs/max-provider-review.md`
+- `docs/user-guide/max.md`
+- `libraries/nestjs-libraries/src/database/prisma/migrations/20261112100000_max_occurrences/migration.sql`
+- `libraries/nestjs-libraries/src/database/prisma/posts/max-delivery.int-spec.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/max-occurrences.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.repository.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.service.spec.ts`
+- `libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts`
+- `libraries/nestjs-libraries/src/database/prisma/schema.prisma`
+- `libraries/nestjs-libraries/src/dtos/posts/retry.post.dto.ts`
+- `libraries/nestjs-libraries/src/inngest/activities/post.activity.spec.ts`
+- `libraries/nestjs-libraries/src/inngest/activities/post.activity.ts`
+- `libraries/nestjs-libraries/src/inngest/inngest.types.ts`
+- `openapi.yml`

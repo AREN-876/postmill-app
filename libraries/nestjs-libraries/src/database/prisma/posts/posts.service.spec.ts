@@ -1208,9 +1208,9 @@ describe('1.2 — retry post', () => {
     await expect(service.retryPost('org-1', 'p1')).rejects.toThrow('explicit');
     expect(postRepository.retryPost).not.toHaveBeenCalled();
     expect(authorizeMaxRetry).not.toHaveBeenCalled();
-    await service.retryPost('org-1', 'p1', { expectedAttempt: 1, confirmation: 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' }, 'operator-id');
-    expect(authorizeMaxRetry).toHaveBeenCalledWith('p1', 'org-1', 1, 'operator-id');
-    expect(postRepository.retryPost).toHaveBeenCalledTimes(1);
+    await service.retryPost('org-1', 'p1', { occurrenceId: 'occ-1', expectedAttempt: 1, confirmation: 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' }, 'operator-id');
+    expect(authorizeMaxRetry).toHaveBeenCalledWith('p1', 'org-1', 1, 'operator-id', 'occ-1');
+    expect(postRepository.retryPost).not.toHaveBeenCalled();
   });
 
   it('rejects non-ERROR posts', async () => {

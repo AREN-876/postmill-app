@@ -1,3 +1,5 @@
+> Current occurrence-aware implementation: [MAX periodic scheduling](../max-occurrence-scheduling.md). The earlier per-Post recovery notes below are historical.
+
 # MAX channel (text-only MVP)
 
 MAX is a native, versioned `social/max@v1` ProviderKernel module for Postmill v1.4.0.

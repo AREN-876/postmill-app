@@ -488,7 +488,9 @@ model Post {
   title                      String?
   description                String?
   parentPostId               String?
-  maxDelivery                Json?                     // MAX-only durable attempt/receipt and operator history
+  maxScheduleRevision        Int                       @default(0)
+  maxOccurrences             MaxDeliveryOccurrence[]
+  maxDelivery                Json?                     // MAX-only bounded summary; durable history in maxOccurrences
   releaseId                  String?
   releaseURL                 String?
   settings                   String?
@@ -2007,4 +2009,38 @@ model InngestFunctionRun {
   updatedAt   DateTime  @updatedAt
 
   @@index([updatedAt])
+}
+
+// A durable scheduled intent, not an Inngest execution/run id.
+model MaxDeliveryOccurrence {
+  id String @id
+  postId String
+  organizationId String
+  parentId String? @unique
+  scheduledAt DateTime
+  fingerprint String
+  continued Boolean @default(false)
+  state String @default("READY")
+  attempt Int @default(0)
+  receipt Json?
+  legacy Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  attempts MaxDeliveryAttempt[]
+  @@index([state, scheduledAt])
+  @@index([postId, organizationId])
+}
+model MaxDeliveryAttempt {
+  id String @id @default(cuid())
+  occurrenceId String
+  number Int
+  state String
+  target Json
+  receipt Json?
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt DateTime @default(now())
+  occurrence MaxDeliveryOccurrence @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  @@unique([occurrenceId, number])
 }

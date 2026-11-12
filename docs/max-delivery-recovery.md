@@ -1,3 +1,5 @@
+> Current occurrence-aware implementation: [MAX periodic scheduling](max-occurrence-scheduling.md). The earlier per-Post recovery notes below are historical.
+
 # MAX delivery journal and crash recovery (Postmill v1.4.0, PR #2)
 
 ## Decision and scope

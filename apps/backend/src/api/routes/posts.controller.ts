@@ -58,6 +58,12 @@ export class PostsController {
     private _shortLinkService: ShortLinkService
   ) {}
 
+  @Get('/:id/max-occurrences')
+  @RequirePermission('posts', 'read')
+  listMaxOccurrences(@GetOrgFromRequest() org: Organization, @Param('id', ParseCuidPipe) id: string, @Query('cursor') cursor?: string) {
+    return this._postsService.listMaxOccurrences(id, org.id, cursor);
+  }
+
   @Get('/:id/statistics')
   async getStatistics(
     @GetOrgFromRequest() org: Organization,
