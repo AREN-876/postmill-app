@@ -1198,6 +1198,21 @@ describe('1.2 — retry post', () => {
     expect(startSpy).toHaveBeenCalledWith('x', 'p1', 'org-1', State.QUEUE, 'v1');
   });
 
+  it('requires explicit operator confirmation before retrying uncertain MAX delivery', async () => {
+    const authorizeMaxRetry = vi.fn().mockResolvedValue(true);
+    const { service, postRepository } = makePostsService({ postRepository: {
+      authorizeMaxRetry, getPostById: vi.fn().mockResolvedValue({ id: 'p1', organizationId: 'org-1', state: 'ERROR',
+        publishDate: new Date(), maxDelivery: { state: 'STARTED', attempt: 1 }, integration: { providerIdentifier: 'max', providerVersion: 'v1' } }),
+    } });
+    vi.spyOn(service, 'startWorkflow').mockResolvedValue(undefined);
+    await expect(service.retryPost('org-1', 'p1')).rejects.toThrow('explicit');
+    expect(postRepository.retryPost).not.toHaveBeenCalled();
+    expect(authorizeMaxRetry).not.toHaveBeenCalled();
+    await service.retryPost('org-1', 'p1', { occurrenceId: 'occ-1', expectedAttempt: 1, confirmation: 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' }, 'operator-id');
+    expect(authorizeMaxRetry).toHaveBeenCalledWith('p1', 'org-1', 1, 'operator-id', 'occ-1');
+    expect(postRepository.retryPost).not.toHaveBeenCalled();
+  });
+
   it('rejects non-ERROR posts', async () => {
     const { service, postRepository } = makePostsService({
       postRepository: {

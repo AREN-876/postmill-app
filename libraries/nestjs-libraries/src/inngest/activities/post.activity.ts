@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { PostsService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.service';
 import { NotificationService } from '@postmill-ai/nestjs-libraries/database/prisma/notifications/notification.service';
@@ -160,11 +161,25 @@ export class PostActivity {
     return ((full as unknown) as Integration) ?? integration;
   }
 
+  planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.planMaxOccurrence(id, org, occurrence); }
+  failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.failMaxOccurrence(id, org, occurrence); }
+
   async searchForMissingThreeHoursPosts() {
-    // 0.7 follow-up: first reclaim any post orphaned in PUBLISHING (a terminal run
-    // loss after the atomic claim) back to QUEUE, so the finder below re-enqueues it
-    // this same sweep. Idempotent — safe on Inngest step retry.
+    // Requeue safe orphaned claims, but quarantine uncertain MAX deliveries.
+    // The durable MAX journal is never cleared by the missing-post sweep.
     await this._postService.resetStalePublishingToQueue();
+    try {
+    const maxPending = await this._postService.pendingMaxOccurrences();
+    for (const occurrence of maxPending) {
+      if (isInngestEnabled()) await inngest.send({ name: 'post/publish',
+        id: `max_recovery_${occurrence.id}_${uuidv4()}`,
+        data: { postId: occurrence.postId, organizationId: occurrence.organizationId,
+          taskQueue: 'max', maxConcurrentJob: 1, postNow: true, repeat: true, maxOccurrenceId: occurrence.id, maxDeliveryAttempt: occurrence.attempt + 1 } });
+    }
+    } catch {
+      // MAX-specific recovery must not prevent the ordinary provider sweep.
+      this.logger.warn('MAX occurrence recovery failed; ordinary recovery continues');
+    }
     const list = await this._postService.searchForMissingThreeHoursPosts();
     for (const post of list) {
       // 5.4: thread the row's pinned version so recovery resolves the EXACT
@@ -461,7 +476,7 @@ export class PostActivity {
     }
   }
 
-  async postSocial(integration: Integration, posts: Post[]) {
+  async postSocial(integration: Integration, posts: Post[], maxOccurrenceId?: string, maxDeliveryAttempt?: number) {
     if (await this._bailIfDeleted(posts)) {
       return [];
     }
@@ -545,6 +560,14 @@ export class PostActivity {
       );
     }
 
+    const maxAttempt = integration.providerIdentifier === 'max'
+      ? await this._postService.beginMaxDelivery(posts[0].id, integration.organizationId, {
+        content: postPayload[0].message, integrationName: integration.name,
+        integrationId: integration.id, chatId: integration.internalId, version: integration.providerVersion ?? 'v1',
+        textSha256: createHash('sha256').update(postPayload[0].message).digest('hex'),
+      }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
+    if (maxAttempt?.alreadyConfirmed) return [];
+    if (integration.providerIdentifier === 'max' && (!maxAttempt || maxAttempt.blocked || !Number.isInteger(maxAttempt.attempt))) throw new BadBodyError('max', '{}', '', 'MAX delivery unknown or already in progress: operator review required');
     let postNow;
     try {
       postNow = await runWithVpnDispatcher(vpnDispatcher, () =>
@@ -556,6 +579,10 @@ export class PostActivity {
           clientInformation
         )
       );
+      if (maxAttempt) {
+        if (!postNow?.[0]?.postId) throw new BadBodyError('max', '{}', '', 'MAX delivery unconfirmed; operator review required');
+        await this._postService.confirmMaxDelivery(posts[0].id, integration.organizationId, maxAttempt.attempt, postNow[0], maxAttempt.occurrenceId);
+      }
       this._socialBreaker.recordSuccess(breakerKey);
     } catch (err) {
       // Only count infra-class failures (timeouts, 5xx, network) toward the breaker.
@@ -697,7 +724,7 @@ export class PostActivity {
     );
   }
 
-  async sendWebhooks(postId: string, orgId: string, integrationId: string) {
+  async sendWebhooks(postId: string, orgId: string, integrationId: string, maxOccurrenceId?: string) {
     const webhooks = (await this._webhookService.getWebhooks(orgId)).filter(
       (f) => {
         return (
@@ -708,7 +735,10 @@ export class PostActivity {
       }
     );
 
-    const post = await this._postService.getPostByForWebhookId(postId, orgId);
+    const post = maxOccurrenceId
+      ? await this._postService.maxWebhookSnapshot(postId, orgId, maxOccurrenceId)
+      : await this._postService.getPostByForWebhookId(postId, orgId);
+    if (maxOccurrenceId && !post) return;
     const root = Array.isArray(post) ? post[0] : post;
 
     // D4: stable, documented minimal subset — never ship the raw Prisma row.
@@ -717,6 +747,7 @@ export class PostActivity {
       timestamp: new Date().toISOString(),
       data: {
         postId: root?.id ?? postId,
+        ...(maxOccurrenceId ? { occurrenceId: maxOccurrenceId } : {}),
         integrationId,
         providerIdentifier: root?.integration?.providerIdentifier ?? null,
         integrationName: root?.integration?.name ?? null,

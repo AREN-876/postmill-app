@@ -62,3 +62,7 @@ Sources (verify current docs while implementing):
 
 ## Codex task to execute
 Read this brief and the repository's existing `AGENTS.md` / provider instructions. Inspect the v1.4.0 Telegram adapter only as a reference for token-only setup (do not reuse Telegram API logic). Implement the narrow MVP in `feat/max-provider`; test with no live credentials; report remaining limitations and submit changes for code review. Never deploy.
+
+## MVP implementation
+
+See [MAX channel guide](user-guide/max.md) for connection, mock validation, API evidence and limitations.

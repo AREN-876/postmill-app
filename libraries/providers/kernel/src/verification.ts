@@ -10,8 +10,9 @@ import { ProviderDomain } from './identity';
 // still lacks — they surface a "Beta" badge in the settings UI until smoke-tested.
 //
 // Keys are `domain/providerId` (version-agnostic). Membership is intentionally narrow:
-// only the documented "built without a live key" media + content-pack providers.
+// only providers explicitly documented as built without live verification.
 export const BETA_PROVIDER_KEYS: ReadonlySet<string> = new Set<string>([
+  'social/max', // Synthetic fixtures only; live sandbox verification is pending.
   // Media — bespoke own-key studios built without a live key
   'media/wan',
   'media/higgsfield',

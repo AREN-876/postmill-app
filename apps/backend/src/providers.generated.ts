@@ -77,6 +77,7 @@ import lumaModules from '@postmill-ai/provider-luma';
 import magnificModules from '@postmill-ai/provider-magnific';
 import mailgunModules from '@postmill-ai/provider-mailgun';
 import mastodonModules from '@postmill-ai/provider-mastodon';
+import maxModules from '@postmill-ai/provider-max';
 import matrixModules from '@postmill-ai/provider-matrix';
 import medialockerModules from '@postmill-ai/provider-medialocker';
 import mediumModules from '@postmill-ai/provider-medium';
@@ -244,6 +245,7 @@ export const providerModules: ProviderModule<any, any>[] = [
   ...magnificModules,
   ...mailgunModules,
   ...mastodonModules,
+  ...maxModules,
   ...matrixModules,
   ...medialockerModules,
   ...mediumModules,

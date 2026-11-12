@@ -93,6 +93,7 @@
     "@postmill-ai/provider-luma": "workspace:*",
     "@postmill-ai/provider-magnific": "workspace:*",
     "@postmill-ai/provider-mailgun": "workspace:*",
+    "@postmill-ai/provider-max": "workspace:*",
     "@postmill-ai/provider-mastodon": "workspace:*",
     "@postmill-ai/provider-matrix": "workspace:*",
     "@postmill-ai/provider-medialocker": "workspace:*",

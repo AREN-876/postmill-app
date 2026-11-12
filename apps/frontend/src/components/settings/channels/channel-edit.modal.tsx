@@ -417,7 +417,9 @@ export const ChannelConfigForm: FC<ChannelConfigFormProps> = ({
   // (Telegram's /connect-word discovery) or complete the token-validation
   // connect inline (LINE validates the token server-side — no user step).
   const handleTokenConnect = useCallback(async () => {
-    const saved = await saveConfig();
+    // MAX has no env app: enable the saved token set so the org availability
+    // gate can validate it. This does not create a connected channel or post.
+    const saved = await saveConfig(identifier === 'max' ? { enable: true } : undefined);
     if (!saved) return;
     const id = saved.id;
     if (!id) {
@@ -684,7 +686,7 @@ export const ChannelConfigForm: FC<ChannelConfigFormProps> = ({
       <ol className="flex flex-col gap-[4px] list-decimal ps-[18px]">
         {setup.setupSteps!.map((step, idx) => (
           <li key={idx} className="text-[13px] text-newTableText">
-            {step}
+            {identifier === 'max' ? t(`max_setup_step_${idx + 1}`, step) : step}
           </li>
         ))}
       </ol>

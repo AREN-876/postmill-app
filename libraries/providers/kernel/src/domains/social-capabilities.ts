@@ -18,6 +18,11 @@ export interface ProviderCapability {
 }
 
 export const PROVIDER_CAPABILITIES: Record<string, ProviderCapability> = {
+  max: {
+    analytics: false, comments: false, firstComment: false, poll: false,
+    video: false, carousel: false, altText: false, maxMedia: 0,
+    linkPreview: false, refreshToken: false, watchlist: false, richText: false,
+  },
   'x': {
     analytics: true,
     comments: true,

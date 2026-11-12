@@ -185,6 +185,12 @@ The bridge exposes these on the kernel capability only when present (presence-pr
 ## 8. Outbound HTTP and error semantics
 
 - **All** platform HTTP goes through `this.fetch(url, options, identifier?)` (inherited from `SocialAbstract`, `social-base.ts:189`). It enforces the SSRF dispatcher, per-channel VPN egress, a 30s default timeout (`OUTBOUND_HTTP_TIMEOUT_MS`), and 429/5xx retry (max 2 retries, 5s backoff). **Never bare `fetch()`.**
+- For a write without a guaranteed idempotency/reconciliation contract, pass
+  `{ retryPolicy: 'none' }` in the `SocialAbstract.fetch` request options (MAX message POSTs
+  do this). This request-local policy suppresses every HTTP retry branch, including
+  rate-limit bodies; it is stripped before calling the transport. Defaults are unchanged
+  for existing providers and GET requests. It does not make manual/workflow retries safe:
+  ambiguous delivery must become a non-retriable publish error with reconciliation guidance.
 - Downloading user/stored media URLs uses `safeFetch` from `@postmill-ai/provider-kernel` (port-bound to the real SSRF-safe implementation): `await safeFetch(m.path).then((r) => r.blob())`.
 - Override `handleErrors(body: string, status: number)` to map platform error payloads; return `undefined` to fall through to defaults:
   - `{ type: 'refresh-token', value }` → throws `RefreshTokenError` → the publish pipeline refreshes the token and retries (401 with no handler also becomes `RefreshTokenError`).
