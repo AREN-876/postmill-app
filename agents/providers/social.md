@@ -189,6 +189,12 @@ The bridge exposes these on the kernel capability only when present (presence-pr
 ## 8. Outbound HTTP and error semantics
 
 - **All** platform HTTP goes through `this.fetch(url, options, identifier?)` (inherited from `SocialAbstract`, `social-base.ts:189`). It enforces the SSRF dispatcher, per-channel VPN egress, a 30s default timeout (`OUTBOUND_HTTP_TIMEOUT_MS`), and 429/5xx retry (max 2 retries, 5s backoff). **Never bare `fetch()`.**
+- For a write without a guaranteed idempotency/reconciliation contract, pass
+  `{ retryPolicy: 'none' }` in the `SocialAbstract.fetch` request options (MAX message POSTs
+  do this). This request-local policy suppresses every HTTP retry branch, including
+  rate-limit bodies; it is stripped before calling the transport. Defaults are unchanged
+  for existing providers and GET requests. It does not make manual/workflow retries safe:
+  ambiguous delivery must become a non-retriable publish error with reconciliation guidance.
 - Downloading user/stored media URLs uses `safeFetch` from `@postmill-ai/provider-kernel` (port-bound to the real SSRF-safe implementation): `await safeFetch(m.path).then((r) => r.blob())`.
 - Override `handleErrors(body: string, status: number)` to map platform error payloads; return `undefined` to fall through to defaults:
   - `{ type: 'refresh-token', value }` → throws `RefreshTokenError` → the publish pipeline refreshes the token and retries (401 with no handler also becomes `RefreshTokenError`).
@@ -252,3 +258,7 @@ Per `agents/providers/overview.md`, the full add-a-provider sequence is: create 
 9. [ ] Frontend: create `apps/frontend/src/components/composer/providers/<id>/<id>.provider.tsx` with `withProvider`, register in `show.all.providers.tsx` `Providers` array, and add `apps/frontend/public/icons/platforms/<identifier>.png`.
 10. [ ] Add adapter unit tests; run `vitest run --root libraries/providers/<id>` and `vitest run --root libraries/providers/kernel` (conformance + oauth-state guards).
 11. [ ] Update the maintained docs site per repo policy (channels count, new env vars if any).
+
+## MAX text delivery invariant
+
+`social/max@v1` is text-only. Its `SocialAbstract.fetch` calls use request-local `retryPolicy: 'none'` for message POSTs; other requests/providers keep the default. Do not move this option into the underlying HTTP headers/options or enable POST retries. Every MAX send must pass the PostgreSQL occurrence/attempt gate immediately before invoking the provider, even on Inngest replay. `Post.maxTarget` binds the org-scoped Integration, exact channel, named configuration, version and encrypted-token hash; only explicit rescheduling rebinds an existing post. Never persist decrypted credentials in events, snapshots or logs. See `docs/max-occurrence-scheduling.md` and `docs/max-delivery-recovery.md` for state/rollout contracts.

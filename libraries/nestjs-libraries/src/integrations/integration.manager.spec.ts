@@ -1090,6 +1090,19 @@ describe('IntegrationManager', () => {
   // ---- Credential resolution (explicit configId BYO > platform env app) ----
 
   describe('getClientInformation', () => {
+    it.each([undefined, { identifier: 'telegram', enabled: true }, { identifier: 'max', enabled: false }])('MAX rejects missing/foreign/disabled named config %# without resolving any credential', async bound => {
+      mockOrgPcm.getConfigById.mockResolvedValue(bound as any);
+      expect(await manager.getClientInformation('max', 'org-1', 'chosen')).toBeUndefined();
+      expect(mockOrgPcm.getClientInfoById).not.toHaveBeenCalled();
+    });
+    it('MAX resolves only the explicit org-scoped named set', async () => {
+      mockOrgPcm.getConfigById.mockResolvedValue({ identifier: 'max', enabled: true, version: 'v1' } as any);
+      mockOrgPcm.getClientInfoById.mockResolvedValue({ client_id: 'synthetic-B', client_secret: '', instanceUrl: '' });
+      expect(await manager.getClientInformation('max','org-1','B')).toMatchObject({ client_id: 'synthetic-B' });
+      expect(mockOrgPcm.getClientInfoById).toHaveBeenCalledWith('org-1','B');
+      expect(mockOrgPcm.getClientInfo).not.toHaveBeenCalled();
+    });
+
     it('returns env app credentials without an orgId (env-only resolution)', async () => {
       stubEnvApp('x');
 

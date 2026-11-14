@@ -194,7 +194,8 @@ export class OrgProviderConfigManager {
     }
     if (!config.clientId && !config.clientSecret) {
       if (!token) return undefined;
-    } else if (!config.clientId || !config.clientSecret) {
+    } else if ((!config.clientId || !config.clientSecret) &&
+      !(config.identifier === 'max' && config.clientId)) {
       return undefined;
     }
     return {
