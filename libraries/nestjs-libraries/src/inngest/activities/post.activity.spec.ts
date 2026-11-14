@@ -80,7 +80,7 @@ describe('PostActivity.searchForMissingThreeHoursPosts recovery id (0.8)', () =>
     };
     const { activity } = build({
       _postService: {
-        resetStalePublishingToQueue: vi.fn().mockResolvedValue(0),
+        resetStalePublishingToQueue: vi.fn().mockResolvedValue(0), pendingMaxOccurrences: vi.fn().mockResolvedValue([]),
         searchForMissingThreeHoursPosts: vi.fn().mockResolvedValue([post, post]),
       },
       _integrationManager: {
@@ -122,7 +122,7 @@ describe('PostActivity.searchForMissingThreeHoursPosts PUBLISHING recovery (0.7 
       });
     const { activity } = build({
       _postService: {
-        resetStalePublishingToQueue,
+        resetStalePublishingToQueue, pendingMaxOccurrences: vi.fn().mockResolvedValue([]),
         searchForMissingThreeHoursPosts,
       },
     });
@@ -176,6 +176,17 @@ describe('slimPost via getPostsList (2.5)', () => {
     // non-secret fields preserved
     expect(post.integration.id).toBe('int-1');
     expect(post.integration.providerIdentifier).toBe('x');
+  });
+});
+
+describe('MAX recovery isolation', () => {
+  it('continues the ordinary sweep when the MAX journal is unavailable', async () => {
+    const search = vi.fn().mockResolvedValue([]);
+    const { activity } = build({ _postService: { resetStalePublishingToQueue: vi.fn(),
+      pendingMaxOccurrences: vi.fn().mockRejectedValue(new Error('synthetic MAX journal failure')),
+      searchForMissingThreeHoursPosts: search } });
+    await activity.searchForMissingThreeHoursPosts();
+    expect(search).toHaveBeenCalledTimes(1);
   });
 });
 

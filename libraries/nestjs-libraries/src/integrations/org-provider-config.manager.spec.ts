@@ -51,6 +51,15 @@ describe('OrgProviderConfigManager', () => {
     vi.restoreAllMocks();
   });
 
+  it('resolves a pinned MAX bot token without an OAuth client secret', async () => {
+    mockOrgProviderConfigService.getDecryptedConfigs.mockResolvedValue([
+      makeConfig({ identifier: 'max', clientId: 'synthetic-max-token', clientSecret: undefined }),
+    ]);
+    expect(await manager.getClientInfoById('org-1', 'cfg-1')).toEqual({
+      client_id: 'synthetic-max-token', client_secret: '', instanceUrl: '',
+    });
+  });
+
   describe('getClientInfo', () => {
     it('returns the classic client info shape when additionalConfig is absent', async () => {
       mockOrgProviderConfigService.getDecryptedConfigs.mockResolvedValue([

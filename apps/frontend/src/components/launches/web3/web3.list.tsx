@@ -1,4 +1,5 @@
 import { FC } from 'react';
+import { MaxProvider } from './providers/max.provider';
 import { Web3ProviderInterface } from '@postmill-ai/frontend/components/launches/web3/web3.provider.interface';
 import { WrapcasterProvider } from '@postmill-ai/frontend/components/launches/web3/providers/wrapcaster.provider';
 import { TelegramProvider } from '@postmill-ai/frontend/components/launches/web3/providers/telegram.provider';
@@ -7,6 +8,7 @@ export const web3List: {
   identifier: string;
   component: FC<Web3ProviderInterface>;
 }[] = [
+  { identifier: 'max', component: MaxProvider },
   {
     identifier: 'telegram',
     component: TelegramProvider,
