@@ -663,6 +663,7 @@ function makePostsService(overrides: Record<string, any> = {}) {
     getPostsByGroup: vi.fn(),
     changeState: vi.fn().mockResolvedValue(undefined),
     changeDate: vi.fn().mockResolvedValue({ date: '2030-01-01' }),
+    changeMaxDate: vi.fn().mockResolvedValue({ date: '2030-01-01' }),
     countPostsFromDay: vi.fn().mockResolvedValue(0),
     getScheduledPostDates: vi.fn().mockResolvedValue([]),
     getPostsCountsByDates: vi.fn().mockResolvedValue([]),
@@ -1119,6 +1120,17 @@ describe('4.1b — changeDate guards', () => {
     expect(postRepository.changeDate).toHaveBeenCalled();
     expect(startSpy).not.toHaveBeenCalled();
   });
+  it.each(['schedule', 'update'] as const)('MAX published template: %s only enqueues on explicit scheduling', async action => {
+    const { service, postRepository } = makePostsService();
+    postRepository.getPostById.mockResolvedValue({ id: 'p1', state: 'PUBLISHED', integration: { providerIdentifier: 'max', providerVersion: 'v1' } });
+    const start = vi.spyOn(service, 'startWorkflow').mockResolvedValue(undefined);
+    await service.changeDate('org-1', 'p1', '2030-01-01', action);
+    expect(postRepository.changeMaxDate).toHaveBeenCalledWith('org-1', 'p1', '2030-01-01', false, action);
+    expect(postRepository.changeDate).not.toHaveBeenCalled();
+    if (action === 'schedule') expect(start).toHaveBeenCalledWith('max', 'p1', 'org-1', 'QUEUE', 'v1');
+    else expect(start).not.toHaveBeenCalled();
+  });
+
 });
 
 describe('1.4 — schedule-per-day counts + gap suppression', () => {
@@ -1196,6 +1208,21 @@ describe('1.2 — retry post', () => {
       expect.any(Date),
     );
     expect(startSpy).toHaveBeenCalledWith('x', 'p1', 'org-1', State.QUEUE, 'v1');
+  });
+
+  it('requires explicit operator confirmation before retrying uncertain MAX delivery', async () => {
+    const authorizeMaxRetry = vi.fn().mockResolvedValue(true);
+    const { service, postRepository } = makePostsService({ postRepository: {
+      authorizeMaxRetry, getPostById: vi.fn().mockResolvedValue({ id: 'p1', organizationId: 'org-1', state: 'ERROR',
+        publishDate: new Date(), maxDelivery: { state: 'STARTED', attempt: 1 }, integration: { providerIdentifier: 'max', providerVersion: 'v1' } }),
+    } });
+    vi.spyOn(service, 'startWorkflow').mockResolvedValue(undefined);
+    await expect(service.retryPost('org-1', 'p1')).rejects.toThrow('explicit');
+    expect(postRepository.retryPost).not.toHaveBeenCalled();
+    expect(authorizeMaxRetry).not.toHaveBeenCalled();
+    await service.retryPost('org-1', 'p1', { occurrenceId: 'occ-1', expectedAttempt: 1, confirmation: 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' }, 'operator-id');
+    expect(authorizeMaxRetry).toHaveBeenCalledWith('p1', 'org-1', 1, 'operator-id', 'occ-1');
+    expect(postRepository.retryPost).not.toHaveBeenCalled();
   });
 
   it('rejects non-ERROR posts', async () => {

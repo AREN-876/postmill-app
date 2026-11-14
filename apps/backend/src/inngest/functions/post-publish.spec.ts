@@ -111,6 +111,7 @@ describe('createPostPublishFunctions', () => {
 const makeStep = () => ({
   run: vi.fn(async (_id: string, fn: () => any) => fn()),
   sleep: vi.fn(async () => {}),
+  sleepUntil: vi.fn(async () => {}),
   sendEvent: vi.fn(async () => {}),
 });
 
@@ -410,6 +411,81 @@ describe('runPostPublish handler', () => {
     // the post itself published before the marker write
     expect(activity.postSocial).toHaveBeenCalledTimes(1);
     expect(activity.notifyPostPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['CONFIRMED', 'REVIEW', 'CANCELLED'])('MAX %s occurrence cannot emit a false publication notification or webhook', async state => {
+    const post = rootPost({ intervalInDays: 1 }); post.integration.providerIdentifier = 'max';
+    const activity = makeActivity({ getPost: vi.fn(async()=>post), getPostsList: vi.fn(async()=>[post]),
+      planMaxOccurrence: vi.fn(async()=>({ current:{id:'occ-1',state,scheduledAt:new Date(0)},next: state==='CANCELLED'?null:{id:'occ-2',state:'READY',attempt:0} })) });
+    await getHandler(activity)({step:makeStep(), event:runEvent({taskQueue:'max',postNow:true,repeat:true,maxOccurrenceId:'occ-1'})});
+    expect(activity.postSocial).not.toHaveBeenCalled(); expect(activity.notifyPostPublished).not.toHaveBeenCalled(); expect(activity.sendWebhooks).not.toHaveBeenCalled();
+  });
+  it('a historical MAX duplicate does not fan out already-confirmed successors', async()=>{
+    const post=rootPost();post.integration.providerIdentifier='max';
+    const activity=makeActivity({getPost:vi.fn(async()=>post),planMaxOccurrence:vi.fn(async()=>({current:{id:'old',state:'CONFIRMED',scheduledAt:new Date(0)},next:{id:'old-next',state:'CONFIRMED',attempt:1}}))});
+    const step=makeStep();await getHandler(activity)({step,event:runEvent({maxOccurrenceId:'old',maxDeliveryAttempt:1})});
+    expect(step.sendEvent).not.toHaveBeenCalled();expect(activity.postSocial).not.toHaveBeenCalled();expect(activity.notifyPostPublished).not.toHaveBeenCalled();
+  });
+  it('MAX repeat IDs change per occurrence and are stable on delivery replay', async()=>{
+    const post=rootPost({intervalInDays:1}); post.integration.providerIdentifier='max';
+    const activity=makeActivity({getPost:vi.fn(async()=>post),getPostsList:vi.fn(async()=>[post]),
+      planMaxOccurrence:vi.fn(async (_id,_org,occ)=>({current:{id:occ,state:'READY',scheduledAt:new Date(0)},next:{id:occ==='occ-1'?'occ-2':'occ-3',state:'READY',attempt:0}}))});
+    const handler=getHandler(activity);const ids=[];
+    for(const occ of ['occ-1','occ-2','occ-1']) {const step=makeStep();await handler({step,event:runEvent({taskQueue:'max',postNow:true,repeat:true,maxOccurrenceId:occ})});ids.push((step.sendEvent.mock.calls[0] as any)[1].id);}
+    expect(ids).toEqual(['max_occurrence_occ-2','max_occurrence_occ-3','max_occurrence_occ-2']);
+  });
+  it('MAX replay returning no new delivery never triggers success side effects',async()=>{
+    const post=rootPost();post.integration.providerIdentifier='max';
+    const activity=makeActivity({getPost:vi.fn(async()=>post),getPostsList:vi.fn(async()=>[post]),postSocial:vi.fn(async()=>[]),
+      planMaxOccurrence:vi.fn(async()=>({current:{id:'occ-1',state:'READY',scheduledAt:new Date(0)},next:null}))});
+    await getHandler(activity)({step:makeStep(),event:runEvent({maxOccurrenceId:'occ-1'})});
+    expect(activity.notifyPostPublished).not.toHaveBeenCalled();expect(activity.sendWebhooks).not.toHaveBeenCalled();
+  });
+  it('MAX waits for the absolute millisecond deadline before claiming a scheduled release', async () => {
+    vi.useFakeTimers();
+    try {
+      const due = new Date('2026-11-12T07:09:21.706Z');
+      vi.setSystemTime(new Date('2026-11-12T07:09:02.043Z'));
+      const post = rootPost();
+      post.integration.providerIdentifier = 'max';
+      const activity = makeActivity({
+        getPost: vi.fn(async () => post),
+        getPostsList: vi.fn(async () => [post]),
+        planMaxOccurrence: vi.fn(async () => ({ current: { id: 'occ-1', state: 'READY', scheduledAt: due.toISOString() }, next: null })),
+        postSocial: vi.fn(async () => {
+          // Matches the PostgreSQL journal's not-before condition. A relative
+          // 19.663s wait is serialized as 19s by the SDK and fails this guard.
+          expect(Date.now()).toBeGreaterThanOrEqual(due.getTime());
+          return [];
+        }),
+      });
+      const step = makeStep();
+      step.sleepUntil.mockImplementation(async (...args: any[]) => {
+        // Exercise the real Dev Server's whole-second timer resolution.
+        vi.setSystemTime(Math.floor(args[1].getTime() / 1000) * 1000);
+      });
+      await getHandler(activity)({ step, event: runEvent({ maxOccurrenceId: 'occ-1' }) });
+      expect(step.sleepUntil).toHaveBeenCalledWith('max-occurrence-due', new Date('2026-11-12T07:09:22.000Z'));
+      expect(step.sleep).not.toHaveBeenCalled();
+      expect(activity.postSocial).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('MAX uncertain delivery schedules the next occurrence but never reports success',async()=>{
+    const post=rootPost();post.integration.providerIdentifier='max';
+    const activity=makeActivity({getPost:vi.fn(async()=>post),getPostsList:vi.fn(async()=>[post]),postSocial:vi.fn(async()=>{throw Error('unknown delivery')}),
+      failMaxOccurrence:vi.fn(async()=>{}),planMaxOccurrence:vi.fn(async()=>({current:{id:'occ-1',state:'READY',scheduledAt:new Date(0)},next:{id:'occ-2',state:'READY',attempt:0}}))});
+    const step=makeStep();await getHandler(activity)({step,event:runEvent({maxOccurrenceId:'occ-1'})});
+    expect(step.sendEvent).toHaveBeenCalledTimes(1);expect(activity.failMaxOccurrence).toHaveBeenCalledWith('post-1','org-1','occ-1');
+    expect(activity.notifyPostPublished).not.toHaveBeenCalled();expect(activity.sendWebhooks).not.toHaveBeenCalled();
+  });
+  it('MAX pause during sleep and unstamped legacy repeat events are no-ops',async()=>{
+    const post=rootPost();post.integration.providerIdentifier='max';
+    const activity=makeActivity({getPost:vi.fn(async()=>post),planMaxOccurrence:vi.fn().mockResolvedValueOnce({current:{id:'occ-1',state:'READY',scheduledAt:new Date(0)}}).mockResolvedValueOnce(null)});
+    const handler=getHandler(activity);await handler({step:makeStep(),event:runEvent({maxOccurrenceId:'occ-1'})});
+    await handler({step:makeStep(),event:runEvent({postNow:true,repeat:true})});
+    expect(activity.postSocial).not.toHaveBeenCalled();expect(activity.notifyPostPublished).not.toHaveBeenCalled();
   });
 
   it('4.4f — repeat-post uses a deterministic id and carries repeat:true', async () => {

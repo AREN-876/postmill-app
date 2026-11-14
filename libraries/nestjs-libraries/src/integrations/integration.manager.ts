@@ -364,6 +364,10 @@ export class IntegrationManager {
     // default when there is no org context or no bound config). This version is
     // returned with the credentials so callers can resolve the exact provider
     // adapter that matches the pinned config.
+    if (integration === 'max' && orgId && configId) {
+      const bound = await this._orgProviderConfigManager.getConfigById(orgId, configId);
+      if (!bound || bound.identifier !== 'max' || !bound.enabled) return undefined;
+    }
     const configVersion =
       orgId && configId
         ? (await this._orgProviderConfigManager.getConfigById(orgId, configId))
@@ -479,6 +483,7 @@ export class IntegrationManager {
               name: p.name,
               id: p.id,
               internalId: p.internalId,
+              ...(p.providerIdentifier === 'max' ? { providerConfigId: p.providerConfigId } : {}),
               disabled: p.disabled,
               editor: findIntegration.editor,
               stripLinks: !!findIntegration?.stripLinks?.(),

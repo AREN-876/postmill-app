@@ -498,6 +498,9 @@ importers:
       '@postmill-ai/provider-matrix':
         specifier: workspace:*
         version: file:libraries/providers/matrix(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
+      '@postmill-ai/provider-max':
+        specifier: workspace:*
+        version: file:libraries/providers/max(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
       '@postmill-ai/provider-medialocker':
         specifier: workspace:*
         version: file:libraries/providers/medialocker(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
@@ -2332,6 +2335,12 @@ importers:
         version: file:libraries/providers/kernel(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@7.30.1)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@7.30.1)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
 
   libraries/providers/matrix:
+    dependencies:
+      '@postmill-ai/provider-kernel':
+        specifier: workspace:*
+        version: file:libraries/providers/kernel(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@7.30.1)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@7.30.1)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
+
+  libraries/providers/max:
     dependencies:
       '@postmill-ai/provider-kernel':
         specifier: workspace:*
@@ -8725,6 +8734,10 @@ packages:
 
   '@postmill-ai/provider-matrix@file:libraries/providers/matrix':
     resolution: {directory: libraries/providers/matrix, type: directory}
+    engines: {node: '>=24.0.0 <25.0.0'}
+
+  '@postmill-ai/provider-max@file:libraries/providers/max':
+    resolution: {directory: libraries/providers/max, type: directory}
     engines: {node: '>=24.0.0 <25.0.0'}
 
   '@postmill-ai/provider-medialocker@file:libraries/providers/medialocker':
@@ -31752,6 +31765,23 @@ snapshots:
       - zod
 
   '@postmill-ai/provider-matrix@file:libraries/providers/matrix(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)':
+    dependencies:
+      '@postmill-ai/provider-kernel': file:libraries/providers/kernel(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@opentelemetry/api'
+      - '@opentelemetry/exporter-trace-otlp-proto'
+      - '@opentelemetry/sdk-trace-base'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - google-auth-library
+      - openai
+      - supports-color
+      - undici
+      - ws
+      - zod
+
+  '@postmill-ai/provider-max@file:libraries/providers/max(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)':
     dependencies:
       '@postmill-ai/provider-kernel': file:libraries/providers/kernel(@aws-sdk/credential-provider-node@3.972.88)(@opentelemetry/api@1.10.0)(@opentelemetry/exporter-trace-otlp-proto@0.219.0(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.10.0))(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(openai@7.42.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.3.6)(@smithy/signature-v4@5.7.4)(google-auth-library@9.15.1)(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7))(undici@8.12.3)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.6.7)
     transitivePeerDependencies:

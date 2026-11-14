@@ -1,4 +1,5 @@
 'use client';
+import { supportsMediaAttachments } from './media-capabilities';
 
 import React, {
   FC,
@@ -560,6 +561,7 @@ export const Editor: FC<{
     childButton,
     comments,
   } = props;
+  const mediaNotAvailable = !supportsMediaAttachments(identifier) || (num > 0 && comments === 'no-media');
   const [id] = useState(makeId(10));
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   // The emoji picker is portaled to <body> (fixed) so the horizontally-scrolling
@@ -622,6 +624,7 @@ export const Editor: FC<{
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
+      if (mediaNotAvailable) return;
       const totalSize = acceptedFiles.reduce((acc, file) => acc + file.size, 0);
 
       if (totalSize > MAX_UPLOAD_SIZE) {
@@ -641,12 +644,12 @@ export const Editor: FC<{
         uppy.addFile(file);
       }
     },
-    [uppy, toaster, t]
+    [uppy, toaster, t, mediaNotAvailable]
   );
 
   const paste = useCallback(
     async (event: ClipboardEvent | File[]) => {
-      if (num > 0 && comments === 'no-media') {
+      if (mediaNotAvailable) {
         return;
       }
       // @ts-ignore
@@ -687,7 +690,7 @@ export const Editor: FC<{
         uppy.addFile(file);
       }
     },
-    [uppy, num, comments, toaster, t]
+    [uppy, mediaNotAvailable, toaster, t]
   );
 
   const { getRootProps, isDragActive } = useDropzone({
@@ -701,7 +704,7 @@ export const Editor: FC<{
       }
       onDrop(files);
     },
-    noDrag: num > 0 && comments === 'no-media',
+    noDrag: mediaNotAvailable,
   });
 
   const valueWithoutHtml = useMemo(() => {
@@ -785,7 +788,7 @@ export const Editor: FC<{
             <div className="flex bg-newBgColorInner rounded-b-[6px] cursor-default">
               {setImages && (
                 <MultiFileComponent
-                  mediaNotAvailable={num > 0 && comments === 'no-media'}
+                  mediaNotAvailable={mediaNotAvailable}
                   allData={allValues}
                   text={valueWithoutHtml}
                   label={t('attachments', 'Attachments')}
