@@ -40,6 +40,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Verify MAX-02 source commit
         run: |
