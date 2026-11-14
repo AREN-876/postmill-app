@@ -43,8 +43,9 @@ vi.mock(
   })
 );
 
-vi.mock('@postmill-ai/frontend/components/launches/web3/web3.list', () => ({
+vi.mock('@postmill-ai/frontend/components/launches/web3/web3.list', async () => ({
   web3List: [
+    { identifier: 'max', component: (await import('../../launches/web3/providers/max.provider')).MaxProvider },
     {
       identifier: 'telegram',
       component: (props: {
@@ -120,7 +121,7 @@ const TOKEN_SETUP = {
 };
 
 function renderTokenForm(
-  identifier: 'telegram' | 'line',
+  identifier: 'telegram' | 'line' | 'max',
   opts: { platformConfigured?: boolean; edit?: boolean } = {}
 ) {
   const onClose = vi.fn();
@@ -129,7 +130,7 @@ function renderTokenForm(
     <SWRConfig value={{ provider: () => new Map() }}>
       <ChannelConfigForm
         identifier={identifier}
-        providerName={identifier === 'telegram' ? 'Telegram' : 'LINE'}
+        providerName={identifier === 'max' ? 'MAX' : identifier === 'telegram' ? 'Telegram' : 'LINE'}
         platformConfigured={opts.platformConfigured ?? true}
         setup={TOKEN_SETUP}
         config={
@@ -440,6 +441,27 @@ describe('ChannelConfigForm token connect', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
     expect(screen.getByText('Bot Token')).toBeTruthy();
+  });
+
+  it('MAX: collects an explicit chat_id and submits the nonce-bound connection without publishing', async () => {
+    const { onClose } = renderTokenForm('max', { platformConfigured: false, edit: true });
+    fireEvent.change(screen.getByPlaceholderText('e.g. Marketing LinkedIn'), { target: { value: 'MAX test set' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with MAX' }));
+    const input = await screen.findByRole('textbox', { name: 'MAX channel chat_id' });
+    const button = screen.getByRole('button', { name: 'Validate test channel' });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.change(input, { target: { value: 'not-an-id' } });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.change(input, { target: { value: '9223372036854775808' } });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.change(input, { target: { value: '-123456' } });
+    fireEvent.click(button);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const call = mockFetch.mock.calls.find(([url]) => url === '/integrations/social-connect/max');
+    expect(JSON.parse(call![1].body)).toMatchObject({ code: '-123456', state: 'nonce-123' });
+    const configSave = mockFetch.mock.calls.find(([url]) => url === '/channels/config/cfg-tok');
+    expect(JSON.parse(configSave![1].body).enabled).toBe(true);
+    expect(mockFetch.mock.calls.some(([url]) => url.includes('/messages'))).toBe(false);
   });
 
   it('telegram: Connect renders the interactive connect view with the minted nonce', async () => {

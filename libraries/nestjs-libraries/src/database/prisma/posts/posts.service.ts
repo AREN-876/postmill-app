@@ -108,6 +108,19 @@ export class PostsService {
     return this._postRepository.resetStalePublishingToQueue();
   }
 
+  maxWebhookSnapshot(id: string, org: string, occurrence: string) { return this._postRepository.maxWebhookSnapshot(id, org, occurrence); }
+  listMaxOccurrences(id: string, org: string, cursor?: string) { return this._postRepository.listMaxOccurrences(id, org, cursor); }
+  initialMaxOccurrence(id: string, org: string) { return this._postRepository.initialMaxOccurrence(id, org); }
+  planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.planMaxOccurrence(id, org, occurrence); }
+  pendingMaxOccurrences() { return this._postRepository.pendingMaxOccurrences(); }
+  failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.failMaxOccurrence(id, org, occurrence); }
+  beginMaxDelivery(id: string, org: string, target: Record<string,string>, occurrence?: string, expectedAttempt?: number) {
+    return this._postRepository.beginMaxDelivery(id, org, target, occurrence, expectedAttempt);
+  }
+  confirmMaxDelivery(id: string, org: string, attempt: number, receipt: any, occurrence: string) {
+    return this._postRepository.confirmMaxDelivery(id, org, attempt, receipt, occurrence);
+  }
+
   updatePost(id: string, postId: string, releaseURL: string, orgId: string) {
     return this._postRepository.updatePost(id, postId, releaseURL, orgId);
   }
@@ -899,7 +912,9 @@ export class PostsService {
     postId: string,
     orgId: string,
     state: State,
-    providerVersion?: string
+    providerVersion?: string,
+    maxOccurrenceId?: string,
+    maxDeliveryAttempt?: number
   ) {
     const provider =
       this._integrationManager.getSocialIntegrationUnchecked(
@@ -910,12 +925,12 @@ export class PostsService {
     const maxConcurrentJob = provider?.maxConcurrentJob ?? 1;
 
     try {
-      if (isInngestEnabled()) {
+      if (isInngestEnabled() && !(providerIdentifier === 'max' && maxOccurrenceId)) {
         await inngest.send({
           name: 'post/cancel',
           data: { postId },
         });
-      } else {
+      } else if (!isInngestEnabled()) {
         this._warnInngestDisabledOnce();
       }
     } catch (err) {
@@ -927,7 +942,15 @@ export class PostsService {
     }
 
     if (state === 'DRAFT') {
+      if (providerIdentifier === 'max') await this._postRepository.pauseMaxOccurrences(postId, orgId);
       return;
+    }
+
+    if (providerIdentifier === 'max' && !maxOccurrenceId) {
+      const occurrence = await this._postRepository.initialMaxOccurrence(postId, orgId);
+      maxOccurrenceId = occurrence?.id;
+      maxDeliveryAttempt = occurrence ? occurrence.attempt + 1 : undefined;
+      if (!maxOccurrenceId) return;
     }
 
     try {
@@ -939,6 +962,7 @@ export class PostsService {
             organizationId: orgId,
             taskQueue,
             maxConcurrentJob,
+            ...(maxOccurrenceId ? { maxOccurrenceId, maxDeliveryAttempt } : {}),
           },
           // Unique-per-send id: a constant `post_${postId}` is an Inngest
           // idempotency key that dedupes every reschedule/edit for ~24h,
@@ -1617,7 +1641,7 @@ export class PostsService {
 
     // schedule: Set status to QUEUE and change date (reschedule the post)
     // update: Just change the date without changing the status
-    const newDate = await this._postRepository.changeDate(
+    const newDate = await (getPostById.integration.providerIdentifier === 'max' ? this._postRepository.changeMaxDate.bind(this._postRepository) : this._postRepository.changeDate.bind(this._postRepository))(
       orgId,
       id,
       date,
@@ -1625,8 +1649,9 @@ export class PostsService {
       action
     );
 
-    // Don't re-queue an already-published post when rescheduling.
-    if (action === 'schedule' && getPostById.state !== 'PUBLISHED') {
+    // MAX explicit reschedule starts a fenced occurrence generation even after a
+    // prior release. Other providers retain their published-post behavior.
+    if (action === 'schedule' && (getPostById.state !== 'PUBLISHED' || getPostById.integration.providerIdentifier === 'max')) {
       try {
         await this.startWorkflow(
           getPostById.integration.providerIdentifier,
@@ -2133,14 +2158,26 @@ export class PostsService {
     return { days: daysArray, gaps };
   }
 
-  async retryPost(orgId: string, postId: string) {
+  async retryPost(orgId: string, postId: string, review?: { expectedAttempt?: number; confirmation?: string; occurrenceId?: string }, actorId?: string) {
     const post = await this._postRepository.getPostById(postId, orgId);
     if (!post || post.organizationId !== orgId) {
       throw new BadRequestException('Post not found');
     }
 
-    if (post.state !== State.ERROR) {
+    if (post.state !== State.ERROR && post.integration?.providerIdentifier !== 'max') {
       throw new BadRequestException('Post is not in an error state');
+    }
+
+    if (post.integration?.providerIdentifier === 'max') {
+      if (review?.confirmation !== 'CHECKED_CHANNEL_AND_STOPPED_OLD_RUNS_ACCEPT_DUPLICATE_RISK' ||
+          !review.occurrenceId || !Number.isInteger(review.expectedAttempt) || !actorId ||
+          !(await this._postRepository.authorizeMaxRetry(postId, orgId, review.expectedAttempt!, actorId, review.occurrenceId))) {
+        throw new BadRequestException('MAX retry requires occurrence, attempt and explicit operator confirmation');
+      }
+      // A repeat occurrence may fail while another occurrence is already published.
+      // Do not mutate the template's schedule/revision or require global ERROR.
+      await this.startWorkflow('max', post.id, orgId, State.QUEUE, post.integration.providerVersion ?? undefined, review.occurrenceId, review.expectedAttempt! + 1);
+      return { success: true };
     }
 
     let publishDate = post.publishDate;

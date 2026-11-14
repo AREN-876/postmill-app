@@ -14,6 +14,8 @@ import { ProviderDomain } from './identity';
 export const BETA_PROVIDER_KEYS: ReadonlySet<string> = new Set<string>([
   // AI — OpenAI-compatible hub built without a live key
   'ai/demonroute',
+  'social/max', // Mock-only verification; live MAX remains unverified.
+
   // Media — bespoke own-key studios built without a live key
   'media/wan',
   'media/higgsfield',
