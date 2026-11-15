@@ -372,7 +372,7 @@ describe('MAX post analytics (synthetic GET only)', () => {
     expect(await provider.postAnalytics(chatId, token, mid, 2)).toEqual([]);
   });
 
-  it.each([401, 403, 404, 429, 500, 503])(
+  it.each([401, 403, 404])(
     'keeps GET %i failures sanitized and never fabricates zero',
     async status => {
       wire.mockResolvedValueOnce(response({ error: token }, status));
@@ -380,6 +380,31 @@ describe('MAX post analytics (synthetic GET only)', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain(token);
       expect(JSON.stringify(error)).not.toContain(token);
+      expect(wire).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retries a rate-limited GET and accepts a later valid response', async () => {
+    wire.mockResolvedValueOnce(response({ error: token }, 429))
+      .mockResolvedValueOnce(response({ messages: [message(17)] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toMatchObject([
+      { label: 'Views', data: [{ total: '17' }] },
+    ]);
+    expect(wire).toHaveBeenCalledTimes(2);
+    expect(timer).toHaveBeenCalledWith(5000);
+    expect(wire.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  });
+
+  it.each([429, 500, 503])(
+    'exhausts GET %i retries without leaking tokens or fabricating views',
+    async status => {
+      wire.mockResolvedValue(response({ error: token }, status));
+      const error = await provider.postAnalytics(chatId, token, mid, 2).catch(e => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).not.toContain(token);
+      expect(JSON.stringify(error)).not.toContain(token);
+      expect(wire).toHaveBeenCalledTimes(4);
+      expect(timer).toHaveBeenCalledTimes(3);
     },
   );
 });
