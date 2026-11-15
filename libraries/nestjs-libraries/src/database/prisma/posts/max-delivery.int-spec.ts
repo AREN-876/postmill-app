@@ -736,6 +736,48 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     expect(o.state).toBe('REVIEW');
     expect(o.attempt).toBe(1);
   });
+  it('defers recurring StoryGo successor until preceding Gateway revision is confirmed', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Вторая часть' }),
+        content: 'Название и первая часть',
+        intervalInDays: 1,
+        publishDate: new Date(Date.now() - 4 * 86400000),
+      },
+    });
+    const first = await repo.initialMaxOccurrence(post.id, org);
+    const next = await due(first);
+    expect((await repo.planMaxOccurrence(post.id, org, next.id))!.deferred).toBe(true);
+
+    const started = await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-first',
+    }, first.id, 1);
+    expect(started?.attempt).toBe(1);
+    await repo.failMaxOccurrence(post.id, org, first.id);
+    expect((await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-next',
+    }, next.id, 1))?.deferred).toBe(true);
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({
+      where: { id: next.id },
+    })).state).toBe('READY');
+    expect(await db.maxDeliveryAttempt.count({
+      where: { occurrenceId: next.id },
+    })).toBe(0);
+
+    // When the previous revision's actual MID is recovered, the original
+    // next occurrence (same UUID) can finally begin; no duplicate job intent.
+    await repo.confirmMaxDelivery(post.id, org, 1,
+      receipt(post.id), first.id);
+    const resumed = await repo.planMaxOccurrence(post.id, org, next.id);
+    expect(resumed?.deferred).toBe(false);
+    const claimed = await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-next',
+    }, next.id, 1);
+    expect(claimed?.attempt).toBe(1);
+  });
+
   it('long series uses separate rows, bounded Post summary and one child per parent', async () => {
     const post = await createPost();
     await db.post.update({
