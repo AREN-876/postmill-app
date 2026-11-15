@@ -383,6 +383,20 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     return null;
   }
 
+  /** Read-only crash recovery: never POST, and never synthesize a MID. */
+  async reconcileStoryGoOperation(id: string, operationId: string): Promise<string | null> {
+    const chatId = this.chatId(id.startsWith('max:') ? id.slice(4) : id);
+    if (typeof operationId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId)) {
+      this.fail('Invalid StoryGo Gateway operation identifier.');
+    }
+    const { origin, secret } = this.gatewayConfig(chatId);
+    const receipt = await this.gatewayRequest(
+      origin, secret, 'GET', '/gateway/v1/publications/' + operationId, operationId,
+    );
+    return this.verifiedGatewayReceipt(receipt, operationId, chatId);
+  }
+
   private async publishStory(
     chatId: string,
     post: PostDetails,
