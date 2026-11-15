@@ -381,6 +381,16 @@ export class MaxOccurrences {
         o.fingerprint !== this.fingerprint(p)
       )
         return false;
+      const originalAttempt = await tx.maxDeliveryAttempt.findUnique({
+        where: { occurrenceId_number: { occurrenceId: id, number: attempt } },
+      });
+      // StoryGo has its own durable operation under this UUID. Even an
+      // operator-approved Postmill retry must not transmit a second POST
+      // after an uncertain result; reconcile by GET or explicitly reschedule
+      // after separately verifying that no MAX post exists.
+      if (typeof (originalAttempt?.target as any)?.storygoOperationId === 'string') {
+        return false;
+      }
       await tx.maxDeliveryAttempt.update({
         where: { occurrenceId_number: { occurrenceId: id, number: attempt } },
         data: {
