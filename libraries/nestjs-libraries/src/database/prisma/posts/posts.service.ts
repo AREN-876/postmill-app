@@ -114,6 +114,7 @@ export class PostsService {
   initialMaxOccurrence(id: string, org: string) { return this._postRepository.initialMaxOccurrence(id, org); }
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.planMaxOccurrence(id, org, occurrence); }
   pendingMaxOccurrences() { return this._postRepository.pendingMaxOccurrences(); }
+  unresolvedStoryGoOccurrences() { return this._postRepository.unresolvedStoryGoOccurrences(); }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.failMaxOccurrence(id, org, occurrence); }
   beginMaxDelivery(id: string, org: string, target: Record<string,string>, occurrence?: string, expectedAttempt?: number) {
     return this._postRepository.beginMaxDelivery(id, org, target, occurrence, expectedAttempt);
