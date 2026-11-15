@@ -548,7 +548,8 @@ export class PostsService {
     }
     const file = await this._fileService.getFileById(orgId, fileId);
     const limit = 8 * 1024 * 1024;
-    if (!file || file.deletedAt || file.type !== 'image' ||
+    if (!file || file.deletedAt ||
+        (file.type !== 'image' && !String(file.type).startsWith('image/')) ||
         !Number.isSafeInteger(file.fileSize) ||
         file.fileSize < 1 || file.fileSize > limit) {
       throw new BadRequestException('StoryGo photo must be an owned PNG/JPEG of at most 8 MiB');
@@ -1112,6 +1113,12 @@ export class PostsService {
           });
           settingsError = this.firstValidationError(validationErrors);
           valid = validationErrors.length === 0;
+        }
+
+        if (integration.providerIdentifier === 'max' && settings.mode !== 'story' &&
+            (settings.storyImageId || settings.continuationText?.trim())) {
+          valid = false;
+          settingsError = 'MAX photo/continuations require Story mode. Clear them before selecting a normal post.';
         }
 
         if (integration.providerIdentifier === 'max' && settings.mode === 'story') {
