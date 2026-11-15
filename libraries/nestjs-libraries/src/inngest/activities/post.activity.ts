@@ -166,7 +166,45 @@ export class PostActivity {
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.planMaxOccurrence(id, org, occurrence); }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.failMaxOccurrence(id, org, occurrence); }
 
+  /**
+   * A confirmed StoryGo MID may survive a Postmill crash between Gateway POST
+   * and PostgreSQL confirmation. Reconcile older STARTED/REVIEW attempts by
+   * read-only GET; this path is incapable of sending another MAX message.
+   */
+  private async reconcileStoryGoReceipts() {
+    let candidates: Awaited<ReturnType<PostsService['unresolvedStoryGoOccurrences']>>;
+    try {
+      candidates = await this._postService.unresolvedStoryGoOccurrences();
+    } catch {
+      this.logger.warn('StoryGo receipt reconciliation query failed');
+      return;
+    }
+    for (const item of candidates) {
+      try {
+        const adapter = await this._integrationManager.getSocialIntegration(
+          'max', item.organizationId, item.providerVersion ?? undefined,
+        );
+        const publisher = (adapter as any).rawProvider;
+        if (typeof publisher?.reconcileStoryGoOperation !== 'function') continue;
+        const mid = await publisher.reconcileStoryGoOperation(
+          item.channelId, item.operationId,
+        );
+        if (!mid) continue;
+        await this._postService.confirmMaxDelivery(
+          item.postId, item.organizationId, item.attempt,
+          { id: item.postId, postId: mid, releaseURL: '', status: 'completed' },
+          item.id,
+        );
+      } catch {
+        // Never leak remote response bodies or credentials to logs. Failed GET
+        // keeps the occurrence in REVIEW for the next sweep/manual inspection.
+        this.logger.warn('StoryGo receipt reconciliation was inconclusive');
+      }
+    }
+  }
+
   async searchForMissingThreeHoursPosts() {
+    await this.reconcileStoryGoReceipts();
     // Requeue safe orphaned claims, but quarantine uncertain MAX deliveries.
     // The durable MAX journal is never cleared by the missing-post sweep.
     await this._postService.resetStalePublishingToQueue();
