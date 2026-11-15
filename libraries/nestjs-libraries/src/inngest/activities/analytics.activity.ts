@@ -344,7 +344,7 @@ export class AnalyticsActivity {
         }
 
         const updateData: Record<string, number> = {};
-        const views = latestByMetric['views'] || latestByMetric['impressions'];
+        const views = latestByMetric['views'] ?? latestByMetric['impressions'];
         const likes = latestByMetric['likes'] || latestByMetric['reactions'];
         const comments = latestByMetric['comments'] || latestByMetric['replies'];
         if (views !== undefined) updateData.lastViews = views;
