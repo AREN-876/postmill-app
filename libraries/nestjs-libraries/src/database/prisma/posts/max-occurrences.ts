@@ -443,6 +443,55 @@ export class MaxOccurrences {
       }),
     );
   }
+  /**
+   * Read-only reconciliation candidates: only previously STARTED/REVIEW
+   * Gateway attempts, never a new publication intent. Keep the original
+   * channel and deterministic UUID from the immutable attempt target.
+   */
+  async unresolvedStoryGo() {
+    const rows = await this.db.maxDeliveryOccurrence.findMany({
+      where: {
+        state: { in: ['STARTED', 'REVIEW'] },
+        attempt: { gt: 0 },
+        updatedAt: { lt: new Date(Date.now() - 5 * 60_000) },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 50,
+      select: {
+        id: true, postId: true, organizationId: true, attempt: true,
+        post: { select: {
+          integrationId: true,
+          integration: { select: {
+            providerIdentifier: true, providerVersion: true,
+          } },
+        } },
+        attempts: {
+          orderBy: { number: 'desc' },
+          take: 1,
+          select: { target: true, number: true },
+        },
+      },
+    });
+    return rows.flatMap((row: any) => {
+      const attempt = row.attempts?.[0];
+      const target = attempt?.target;
+      if (row.post?.integration?.providerIdentifier !== 'max' ||
+          attempt?.number !== row.attempt ||
+          typeof target?.storygoOperationId !== 'string' ||
+          typeof target?.chatId !== 'string' ||
+          target.integrationId !== row.post.integrationId) {
+        return [];
+      }
+      return [{
+        id: row.id, postId: row.postId,
+        organizationId: row.organizationId, attempt: row.attempt,
+        operationId: target.storygoOperationId,
+        channelId: target.chatId,
+        providerVersion: row.post.integration.providerVersion,
+      }];
+    });
+  }
+
   async pending() {
     // Creation/rescheduling commits before startWorkflow initializes the journal.
     // Reconcile all due QUEUE roots, including ones with older history. initial(false)
