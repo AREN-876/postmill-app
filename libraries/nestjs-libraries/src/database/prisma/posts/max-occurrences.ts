@@ -163,6 +163,30 @@ export class MaxOccurrences {
       });
     });
   }
+  /**
+   * Gateway forbids a different revision of an external_post_id until all
+   * preceding occurrences are settled. Preserve READY (and its stable UUID),
+   * rather than claiming or failing the successor. Parent-row lock serializes
+   * concurrent claims for the same Post.id.
+   */
+  private async storyPredecessorPending(tx: any, post: any, occurrence: any) {
+    let settings: any;
+    try { settings = JSON.parse(post.settings || '{}'); } catch { return false; }
+    if (settings?.mode !== 'story') return false;
+    const earlier = await tx.maxDeliveryOccurrence.findFirst({
+      where: {
+        postId: occurrence.postId,
+        organizationId: occurrence.organizationId,
+        id: { not: occurrence.id },
+        scheduledAt: { lt: occurrence.scheduledAt },
+        state: { in: ['READY', 'STARTED', 'REVIEW'] },
+        fingerprint: occurrence.fingerprint,
+      },
+      select: { id: true },
+    });
+    return !!earlier;
+  }
+
   async plan(postId: string, org: string, id: string) {
     return this.locked(postId, org, async (tx, p) => {
       const current = await this.hydrate(
@@ -212,7 +236,13 @@ export class MaxOccurrences {
         where: { id },
         data: { continued: true },
       });
-      return { current, next };
+      return {
+        current,
+        next,
+        deferred: current.state === 'READY'
+          ? await this.storyPredecessorPending(tx, p, current)
+          : false,
+      };
     });
   }
   async begin(
@@ -224,6 +254,7 @@ export class MaxOccurrences {
   ): Promise<{
     blocked?: boolean;
     alreadyConfirmed?: boolean;
+    deferred?: boolean;
     occurrenceId?: string;
     attempt?: number;
   }> {
@@ -255,6 +286,9 @@ export class MaxOccurrences {
         expectedAttempt !== o.attempt + 1
       )
         return { blocked: true };
+      if (await this.storyPredecessorPending(tx, p, o)) {
+        return { deferred: true };
+      }
       const attempt = o.attempt + 1;
       await tx.maxDeliveryOccurrence.update({
         where: { id },
