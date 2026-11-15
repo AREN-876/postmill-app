@@ -57,6 +57,7 @@ vi.mock('sharp', () => ({
       toBuffer: vi.fn().mockResolvedValue(Buffer.from('mock-jpeg-data')),
     }),
     metadata: vi.fn().mockResolvedValue({ width: 1, height: 1, format: 'png' }),
+    stats: vi.fn().mockResolvedValue({ channels: [] }),
   }),
 }));
 
