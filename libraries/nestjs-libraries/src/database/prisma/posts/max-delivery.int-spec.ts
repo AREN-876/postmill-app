@@ -763,6 +763,40 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     })).state).toBe('CANCELLED');
   });
 
+  it('requires explicit campaign approval while standalone story composer stays usable', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        content: 'Заголовок',
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Вторая часть' }),
+      },
+    });
+    // null is the native status of a manually composed Postmill post.
+    const standalone = await repo.initialMaxOccurrence(post.id, org);
+    expect(standalone?.state).toBe('READY');
+    const campaign = await db.campaign.create({
+      data: { organizationId: org, name: 'StoryGo acceptance campaign' },
+    });
+    try {
+      await db.post.update({
+        where: { id: post.id },
+        data: { campaignId: campaign.id },
+      });
+      // A campaign with no decision is NOT approved.
+      expect(await repo.initialMaxOccurrence(post.id, org)).toBeNull();
+      await db.post.update({
+        where: { id: post.id },
+        data: { approvalStatus: 'approved' },
+      });
+      const approved = await repo.initialMaxOccurrence(post.id, org);
+      expect(approved?.state).toBe('READY');
+    } finally {
+      await db.post.update({ where: { id: post.id }, data: { campaignId: null } });
+      await db.campaign.delete({ where: { id: campaign.id } });
+    }
+  });
+
   it('defers recurring StoryGo successor until preceding Gateway revision is confirmed', async () => {
     const post = await createPost('max', 'QUEUE');
     await db.post.update({
