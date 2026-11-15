@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Logger } from '@nestjs/common';
+import { Readable } from 'node:stream';
 
 vi.mock('@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository', () => ({
   PostsRepository: vi.fn(),
@@ -1371,44 +1372,44 @@ describe('StoryGo approved photo snapshot (org-owned storage only)', () => {
   };
   function setup(overrides: Record<string, unknown> = {}) {
     const getFileById = vi.fn().mockResolvedValue({ ...file, ...overrides });
-    const readFile = vi.fn().mockResolvedValue(png);
-    const resolveAdapterForFolder = vi.fn().mockResolvedValue({ readFile });
+    const readFileStream = vi.fn().mockImplementation(async () => Readable.from([png]));
+    const resolveAdapterForFolder = vi.fn().mockResolvedValue({ readFileStream });
     const service = new PostsService(
       {} as any, {} as any, {} as any, {} as any,
       { getFileById } as any, {} as any, {} as any, {} as any,
       {} as any, { resolveAdapterForFolder } as any,
       {} as any, {} as any, {} as any,
     );
-    return { service, getFileById, resolveAdapterForFolder, readFile };
+    return { service, getFileById, resolveAdapterForFolder, readFileStream };
   }
 
   it('reads only the org-scoped File adapter and produces stable SHA-256', async () => {
-    const { service, getFileById, resolveAdapterForFolder, readFile } = setup();
+    const { service, getFileById, resolveAdapterForFolder, readFileStream } = setup();
     const result = await service.readStoryGoImage('org-1', 'file-owned');
     expect(result.mimeType).toBe('image/png');
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.bytes).toEqual(png);
     expect(getFileById).toHaveBeenCalledWith('org-1', 'file-owned');
     expect(resolveAdapterForFolder).toHaveBeenCalledWith('folder-owned', 'org-1');
-    expect(readFile).toHaveBeenCalledWith(file.path);
+    expect(readFileStream).toHaveBeenCalledWith(file.path);
   });
 
   it('rejects missing/foreign/deleted or oversized File without any read', async () => {
     for (const over of [{ deletedAt: new Date() }, { fileSize: 9 * 1024 * 1024 }]) {
-      const { service, readFile } = setup(over);
+      const { service, readFileStream } = setup(over);
       await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
-      expect(readFile).not.toHaveBeenCalled();
+      expect(readFileStream).not.toHaveBeenCalled();
     }
-    const { service, getFileById, readFile } = setup();
+    const { service, getFileById, readFileStream } = setup();
     getFileById.mockResolvedValue(null);
     await expect(service.readStoryGoImage('other-org', 'file-owned')).rejects.toThrow();
     expect(getFileById).toHaveBeenCalledWith('other-org', 'file-owned');
-    expect(readFile).not.toHaveBeenCalled();
+    expect(readFileStream).not.toHaveBeenCalled();
   });
 
   it('rejects changed bytes and non-PNG/JPEG signatures', async () => {
-    const { service, readFile } = setup();
-    readFile.mockResolvedValue(Buffer.from('synthetic unrelated bytes'));
+    const { service, readFileStream } = setup();
+    readFileStream.mockImplementation(async () => Readable.from([Buffer.from('synthetic unrelated bytes')]));
     await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
   });
 });
