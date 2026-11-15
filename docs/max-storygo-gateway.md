@@ -57,7 +57,13 @@ complete story before sending exactly one MAX channel message.
 HTTP 202/PENDING/SENDING is not publication success. A timeout after
 POST triggers a read-only GET by operation_id. No automatic resend.
 Missing, mismatched or inconclusive receipts are quarantined in
-Postmill's existing REVIEW state.
+Postmill's existing REVIEW state. For clarity, the Postmill post detail
+modal displays the saved MAX unknown-delivery marker as **Needs review**
+(amber), not as a proved failed delivery (red). This is a Postmill
+journal-derived status, not a fabricated real-time StoryGo `PENDING`
+state. The source-of-truth MAX occurrence history remains available via
+the authenticated `GET /posts/:id/max-occurrences` endpoint; StoryGo's
+actual operation state is checked via its read-only GET.
 
 The Postmill missing-post sweep also reads previously STARTED/REVIEW
 StoryGo receipts older than five minutes. A confirmed MID is safely
