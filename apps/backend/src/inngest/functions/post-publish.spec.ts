@@ -434,6 +434,32 @@ describe('runPostPublish handler', () => {
     for(const occ of ['occ-1','occ-2','occ-1']) {const step=makeStep();await handler({step,event:runEvent({taskQueue:'max',postNow:true,repeat:true,maxOccurrenceId:occ})});ids.push((step.sendEvent.mock.calls[0] as any)[1].id);}
     expect(ids).toEqual(['max_occurrence_occ-2','max_occurrence_occ-3','max_occurrence_occ-2']);
   });
+  it('MAX StoryGo deferred occurrence retains READY and does not call provider or report failure', async () => {
+    const post = rootPost({ intervalInDays: 1 });
+    post.integration.providerIdentifier = 'max';
+    const activity = makeActivity({
+      getPost: vi.fn(async () => post),
+      getPostsList: vi.fn(async () => [post]),
+      planMaxOccurrence: vi.fn(async () => ({
+        current: { id: 'occ-2', state: 'READY', scheduledAt: new Date(0) },
+        next: { id: 'occ-3', state: 'READY', attempt: 0 },
+        deferred: true,
+      })),
+    });
+    const step = makeStep();
+    await getHandler(activity)({
+      step,
+      event: runEvent({ taskQueue: 'max', postNow: true, repeat: true, maxOccurrenceId: 'occ-2' }),
+    });
+    expect(activity.postSocial).not.toHaveBeenCalled();
+    expect(activity.notifyPostFailed).not.toHaveBeenCalled();
+    expect(activity.notifyPostPublished).not.toHaveBeenCalled();
+    expect(activity.sendWebhooks).not.toHaveBeenCalled();
+    // An existing READY child remains in PostgreSQL. A deferred predecessor
+    // must not emit another Inngest chain; the safe recovery sweep picks it up.
+    expect(step.sendEvent).not.toHaveBeenCalled();
+  });
+
   it('MAX replay returning no new delivery never triggers success side effects',async()=>{
     const post=rootPost();post.integration.providerIdentifier='max';
     const activity=makeActivity({getPost:vi.fn(async()=>post),getPostsList:vi.fn(async()=>[post]),postSocial:vi.fn(async()=>[]),

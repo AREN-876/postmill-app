@@ -310,6 +310,22 @@ describe('PostDetailModal', () => {
     expect(screen.queryByText('Published')).toBeNull();
   });
 
+  it('marks uncertain MAX Gateway delivery as Needs review, not a proved failure', () => {
+    const error = 'MAX occurrence delivery unknown: operator review required';
+    const data = basePostData({
+      posts: [{
+        ...basePostData().posts[0],
+        integration: { providerIdentifier: 'max', id: 'int-max' },
+        state: 'ERROR', error,
+      }],
+    });
+    stubData({ postData: data, analyticsData: baseAnalyticsData() });
+    render(<PostDetailModal postId="post-1" />);
+    expect(screen.getByText('Needs review')).toBeTruthy();
+    expect(screen.queryByText('Failed')).toBeNull();
+    expect(screen.getByText(error)).toBeTruthy();
+  });
+
   it('shows a fallback error banner when ERROR has no error text', () => {
     const data = basePostData({
       posts: [{ ...basePostData().posts[0], state: 'ERROR', error: null }],

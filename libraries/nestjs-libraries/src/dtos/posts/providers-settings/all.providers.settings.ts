@@ -1,3 +1,4 @@
+import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
 import { RedditSettingsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/reddit.dto';
 import { PinterestSettingsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/pinterest.dto';
 import { YoutubeSettingsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/youtube.settings.dto';
@@ -59,7 +60,7 @@ export type AllProvidersSettings =
   | ProviderExtension<'odysee', None>
   | ProviderExtension<'misskey', None>
   | ProviderExtension<'sharkey', None>
-  | ProviderExtension<'max', None>
+  | ProviderExtension<'max', MaxSettingsDto>
   | ProviderExtension<'line', None>
   | ProviderExtension<'matrix', None>
   | ProviderExtension<'discourse', None>
@@ -110,7 +111,7 @@ export const allProviders = (setEmpty?: any) => {
     { value: setEmpty, name: 'odysee' },
     { value: setEmpty, name: 'misskey' },
     { value: setEmpty, name: 'sharkey' },
-    { value: setEmpty, name: 'max' },
+    { value: MaxSettingsDto, name: 'max' },
     { value: setEmpty, name: 'line' },
     { value: setEmpty, name: 'matrix' },
     { value: setEmpty, name: 'discourse' },

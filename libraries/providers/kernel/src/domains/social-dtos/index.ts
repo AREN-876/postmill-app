@@ -27,3 +27,5 @@ export * from './whop.dto';
 export * from './wordpress.dto';
 export * from './x.dto';
 export * from './youtube.settings.dto';
+
+export * from './max.dto';

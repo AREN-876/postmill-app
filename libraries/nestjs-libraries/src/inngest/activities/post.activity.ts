@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { v5 as uuidv5 } from 'uuid';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { Injectable, Logger } from '@nestjs/common';
 import { PostsService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.service';
 import { NotificationService } from '@postmill-ai/nestjs-libraries/database/prisma/notifications/notification.service';
@@ -164,7 +166,47 @@ export class PostActivity {
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.planMaxOccurrence(id, org, occurrence); }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postService.failMaxOccurrence(id, org, occurrence); }
 
+  /**
+   * A confirmed StoryGo MID may survive a Postmill crash between Gateway POST
+   * and PostgreSQL confirmation. Reconcile older STARTED/REVIEW attempts by
+   * read-only GET; this path is incapable of sending another MAX message.
+   */
+  private async reconcileStoryGoReceipts() {
+    let candidates: Awaited<ReturnType<PostsService['unresolvedStoryGoOccurrences']>>;
+    try {
+      candidates = await this._postService.unresolvedStoryGoOccurrences();
+    } catch {
+      this.logger.warn('StoryGo receipt reconciliation query failed');
+      return;
+    }
+    for (const item of candidates) {
+      try {
+        const adapter = await this._integrationManager.getSocialIntegration(
+          'max', item.organizationId, item.providerVersion ?? undefined,
+        );
+        // IntegrationManager.getSocialIntegration() already returns the raw
+        // provider (unwrapped from SocialProviderKernelAdapter).
+        const publisher = adapter as any;
+        if (typeof publisher?.reconcileStoryGoOperation !== 'function') continue;
+        const mid = await publisher.reconcileStoryGoOperation(
+          item.channelId, item.operationId,
+        );
+        if (!mid) continue;
+        await this._postService.confirmMaxDelivery(
+          item.postId, item.organizationId, item.attempt,
+          { id: item.postId, postId: mid, releaseURL: '', status: 'completed' },
+          item.id,
+        );
+      } catch {
+        // Never leak remote response bodies or credentials to logs. Failed GET
+        // keeps the occurrence in REVIEW for the next sweep/manual inspection.
+        this.logger.warn('StoryGo receipt reconciliation was inconclusive');
+      }
+    }
+  }
+
   async searchForMissingThreeHoursPosts() {
+    await this.reconcileStoryGoReceipts();
     // Requeue safe orphaned claims, but quarantine uncertain MAX deliveries.
     // The durable MAX journal is never cleared by the missing-post sweep.
     await this._postService.resetStalePublishingToQueue();
@@ -500,7 +542,11 @@ export class PostActivity {
       integration.providerVersion
     );
 
-    const newPosts = await this._postService.updateTags(
+    // A story is an approved immutable package. No cross-post substitution
+    // after the occurrence was claimed.
+    const storyMode = integration.providerIdentifier === 'max' &&
+      JSON.parse(posts[0]?.settings || '{}')?.mode === 'story';
+    const newPosts = storyMode ? posts : await this._postService.updateTags(
       integration.organizationId,
       posts
     );
@@ -517,7 +563,7 @@ export class PostActivity {
 
     const postPayload = await Promise.all(
       (newPosts || []).map(async (p) => {
-        const contentWithUtm = await this._maybeAppendUtm(
+        const contentWithUtm = storyMode ? p.content : await this._maybeAppendUtm(
           p.content,
           p.campaignId,
           integration.organizationId,
@@ -526,7 +572,7 @@ export class PostActivity {
         const settings = JSON.parse(p.settings || '{}');
         return {
           id: p.id,
-          message: stripHtmlValidation(
+          message: storyMode ? contentWithUtm : stripHtmlValidation(
             getIntegration.editor,
             contentWithUtm,
             true,
@@ -548,6 +594,24 @@ export class PostActivity {
       })
     );
 
+    // Read photo bytes only from the current organization-owned File row and
+    // verify the SHA frozen at scheduling. No untrusted URL/FS path is fetched.
+    let storyPhoto: { base64: string; mimeType: string; sha256: string } | undefined;
+    if (storyMode && postPayload[0].settings.storyImageId) {
+      const img = await this._postService.readStoryGoImage(
+        integration.organizationId, postPayload[0].settings.storyImageId,
+      );
+      if (img.sha256 !== postPayload[0].settings.storyImageSha256) {
+        throw new BadBodyError('max', '{}', '',
+          'Approved StoryGo photo has changed; do not publish');
+      }
+      storyPhoto = {
+        base64: img.bytes.toString('base64'),
+        mimeType: img.mimeType,
+        sha256: img.sha256,
+      };
+    }
+
     // 2.2: never publish a plain post when a poll was requested but this provider
     // can't do polls — fail hard (non-retriable) instead of silently dropping it.
     this._assertPollSupported(integration.providerIdentifier, postPayload);
@@ -565,16 +629,45 @@ export class PostActivity {
         content: postPayload[0].message, integrationName: integration.name,
         integrationId: integration.id, chatId: integration.internalId, providerConfigId: integration.providerConfigId ?? null, version: integration.providerVersion ?? 'v1',
         textSha256: createHash('sha256').update(postPayload[0].message).digest('hex'),
+        ...(storyMode && maxOccurrenceId ? {
+          storygoOperationId: uuidv5('postmill:max:occurrence:' + maxOccurrenceId, uuidv5.URL),
+        } : {}),
+        ...(storyMode ? {
+          storyPartsSha256: createHash('sha256').update(JSON.stringify(
+            maxStoryParts(postPayload[0].message, postPayload[0].settings.continuationText)
+          )).digest('hex'),
+          ...(storyPhoto ? { storyPhotoSha256: storyPhoto.sha256 } : {}),
+        } : {}),
       }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
     if (maxAttempt?.alreadyConfirmed) return [];
+    // A previous StoryGo revision is unresolved. Leave this occurrence READY;
+    // the existing missing-post sweep will safely redispatch its stable key.
+    if (maxAttempt?.deferred) return [];
     if (integration.providerIdentifier === 'max' && (!maxAttempt || maxAttempt.blocked || !Number.isInteger(maxAttempt.attempt))) throw new BadBodyError('max', '{}', '', 'MAX delivery unknown or already in progress: operator review required');
+    const outbound = storyMode && maxAttempt?.occurrenceId
+      ? postPayload.map((item) => ({
+          ...item,
+          settings: {
+            ...item.settings,
+            __gateway: {
+              operationId: uuidv5(
+                'postmill:max:occurrence:' + maxAttempt.occurrenceId,
+                uuidv5.URL,
+              ),
+              externalPostId: posts[0].id,
+              revision: maxAttempt.occurrenceId,
+              ...(storyPhoto ? { image: storyPhoto } : {}),
+            },
+          },
+        }))
+      : postPayload;
     let postNow;
     try {
       postNow = await runWithVpnDispatcher(vpnDispatcher, () =>
         getIntegration.post(
           integration.internalId,
           integration.token,
-          postPayload,
+          outbound,
           integration,
           clientInformation
         )

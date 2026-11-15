@@ -20,6 +20,15 @@ export class MaxOccurrences {
       return action(tx, post);
     });
   }
+  private storyMode(post: any) {
+    try {
+      return JSON.parse(post.settings || '{}')?.mode === 'story';
+    } catch {
+      // A malformed persisted setting must not allow an unreviewed story.
+      return false;
+    }
+  }
+
   private fingerprint(p: any) {
     return createHash('sha256')
       .update(
@@ -34,6 +43,11 @@ export class MaxOccurrences {
           p.integration.internalId,
           p.integration.providerVersion,
           p.campaignId,
+          ...(this.storyMode(p) ? [
+            p.approvalStatus ?? null,
+            p.approvedById ?? null,
+            p.approvedAt?.toISOString?.() ?? null,
+          ] : []),
         ]),
       )
       .digest('hex');
@@ -56,6 +70,13 @@ export class MaxOccurrences {
   private active(p: any) {
     return (
       p.integration.providerIdentifier === 'max' &&
+      // Campaign drafts require explicit approval. Manual composer posts
+      // legitimately have a null approvalStatus (no approval workflow), but
+      // pending/rejected always block dispatch.
+      (!this.storyMode(p) ||
+        (p.campaignId
+          ? p.approvalStatus === 'approved'
+          : (p.approvalStatus == null || p.approvalStatus === 'approved'))) &&
       (!p.integration.providerConfigId ||
         (p.integration.providerConfig?.organizationId === p.organizationId &&
           p.integration.providerConfig?.identifier === 'max' &&
@@ -163,6 +184,32 @@ export class MaxOccurrences {
       });
     });
   }
+  /**
+   * Gateway forbids a different revision of an external_post_id until all
+   * preceding occurrences are settled. Preserve READY (and its stable UUID),
+   * rather than claiming or failing the successor. Parent-row lock serializes
+   * concurrent claims for the same Post.id.
+   */
+  private async storyPredecessorPending(tx: any, post: any, occurrence: any) {
+    if (!this.storyMode(post)) return false;
+    const earlier = await tx.maxDeliveryOccurrence.findFirst({
+      where: {
+        postId: occurrence.postId,
+        organizationId: occurrence.organizationId,
+        id: { not: occurrence.id },
+        OR: [
+          // Any already-started revision of this Post.id might still exist
+          // in StoryGo, regardless of a later edit or schedule change.
+          { state: { in: ['STARTED', 'REVIEW'] } },
+          // Earlier READY intents must publish in causal order.
+          { state: 'READY', scheduledAt: { lt: occurrence.scheduledAt } },
+        ],
+      },
+      select: { id: true },
+    });
+    return !!earlier;
+  }
+
   async plan(postId: string, org: string, id: string) {
     return this.locked(postId, org, async (tx, p) => {
       const current = await this.hydrate(
@@ -181,6 +228,15 @@ export class MaxOccurrences {
           },
         });
         return null;
+      }
+      // Do not extend the recurring chain at all while a preceding StoryGo
+      // revision is unsettled. This also prevents the hourly recovery sweep
+      // from creating one more future child on every invocation.
+      const deferred = current.state === 'READY'
+        ? await this.storyPredecessorPending(tx, p, current)
+        : false;
+      if (deferred) {
+        return { current, next: null, deferred: true };
       }
       let next = null;
       if (
@@ -212,7 +268,11 @@ export class MaxOccurrences {
         where: { id },
         data: { continued: true },
       });
-      return { current, next };
+      return {
+        current,
+        next,
+        deferred: false,
+      };
     });
   }
   async begin(
@@ -224,6 +284,7 @@ export class MaxOccurrences {
   ): Promise<{
     blocked?: boolean;
     alreadyConfirmed?: boolean;
+    deferred?: boolean;
     occurrenceId?: string;
     attempt?: number;
   }> {
@@ -255,6 +316,9 @@ export class MaxOccurrences {
         expectedAttempt !== o.attempt + 1
       )
         return { blocked: true };
+      if (await this.storyPredecessorPending(tx, p, o)) {
+        return { deferred: true };
+      }
       const attempt = o.attempt + 1;
       await tx.maxDeliveryOccurrence.update({
         where: { id },
@@ -381,6 +445,16 @@ export class MaxOccurrences {
         o.fingerprint !== this.fingerprint(p)
       )
         return false;
+      const originalAttempt = await tx.maxDeliveryAttempt.findUnique({
+        where: { occurrenceId_number: { occurrenceId: id, number: attempt } },
+      });
+      // StoryGo has its own durable operation under this UUID. Even an
+      // operator-approved Postmill retry must not transmit a second POST
+      // after an uncertain result; reconcile by GET or explicitly reschedule
+      // after separately verifying that no MAX post exists.
+      if (typeof (originalAttempt?.target as any)?.storygoOperationId === 'string') {
+        return false;
+      }
       await tx.maxDeliveryAttempt.update({
         where: { occurrenceId_number: { occurrenceId: id, number: attempt } },
         data: {
@@ -443,6 +517,55 @@ export class MaxOccurrences {
       }),
     );
   }
+  /**
+   * Read-only reconciliation candidates: only previously STARTED/REVIEW
+   * Gateway attempts, never a new publication intent. Keep the original
+   * channel and deterministic UUID from the immutable attempt target.
+   */
+  async unresolvedStoryGo() {
+    const rows = await this.db.maxDeliveryOccurrence.findMany({
+      where: {
+        state: { in: ['STARTED', 'REVIEW'] },
+        attempt: { gt: 0 },
+        updatedAt: { lt: new Date(Date.now() - 5 * 60_000) },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 50,
+      select: {
+        id: true, postId: true, organizationId: true, attempt: true,
+        post: { select: {
+          integrationId: true,
+          integration: { select: {
+            providerIdentifier: true, providerVersion: true,
+          } },
+        } },
+        attempts: {
+          orderBy: { number: 'desc' },
+          take: 1,
+          select: { target: true, number: true },
+        },
+      },
+    });
+    return rows.flatMap((row: any) => {
+      const attempt = row.attempts?.[0];
+      const target = attempt?.target;
+      if (row.post?.integration?.providerIdentifier !== 'max' ||
+          attempt?.number !== row.attempt ||
+          typeof target?.storygoOperationId !== 'string' ||
+          typeof target?.chatId !== 'string' ||
+          target.integrationId !== row.post.integrationId) {
+        return [];
+      }
+      return [{
+        id: row.id, postId: row.postId,
+        organizationId: row.organizationId, attempt: row.attempt,
+        operationId: target.storygoOperationId,
+        channelId: target.chatId,
+        providerVersion: row.post.integration.providerVersion,
+      }];
+    });
+  }
+
   async pending() {
     // Creation/rescheduling commits before startWorkflow initializes the journal.
     // Reconcile all due QUEUE roots, including ones with older history. initial(false)
@@ -489,6 +612,7 @@ export class MaxOccurrences {
       if (!plan) continue;
       // Terminal runs may die before checkpointing successor dispatch. Re-emit
       // its stable identity; PostgreSQL remains authoritative beyond dedup TTL.
+      if (plan.deferred) continue;
       if (o.state === 'READY') result.push(o);
       if (plan.next?.state === 'READY') result.push(plan.next);
     }

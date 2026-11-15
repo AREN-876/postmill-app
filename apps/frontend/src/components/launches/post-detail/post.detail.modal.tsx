@@ -154,6 +154,19 @@ const StatePill: FC<{ state: string; error?: string | null }> = ({
       ERROR: { bg: 'bg-red-500', label: t('failed', 'Failed') },
     };
 
+  // MAX's durable REVIEW state is an ambiguous external delivery, not a
+  // proved failure. Display its existing error marker as "Needs review" so
+  // operators do not mistake it for a safe-to-retry failed post.
+  if (
+    state === 'ERROR' &&
+    typeof error === 'string' &&
+    error.includes('MAX occurrence delivery unknown: operator review required')
+  ) {
+    config.ERROR = {
+      bg: 'bg-amber-500',
+      label: t('needs_review', 'Needs review'),
+    };
+  }
   const pill = config[state] || config.QUEUE;
   return (
     <div

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { MaxProvider, maxSocialModule } from '../social.adapter';
 import { isProviderVerified } from '@postmill-ai/provider-kernel';
 import { bot, chat, chatId, member, post, sent, token } from './fixtures';
@@ -407,4 +408,158 @@ describe('MAX post analytics (synthetic GET only)', () => {
       expect(timer).toHaveBeenCalledTimes(3);
     },
   );
+});
+
+
+describe('StoryGo Gateway (synthetic HTTPS only)', () => {
+  const operationId = 'e299b442-02a8-5acf-ab16-6ab92926d548';
+  const revision = 'max_' + 'a'.repeat(64);
+  const gatewayKey = 'synthetic-gateway-secret-with-32-characters';
+  const settings = () => ({
+    mode: 'story',
+    continuationText: 'Часть два\n────────────────────────\nЧасть три',
+    __gateway: { operationId, externalPostId: post.id, revision },
+  });
+  const receipt = (state: string, message_id: string | null = null) => ({
+    operation_id: operationId, channel_id: chatId, state, message_id, error: null,
+  });
+  async function withGatewayEnv(fn: () => Promise<void>) {
+    const keys = [
+      'STORYGO_GATEWAY_ENABLED', 'STORYGO_GATEWAY_BASE_URL',
+      'STORYGO_GATEWAY_SERVICE_KEY', 'STORYGO_GATEWAY_ALLOWED_CHANNELS',
+    ] as const;
+    const saved = keys.map((key) => process.env[key]);
+    process.env.STORYGO_GATEWAY_ENABLED = '1';
+    process.env.STORYGO_GATEWAY_BASE_URL = 'https://gateway.example.invalid';
+    process.env.STORYGO_GATEWAY_SERVICE_KEY = gatewayKey;
+    process.env.STORYGO_GATEWAY_ALLOWED_CHANNELS = chatId;
+    try { await fn(); } finally {
+      keys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      });
+    }
+  }
+
+  it('sends exactly one POST with deterministic identity and reconciles 202 by GET', async () => {
+    await withGatewayEnv(async () => {
+      wire.mockResolvedValueOnce(response(receipt('SENDING'), 202))
+        .mockResolvedValueOnce(response(receipt('PUBLISHED', 'mid.test-1')));
+      const result = await provider.post(chatId, token, [
+        { ...post, message: 'Заголовок\nПервая часть', settings: settings() },
+      ]);
+      expect(result).toEqual([
+        { id: post.id, postId: 'mid.test-1', releaseURL: '', status: 'completed' },
+      ]);
+      expect(wire).toHaveBeenCalledTimes(2);
+      expect(wire.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+      expect(wire.mock.calls[0][0]).toBe('https://gateway.example.invalid/gateway/v1/publications');
+      expect(wire.mock.calls[1][0]).toContain('/publications/' + operationId);
+      expect(wire.mock.calls[0][1].headers.Authorization).toBe('Bearer ' + gatewayKey);
+      expect(wire.mock.calls[0][1].headers['Idempotency-Key']).toBe(operationId);
+      expect(JSON.parse(wire.mock.calls[0][1].body)).toMatchObject({
+        type: 'story', channel_id: chatId, external_post_id: post.id,
+        operation_id: operationId, revision,
+        parts: ['Заголовок\nПервая часть', 'Часть два', 'Часть три'],
+      });
+      expect(JSON.stringify(wire.mock.calls)).not.toContain(token);
+      expect(wire.mock.calls[0][1].retryPolicy).toBeUndefined();
+      expect(wire.mock.calls[0][1].redirect).toBe('error');
+    });
+  });
+
+  it('never repeats POST after an ambiguous transport error; read-only GET may confirm it', async () => {
+    await withGatewayEnv(async () => {
+      wire.mockRejectedValueOnce(new Error('network: ' + token))
+        .mockResolvedValueOnce(response(receipt('PUBLISHED', 'mid.after-timeout')));
+      const result = await provider.post(chatId, token, [
+        { ...post, message: 'Заголовок', settings: settings() },
+      ]);
+      expect(result[0].postId).toBe('mid.after-timeout');
+      expect(wire.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+    });
+  });
+
+  it('uploads an approved PNG by multipart without URLs, then publishes with its upload_id', async () => {
+    await withGatewayEnv(async () => {
+      const bytes = Buffer.from('synthetic PNG bytes (validated by PostsService)');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const uploadId = 'a8db6639-7ba0-42b7-8587-dd39d630c91b';
+      wire.mockResolvedValueOnce(response({
+        upload_id: uploadId, sha256, mime_type: 'image/png', bytes: bytes.length,
+      }, 201)).mockResolvedValueOnce(response(receipt('PUBLISHED', 'mid.photo')));
+      const result = await provider.post(chatId, token, [{
+        ...post,
+        message: 'Заголовок',
+        settings: {
+          ...settings(),
+          __gateway: {
+            ...settings().__gateway,
+            image: { base64: bytes.toString('base64'), mimeType: 'image/png', sha256 },
+          },
+        },
+      }]);
+      expect(result[0].postId).toBe('mid.photo');
+      expect(wire.mock.calls.map(([url]) => url)).toEqual([
+        'https://gateway.example.invalid/gateway/v1/media',
+        'https://gateway.example.invalid/gateway/v1/publications',
+      ]);
+      const mediaRequest = wire.mock.calls[0][1];
+      expect(mediaRequest.method).toBe('POST');
+      expect(mediaRequest.headers.Authorization).toBe('Bearer ' + gatewayKey);
+      expect(mediaRequest.headers['content-type']).toContain('multipart/form-data; boundary=');
+      expect(mediaRequest.body).toBeInstanceOf(Buffer);
+      expect(mediaRequest.body.toString()).toContain('name="channel_id"');
+      expect(mediaRequest.body.toString()).toContain('name="file"; filename="story.png"');
+      expect(JSON.parse(wire.mock.calls[1][1].body).upload_id).toBe(uploadId);
+      expect(JSON.stringify(wire.mock.calls.map(([url, init]) => [url, init.headers])))
+        .not.toContain(token);
+    });
+  });
+
+  it('rejects photo content changes before any HTTP request', async () => {
+    await withGatewayEnv(async () => {
+      const err = await provider.post(chatId, token, [{
+        ...post, message: 'Заголовок',
+        settings: {
+          ...settings(),
+          __gateway: {
+            ...settings().__gateway,
+            image: {
+              base64: Buffer.from('not this digest').toString('base64'),
+              mimeType: 'image/png',
+              sha256: 'f'.repeat(64),
+            },
+          },
+        },
+      }]).catch((e) => e);
+      expect(err.message).toContain('approved snapshot');
+      expect(wire).not.toHaveBeenCalled();
+    });
+  });
+
+  it('maps 202 then NEEDS_REVIEW to an unknown delivery without a second POST', async () => {
+    await withGatewayEnv(async () => {
+      wire.mockResolvedValueOnce(response(receipt('SENDING'), 202))
+        .mockResolvedValueOnce(response(receipt('NEEDS_REVIEW')));
+      await expect(provider.post(chatId, token, [
+        { ...post, message: 'Заголовок', settings: settings() },
+      ])).rejects.toThrow('operator review');
+      expect(wire.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+      expect(wire.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    });
+  });
+
+  it('fails closed without channel allowlist or on a foreign/invalid receipt', async () => {
+    const payload = [{ ...post, message: 'Заголовок', settings: settings() }];
+    await expect(provider.post(chatId, token, payload)).rejects.toThrow('disabled');
+    expect(wire).not.toHaveBeenCalled();
+    await withGatewayEnv(async () => {
+      wire.mockResolvedValueOnce(response({ ...receipt('PUBLISHED', 'mid.bad'), channel_id: '-3' }));
+      const err = await provider.post(chatId, token, payload).catch(e => e);
+      expect(err.message).toContain('does not match');
+      expect(wire).toHaveBeenCalledTimes(1);
+      expect(err.message).not.toContain(token);
+    });
+  });
 });

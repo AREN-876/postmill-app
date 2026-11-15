@@ -736,6 +736,123 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     expect(o.state).toBe('REVIEW');
     expect(o.attempt).toBe(1);
   });
+  it('prevents unapproved StoryGo scheduled release and invalidates approval changes', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        content: 'Одобренная первая часть',
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Часть два' }),
+        approvalStatus: 'pending',
+      },
+    });
+    expect(await repo.initialMaxOccurrence(post.id, org)).toBeNull();
+    await db.post.update({
+      where: { id: post.id },
+      data: { approvalStatus: 'approved' },
+    });
+    const occurrence = await repo.initialMaxOccurrence(post.id, org);
+    expect(occurrence.state).toBe('READY');
+    await db.post.update({
+      where: { id: post.id },
+      data: { approvalStatus: 'rejected' },
+    });
+    expect(await repo.planMaxOccurrence(post.id, org, occurrence.id)).toBeNull();
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({
+      where: { id: occurrence.id },
+    })).state).toBe('CANCELLED');
+  });
+
+  it('requires explicit campaign approval while standalone story composer stays usable', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        content: 'Заголовок',
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Вторая часть' }),
+      },
+    });
+    // null is the native status of a manually composed Postmill post.
+    const standalone = await repo.initialMaxOccurrence(post.id, org);
+    expect(standalone?.state).toBe('READY');
+    const campaign = await db.campaign.create({
+      data: { organizationId: org, name: 'StoryGo acceptance campaign' },
+    });
+    try {
+      await db.post.update({
+        where: { id: post.id },
+        data: { campaignId: campaign.id },
+      });
+      // A campaign with no decision is NOT approved.
+      expect(await repo.initialMaxOccurrence(post.id, org)).toBeNull();
+      await db.post.update({
+        where: { id: post.id },
+        data: { approvalStatus: 'approved' },
+      });
+      const approved = await repo.initialMaxOccurrence(post.id, org);
+      expect(approved?.state).toBe('READY');
+    } finally {
+      await db.post.update({ where: { id: post.id }, data: { campaignId: null } });
+      await db.campaign.delete({ where: { id: campaign.id } });
+    }
+  });
+
+  it('defers recurring StoryGo successor until preceding Gateway revision is confirmed', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Вторая часть' }),
+        content: 'Название и первая часть',
+        intervalInDays: 1,
+        publishDate: new Date(Date.now() - 4 * 86400000),
+      },
+    });
+    const first = await repo.initialMaxOccurrence(post.id, org);
+    const next = await due(first);
+    const deferredPlan = await repo.planMaxOccurrence(post.id, org, next.id);
+    expect(deferredPlan?.deferred).toBe(true);
+    expect(deferredPlan?.next).toBeNull();
+
+    const started = await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-first',
+    }, first.id, 1);
+    expect(started?.attempt).toBe(1);
+    await repo.failMaxOccurrence(post.id, org, first.id);
+    expect((await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-next',
+    }, next.id, 1))?.deferred).toBe(true);
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({
+      where: { id: next.id },
+    })).state).toBe('READY');
+    expect(await db.maxDeliveryAttempt.count({
+      where: { occurrenceId: next.id },
+    })).toBe(0);
+    // Repeated hourly sweeps must not emit this blocked successor or create
+    // later generations while the predecessor is REVIEW.
+    const countBeforeRecovery = await db.maxDeliveryOccurrence.count({
+      where: { postId: post.id },
+    });
+    for (let n = 0; n < 3; n++) {
+      expect((await repo.pendingMaxOccurrences()).map((o) => o.id))
+        .not.toContain(next.id);
+    }
+    expect(await db.maxDeliveryOccurrence.count({
+      where: { postId: post.id },
+    })).toBe(countBeforeRecovery);
+
+    // When the previous revision's actual MID is recovered, the original
+    // next occurrence (same UUID) can finally begin; no duplicate job intent.
+    await repo.confirmMaxDelivery(post.id, org, 1,
+      receipt(post.id), first.id);
+    const resumed = await repo.planMaxOccurrence(post.id, org, next.id);
+    expect(resumed?.deferred).toBe(false);
+    const claimed = await repo.beginMaxDelivery(post.id, org, {
+      storygoOperationId: 'uuid-of-next',
+    }, next.id, 1);
+    expect(claimed?.attempt).toBe(1);
+  });
+
   it('long series uses separate rows, bounded Post summary and one child per parent', async () => {
     const post = await createPost();
     await db.post.update({

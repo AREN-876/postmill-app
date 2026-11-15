@@ -14,10 +14,12 @@ import { isSafePublicHttpsUrl } from '@postmill-ai/nestjs-libraries/dtos/webhook
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
-import { randomInt } from 'crypto';
+import { randomInt, createHash } from 'crypto';
+import { fromBuffer } from '@postmill-ai/nestjs-libraries/upload/file-type.compat';
 import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/analytics/analytics.repository';
 import { CampaignsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/campaigns/campaigns.repository';
@@ -113,6 +115,7 @@ export class PostsService {
   initialMaxOccurrence(id: string, org: string) { return this._postRepository.initialMaxOccurrence(id, org); }
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.planMaxOccurrence(id, org, occurrence); }
   pendingMaxOccurrences() { return this._postRepository.pendingMaxOccurrences(); }
+  unresolvedStoryGoOccurrences() { return this._postRepository.unresolvedStoryGoOccurrences(); }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.failMaxOccurrence(id, org, occurrence); }
   beginMaxDelivery(id: string, org: string, target: Record<string,string>, occurrence?: string, expectedAttempt?: number) {
     return this._postRepository.beginMaxDelivery(id, org, target, occurrence, expectedAttempt);
@@ -437,9 +440,21 @@ export class PostsService {
             );
           }
 
+          const isStory = integration.providerIdentifier === 'max' &&
+            (post.settings as any)?.mode === 'story';
           return {
             type: replaceDraft ? 'schedule' : body?.type,
             ...post,
+            ...(isStory ? {
+              value: post.value?.map((item) => ({
+                ...item,
+                // The normal composer emits TipTap HTML. Canonicalize once,
+                // before persisting and fingerprinting the approved story.
+                content: /<\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\s|>)/i.test(item.content)
+                  ? stripHtmlValidation('normal', item.content, false, true)
+                  : item.content,
+              })),
+            } : {}),
             settings: {
               // Strip settings keys the provider does not support (shared composer
               // fields leak e.g. `firstComment`/`thread_finisher` into every
@@ -520,6 +535,74 @@ export class PostsService {
 
   async setGroupColor(orgId: string, group: string, color: string | null) {
     return this._postRepository.setGroupColor(orgId, group, color);
+  }
+
+  /**
+   * Read ONLY an organization-owned File ID through its configured storage
+   * adapter. No arbitrary URL/path from Post.settings reaches a fetch or fs.
+   * File and bytes are validated before the Gateway media upload.
+   */
+  async readStoryGoImage(orgId: string, fileId: string) {
+    if (typeof fileId !== 'string' || !/^[a-zA-Z0-9_-]{6,128}$/.test(fileId)) {
+      throw new BadRequestException('Invalid StoryGo photo file identifier');
+    }
+    const file = await this._fileService.getFileById(orgId, fileId);
+    const limit = 8 * 1024 * 1024;
+    if (!file || file.deletedAt ||
+        (file.type !== 'image' && !String(file.type).startsWith('image/')) ||
+        !Number.isSafeInteger(file.fileSize) ||
+        file.fileSize < 1 || file.fileSize > limit) {
+      throw new BadRequestException('StoryGo photo must be an owned PNG/JPEG of at most 8 MiB');
+    }
+    // Stream with a hard byte limit, even when the DB's size metadata is
+    // stale: a replaced cloud object must not exhaust a small Postmill VPS.
+    let bytes: Buffer;
+    try {
+      const adapter = await this._storageService.resolveAdapterForFolder(
+        file.folderId, orgId,
+      );
+      const stream = await adapter.readFileStream(file.path);
+      const chunks: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of stream) {
+        const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        length += value.length;
+        if (length > limit) {
+          stream.destroy();
+          throw Error('photo size limit');
+        }
+        chunks.push(value);
+      }
+      if (!length || length !== file.fileSize) throw Error('photo size changed');
+      bytes = Buffer.concat(chunks, length);
+    } catch {
+      throw new BadRequestException('StoryGo photo could not be safely read');
+    }
+    const kind = await fromBuffer(bytes);
+    if (kind?.mime !== 'image/png' && kind?.mime !== 'image/jpeg') {
+      throw new BadRequestException('StoryGo photo must be PNG or JPEG');
+    }
+    // Match StoryGo's 12-megapixel static-image cap, then force a full decode
+    // (metadata() by itself does not detect every truncated image). Reject
+    // before claiming an occurrence; StoryGo will independently decode again.
+    const maxPixels = 12_000_000;
+    try {
+      const picture = sharp(bytes, { limitInputPixels: maxPixels, failOn: 'error' });
+      const md = await picture.metadata();
+      if (!md.width || !md.height || md.width * md.height > maxPixels ||
+          !['jpeg', 'png'].includes(md.format ?? '') ||
+          (md.pages ?? 1) !== 1) {
+        throw Error('invalid or animated image');
+      }
+      await picture.stats();
+    } catch {
+      throw new BadRequestException('StoryGo photo must be a valid static PNG/JPEG within 12 megapixels');
+    }
+    return {
+      bytes,
+      mimeType: kind.mime,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
   }
 
   async updateMedia(id: string, imagesList: any[], convertToJPEG = false, orgId: string) {
@@ -1058,6 +1141,30 @@ export class PostsService {
           valid = validationErrors.length === 0;
         }
 
+        if (integration.providerIdentifier === 'max' && settings.mode !== 'story' &&
+            (settings.storyImageId || settings.continuationText?.trim())) {
+          valid = false;
+          settingsError = 'MAX photo/continuations require Story mode. Clear them before selecting a normal post.';
+        }
+
+        if (integration.providerIdentifier === 'max' && settings.mode === 'story') {
+          try {
+            if (post.value?.length !== 1) {
+              throw Error('A MAX story must be one Postmill post, not a thread.');
+            }
+            maxStoryParts(post.value[0].content, settings.continuationText);
+            if (settings.storyImageId) {
+              await this.readStoryGoImage(orgId, settings.storyImageId);
+            }
+            if ((post.value[0].image || []).length) {
+              throw Error('Attach the StoryGo photo in the MAX story settings, not as a normal media post.');
+            }
+          } catch (error) {
+            valid = false;
+            settingsError = (error as Error).message;
+          }
+        }
+
         // Provider-specific media validation (the old client `checkValidity`).
         let errors: string | true = true;
         try {
@@ -1187,18 +1294,32 @@ export class PostsService {
         orgId
       );
       const removeLinks = !!provider?.stripLinks?.();
+      const isStory = providerIdentifier === 'max' &&
+        (post.settings as any)?.mode === 'story';
+      if (isStory) {
+        // Never accept a digest claimed by the browser. Resolve the File by
+        // organization ownership and freeze the actual bytes' SHA at save.
+        if ((post.settings as any).storyImageId) {
+          const image = await this.readStoryGoImage(orgId, (post.settings as any).storyImageId);
+          (post.settings as any).storyImageSha256 = image.sha256;
+        } else {
+          delete (post.settings as any).storyImageSha256;
+        }
+      }
 
       let messages = (post.value || []).map((p) => p.content);
       // Append campaign UTM params before short-linking so short links carry them.
-      messages = await this._appendUtmToMessages(
-        messages,
-        body.campaignId,
-        orgId,
-        providerIdentifier
-      );
+      if (!isStory) {
+        messages = await this._appendUtmToMessages(
+          messages,
+          body.campaignId,
+          orgId,
+          providerIdentifier
+        );
+      }
       // No point shortlinking links on platforms that strip them out anyway
       const updateContent =
-        !body.shortLink || removeLinks
+        isStory || !body.shortLink || removeLinks
           ? messages
           : await this._shortLinkService.convertTextToShortLinks(
               orgId,

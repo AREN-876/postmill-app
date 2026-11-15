@@ -90,6 +90,10 @@ const runPostPublish = (postActivity: PostActivity) =>
       if (!fresh) return;
       // Persist/dispatch the next intent before attempting this one. An unknown
       // delivery blocks only this occurrence, never the entire periodic series.
+      // A deferred StoryGo revision must not generate an unbounded chain of
+      // sleeping future Inngest runs. The durable READY successor already
+      // exists; the normal MAX missing-post sweep will re-emit its stable ID.
+      if (fresh.deferred) return;
       if (fresh.next?.state === 'READY') await step.sendEvent('max-repeat-post', repeatEvent(postId, organizationId, taskQueue, maxConcurrentJob, `max_occurrence_${fresh.next.id}`, fresh.next.id, fresh.next.attempt + 1));
       if (fresh.current.state !== 'READY') return;
     }

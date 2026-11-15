@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { v5 as uuidv5 } from 'uuid';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 
@@ -440,5 +442,138 @@ describe('XDto poll validation (2.2)', () => {
   it('accepts a valid 2-4 option poll with an allowed duration', async () => {
     const errors = await validate(makeX({ options: ['a', 'b', 'c'], duration: 168 }));
     expect(errors).toHaveLength(0);
+  });
+});
+
+describe('PostActivity MAX StoryGo immutable photo package', () => {
+  it('binds actual org-owned bytes, 2+ parts and UUIDv5 to the single occurrence', async () => {
+    const occurrenceId = 'max_' + 'a'.repeat(64);
+    const imageBytes = Buffer.from('synthetic verified PNG bytes');
+    const sha256 = createHash('sha256').update(imageBytes).digest('hex');
+    const settings = {
+      __type: 'max',
+      mode: 'story',
+      continuationText: 'Вторая часть',
+      storyImageId: 'file-owned',
+      storyImageSha256: sha256,
+    };
+    const post = {
+      id: 'post-1', content: 'Заголовок',
+      organizationId: 'org-1', campaignId: null,
+      settings: JSON.stringify(settings), image: '[]',
+    } as any;
+    const integration = {
+      id: 'integration-1', organizationId: 'org-1',
+      providerIdentifier: 'max', internalId: 'max:-123',
+      providerVersion: 'v1', providerConfigId: null,
+      name: 'Test MAX', token: 'BOT-SECRET',
+    } as any;
+    const sendPost = vi.fn().mockResolvedValue([
+      { id: post.id, postId: 'mid.from-storygo', status: 'completed', releaseURL: '' },
+    ]);
+    const beginMaxDelivery = vi.fn().mockResolvedValue({
+      attempt: 1, occurrenceId,
+    });
+    const confirmMaxDelivery = vi.fn().mockResolvedValue(undefined);
+    const updateTags = vi.fn();
+    const { activity } = build({
+      _postService: {
+        updateTags, updateMedia: vi.fn().mockResolvedValue([]),
+        readStoryGoImage: vi.fn().mockResolvedValue({
+          bytes: imageBytes, sha256, mimeType: 'image/png',
+        }),
+        beginMaxDelivery, confirmMaxDelivery,
+      },
+      _integrationManager: {
+        getSocialIntegration: vi.fn().mockResolvedValue({
+          editor: 'normal', post: sendPost,
+        }),
+        requireClientInformation: vi.fn().mockResolvedValue(undefined),
+      },
+      _integrationService: {
+        getIntegrationById: vi.fn().mockResolvedValue(integration),
+      },
+      _orgProviderConfigService: {
+        getVpnSelectionForIntegration: vi.fn().mockResolvedValue(null),
+      },
+    });
+    const response = await activity.postSocial(integration, [post], occurrenceId, 1);
+    expect(response[0].postId).toBe('mid.from-storygo');
+    expect(updateTags).not.toHaveBeenCalled();
+    const payload = sendPost.mock.calls[0][2][0];
+    expect(payload.message).toBe('Заголовок');
+    expect(payload.settings.__gateway).toMatchObject({
+      externalPostId: post.id, revision: occurrenceId,
+      operationId: uuidv5('postmill:max:occurrence:' + occurrenceId, uuidv5.URL),
+      image: { base64: imageBytes.toString('base64'), sha256, mimeType: 'image/png' },
+    });
+    expect(beginMaxDelivery.mock.calls[0][2]).toMatchObject({
+      storyPhotoSha256: sha256,
+      storygoOperationId: payload.settings.__gateway.operationId,
+    });
+    expect(confirmMaxDelivery).toHaveBeenCalledTimes(1);
+    // Neither bot token nor base64 bytes are in the confirmed receipt.
+    expect(JSON.stringify(confirmMaxDelivery.mock.calls)).not.toContain('BOT-SECRET');
+    expect(JSON.stringify(confirmMaxDelivery.mock.calls)).not.toContain(imageBytes.toString('base64'));
+  });
+});
+
+describe('MAX StoryGo crash-safe receipt recovery', () => {
+  const candidate = {
+    id: 'max_' + 'a'.repeat(64),
+    postId: 'post-1',
+    organizationId: 'org-1',
+    attempt: 1,
+    channelId: 'max:-73052031470103',
+    operationId: 'e299b442-02a8-5acf-ab16-6ab92926d548',
+    providerVersion: 'v1',
+  };
+
+  it('confirms a proven MID by GET without ever publishing again', async () => {
+    const lookup = vi.fn().mockResolvedValue('mid.recovered');
+    const confirm = vi.fn().mockResolvedValue(undefined);
+    const { activity } = build({
+      _postService: {
+        unresolvedStoryGoOccurrences: vi.fn().mockResolvedValue([candidate]),
+        confirmMaxDelivery: confirm,
+        resetStalePublishingToQueue: vi.fn().mockResolvedValue(0),
+        pendingMaxOccurrences: vi.fn().mockResolvedValue([]),
+        searchForMissingThreeHoursPosts: vi.fn().mockResolvedValue([]),
+      },
+      _integrationManager: {
+        getSocialIntegration: vi.fn().mockResolvedValue({
+          reconcileStoryGoOperation: lookup,
+        }),
+      },
+    });
+    await activity.searchForMissingThreeHoursPosts();
+    expect(lookup).toHaveBeenCalledWith(candidate.channelId, candidate.operationId);
+    expect(confirm).toHaveBeenCalledWith(
+      candidate.postId, candidate.organizationId, 1,
+      { id: 'post-1', postId: 'mid.recovered', releaseURL: '', status: 'completed' },
+      candidate.id,
+    );
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown or unavailable StoryGo receipt in REVIEW', async () => {
+    const confirm = vi.fn();
+    const { activity } = build({
+      _postService: {
+        unresolvedStoryGoOccurrences: vi.fn().mockResolvedValue([candidate]),
+        confirmMaxDelivery: confirm,
+        resetStalePublishingToQueue: vi.fn().mockResolvedValue(0),
+        pendingMaxOccurrences: vi.fn().mockResolvedValue([]),
+        searchForMissingThreeHoursPosts: vi.fn().mockResolvedValue([]),
+      },
+      _integrationManager: {
+        getSocialIntegration: vi.fn().mockResolvedValue({
+          reconcileStoryGoOperation: vi.fn().mockRejectedValue(new Error('synthetic timeout')),
+        }),
+      },
+    });
+    await expect(activity.searchForMissingThreeHoursPosts()).resolves.toBeUndefined();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });
