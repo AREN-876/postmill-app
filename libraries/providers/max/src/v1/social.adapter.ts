@@ -17,7 +17,7 @@ import {
 } from '@postmill-ai/provider-kernel';
 import { createHash } from 'node:crypto';
 import { metadata } from './metadata';
-import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
+import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos/max.dto';
 import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 
 const API = 'https://platform-api2.max.ru';
