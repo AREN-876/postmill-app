@@ -416,7 +416,7 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
   const gatewayKey = 'synthetic-gateway-secret-with-32-characters';
   const settings = () => ({
     mode: 'story',
-    continuationText: 'Часть два\\n────────────────────────\\nЧасть три',
+    continuationText: 'Часть два\n────────────────────────\nЧасть три',
     __gateway: { operationId, externalPostId: post.id, revision },
   });
   const receipt = (state: string, message_id: string | null = null) => ({
@@ -445,7 +445,7 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
       wire.mockResolvedValueOnce(response(receipt('SENDING'), 202))
         .mockResolvedValueOnce(response(receipt('PUBLISHED', 'mid.test-1')));
       const result = await provider.post(chatId, token, [
-        { ...post, message: 'Заголовок\\nПервая часть', settings: settings() },
+        { ...post, message: 'Заголовок\nПервая часть', settings: settings() },
       ]);
       expect(result).toEqual([
         { id: post.id, postId: 'mid.test-1', releaseURL: '', status: 'completed' },
@@ -459,7 +459,7 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
       expect(JSON.parse(wire.mock.calls[0][1].body)).toMatchObject({
         type: 'story', channel_id: chatId, external_post_id: post.id,
         operation_id: operationId, revision,
-        parts: ['Заголовок\\nПервая часть', 'Часть два', 'Часть три'],
+        parts: ['Заголовок\nПервая часть', 'Часть два', 'Часть три'],
       });
       expect(JSON.stringify(wire.mock.calls)).not.toContain(token);
       expect(wire.mock.calls[0][1].retryPolicy).toBeUndefined();
