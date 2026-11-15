@@ -594,6 +594,24 @@ export class PostActivity {
       })
     );
 
+    // Read photo bytes only from the current organization-owned File row and
+    // verify the SHA frozen at scheduling. No untrusted URL/FS path is fetched.
+    let storyPhoto: { base64: string; mimeType: string; sha256: string } | undefined;
+    if (storyMode && postPayload[0].settings.storyImageId) {
+      const img = await this._postService.readStoryGoImage(
+        integration.organizationId, postPayload[0].settings.storyImageId,
+      );
+      if (img.sha256 !== postPayload[0].settings.storyImageSha256) {
+        throw new BadBodyError('max', '{}', '',
+          'Approved StoryGo photo has changed; do not publish');
+      }
+      storyPhoto = {
+        base64: img.bytes.toString('base64'),
+        mimeType: img.mimeType,
+        sha256: img.sha256,
+      };
+    }
+
     // 2.2: never publish a plain post when a poll was requested but this provider
     // can't do polls — fail hard (non-retriable) instead of silently dropping it.
     this._assertPollSupported(integration.providerIdentifier, postPayload);
@@ -618,6 +636,7 @@ export class PostActivity {
           storyPartsSha256: createHash('sha256').update(JSON.stringify(
             maxStoryParts(postPayload[0].message, postPayload[0].settings.continuationText)
           )).digest('hex'),
+          ...(storyPhoto ? { storyPhotoSha256: storyPhoto.sha256 } : {}),
         } : {}),
       }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
     if (maxAttempt?.alreadyConfirmed) return [];
@@ -637,6 +656,7 @@ export class PostActivity {
               ),
               externalPostId: posts[0].id,
               revision: maxAttempt.occurrenceId,
+              ...(storyPhoto ? { image: storyPhoto } : {}),
             },
           },
         }))
