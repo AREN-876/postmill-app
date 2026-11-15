@@ -571,6 +571,9 @@ export class PostActivity {
         content: postPayload[0].message, integrationName: integration.name,
         integrationId: integration.id, chatId: integration.internalId, providerConfigId: integration.providerConfigId ?? null, version: integration.providerVersion ?? 'v1',
         textSha256: createHash('sha256').update(postPayload[0].message).digest('hex'),
+        ...(storyMode && maxOccurrenceId ? {
+          storygoOperationId: uuidv5('postmill:max:occurrence:' + maxOccurrenceId, uuidv5.URL),
+        } : {}),
         ...(storyMode ? {
           storyPartsSha256: createHash('sha256').update(JSON.stringify(
             maxStoryParts(postPayload[0].message, postPayload[0].settings.continuationText)
