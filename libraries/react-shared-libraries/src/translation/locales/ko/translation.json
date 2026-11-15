@@ -4834,5 +4834,12 @@
   "designer_output_content_mode": "콘텐츠",
   "designer_output_linked": "연결된 형식 (편집 공유)",
   "designer_output_independent": "독립 사본 (캐러셀 / 페이지)",
-  "designer_bulk_no_variables": "변형을 만들기 전에 편집 가능한 텍스트, 이미지 또는 색상 요소를 추가하세요."
+  "designer_bulk_no_variables": "변형을 만들기 전에 편집 가능한 텍스트, 이미지 또는 색상 요소를 추가하세요.",
+  "max_chat_id_help": "Enter the test channel chat_id from a bot_added event or channel update. The bot must be an administrator with posting rights. No message is sent when connecting.",
+  "max_channel_id": "MAX channel chat_id",
+  "max_validate_channel": "Validate test channel",
+  "max_setup_step_1": "Create a separate test bot and copy its token here.",
+  "max_setup_step_2": "Add the bot as an administrator of a test channel with permission to post messages.",
+  "max_setup_step_3": "Enter the exact chat_id from a bot_added event or an update for that channel. Channels cannot be enumerated.",
+  "max_setup_step_4": "Connect performs read-only identity, channel and membership checks. It sends no message."
 }

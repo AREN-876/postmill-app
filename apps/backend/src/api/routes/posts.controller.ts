@@ -1,3 +1,4 @@
+import { RetryPostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/retry.post.dto';
 import {
   BadRequestException,
   Body,
@@ -22,7 +23,7 @@ import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.p
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import { CheckPolicies } from '@postmill-ai/backend/services/auth/permissions/permissions.ability';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiTags } from '@nestjs/swagger';
 import { GeneratorDto } from '@postmill-ai/nestjs-libraries/dtos/generator/generator.dto';
 import { CreateGeneratedPostsDto } from '@postmill-ai/nestjs-libraries/dtos/generator/create.generated.posts.dto';
 import { AgentGraphService } from '@postmill-ai/nestjs-libraries/agent/agent.graph.service';
@@ -57,6 +58,12 @@ export class PostsController {
     private _shortLinkService: ShortLinkService
   ) {}
 
+  @Get('/:id/max-occurrences')
+  @RequirePermission('posts', 'read')
+  listMaxOccurrences(@GetOrgFromRequest() org: Organization, @Param('id', ParseCuidPipe) id: string, @Query('cursor') cursor?: string) {
+    return this._postsService.listMaxOccurrences(id, org.id, cursor);
+  }
+
   @Get('/:id/statistics')
   async getStatistics(
     @GetOrgFromRequest() org: Organization,
@@ -84,13 +91,16 @@ export class PostsController {
   }
 
   @Post('/:id/retry')
+  @ApiBody({ type: RetryPostDto, required: false })
   @RequirePermission('posts', 'update')
   @CheckPolicies([AuthorizationActions.Create, Sections.POSTS_PER_MONTH])
   async retryPost(
     @GetOrgFromRequest() org: Organization,
     @Param('id', ParseCuidPipe) id: string,
+    @Body() body: RetryPostDto,
+    @GetUserFromRequest() user: User,
   ) {
-    return this._postsService.retryPost(org.id, id);
+    return this._postsService.retryPost(org.id, id, body, user?.id);
   }
 
   @Post('/should-shortlink')

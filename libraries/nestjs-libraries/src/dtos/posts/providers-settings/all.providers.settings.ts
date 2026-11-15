@@ -59,6 +59,7 @@ export type AllProvidersSettings =
   | ProviderExtension<'odysee', None>
   | ProviderExtension<'misskey', None>
   | ProviderExtension<'sharkey', None>
+  | ProviderExtension<'max', None>
   | ProviderExtension<'line', None>
   | ProviderExtension<'matrix', None>
   | ProviderExtension<'discourse', None>
@@ -109,6 +110,7 @@ export const allProviders = (setEmpty?: any) => {
     { value: setEmpty, name: 'odysee' },
     { value: setEmpty, name: 'misskey' },
     { value: setEmpty, name: 'sharkey' },
+    { value: setEmpty, name: 'max' },
     { value: setEmpty, name: 'line' },
     { value: setEmpty, name: 'matrix' },
     { value: setEmpty, name: 'discourse' },

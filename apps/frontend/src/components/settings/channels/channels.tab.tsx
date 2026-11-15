@@ -147,6 +147,7 @@ const useConnectedChannels = () => {
   return useSWR<
     Array<{
       identifier: string;
+      providerConfigId?: string | null;
       name: string;
       disabled: boolean;
       inBetweenSteps?: boolean;
@@ -394,7 +395,8 @@ export const ChannelsTab: FC = () => {
     const map: Record<string, string[]> = {};
     for (const ch of connectedList || []) {
       if (ch.disabled || ch.inBetweenSteps) continue;
-      (map[ch.identifier] ||= []).push(ch.name);
+      const key = ch.identifier === 'max' ? `max:${ch.providerConfigId}` : ch.identifier;
+      (map[key] ||= []).push(ch.name);
     }
     return map;
   }, [connectedList]);
@@ -557,7 +559,7 @@ export const ChannelsTab: FC = () => {
       }
       renderBadges={(provider) => {
         const config = filteredConfigs.find((c) => c.id === provider.id);
-        const connected = connectedByIdentifier[provider.identifier] || [];
+        const connected = connectedByIdentifier[provider.identifier === 'max' ? `max:${config?.id}` : provider.identifier] || [];
         return (
           <div className="flex gap-[6px] mt-[4px] items-center flex-wrap">
             <span className="text-[11px] text-newTableText">
@@ -582,7 +584,9 @@ export const ChannelsTab: FC = () => {
       }}
       // The whole row opens the config modal — no separate Edit button.
       renderActions={() => null}
-      onRowClick={(provider) => openConfigByIdentifier(provider.identifier)}
+      onRowClick={(provider) => provider.identifier === 'max'
+        ? openConfig('max', filteredConfigs.find(c => c.id === provider.id))
+        : openConfigByIdentifier(provider.identifier)}
     />
   );
 };

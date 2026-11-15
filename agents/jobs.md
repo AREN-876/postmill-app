@@ -269,3 +269,21 @@ has an integration spec (`inngest-run.repository.int-spec.ts`, run via
 - [ ] Factory spec written with `vi.mock` on `inngest.client` + `captureFunctionHandler`/`createMockStep`; asserts id, trigger, step ids, activity calls.
 - [ ] New function appears in the Inngest dev UI (http://localhost:8288) after backend restart.
 - [ ] Did NOT add `@nestjs/schedule` `@Cron` for new work — Inngest cron instead.
+
+## MAX crash recovery
+
+MAX uses the Post.maxDelivery PostgreSQL journal before provider invocation; do not clear it
+in recovery, edits or generic retry. STARTED claims require operator review, CONFIRMED replays
+return the saved receipt. Ordinary providers retain their recovery behavior. See
+[delivery recovery contract](../docs/max-delivery-recovery.md) for failure boundaries, migration
+requirements and attempt-bound manual authorization.
+
+MAX periodic deliveries use the same post/publish factory and intervalInDays. All MAX events
+must carry a persisted maxOccurrenceId; never reconstruct it from a stale event or clear a
+CONFIRMED receipt for a repeat. See [occurrence contract](../docs/max-occurrence-scheduling.md).
+
+Use `step.sleepUntil` with the MAX deadline rounded **up** to a whole second: the
+Dev Server's timer resolution must not wake before PostgreSQL's not-before guard.
+Recovery also initializes due MAX QUEUE roots without any occurrence, covering a
+crash between the post commit and asynchronous `startWorkflow`; initialization
+must retain legacy uncertainty guards and run under the parent-row lock. Reconcile due QUEUE roots even when they have older history: an explicit MAX reschedule can commit a new schedule revision before initializing its first occurrence. Initialization must never reopen the same cancelled/uncertain generation.

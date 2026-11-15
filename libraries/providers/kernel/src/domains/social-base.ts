@@ -158,6 +158,11 @@ function safeStringify(obj: any) {
   });
 }
 
+/** Explicit per-request opt-out for writes without an idempotency contract.
+ * The option is consumed here and never forwarded to the HTTP transport.
+ */
+export type SocialFetchOptions = RequestInit & { retryPolicy?: 'default' | 'none' };
+
 export abstract class SocialAbstract {
   abstract identifier: string;
   maxConcurrentJob = 1;
@@ -261,12 +266,13 @@ export abstract class SocialAbstract {
 
   async fetch(
     url: string,
-    options: RequestInit = {},
+    options: SocialFetchOptions = {},
     identifier = '',
     totalRetries = 0,
     ignoreConcurrency = false,
     message = '',
   ): Promise<Response> {
+    const { retryPolicy = 'default', ...requestOptions } = options;
     // 1H defense-in-depth: every integration call gets connect-time SSRF
     // protection (private-IP blocking, incl. redirect hops) via the undici
     // dispatcher. Callers may override `dispatcher` for trusted first-party
@@ -309,7 +315,7 @@ export abstract class SocialAbstract {
         } as any;
       }
       request = (await _ports!.undiciFetch(url, {
-        ...(options as any),
+        ...(requestOptions as any),
         body,
         headers,
         signal,
@@ -343,10 +349,12 @@ export abstract class SocialAbstract {
     const handleError = this.handleErrors(json || '{}', request.status);
 
     if (
-      request.status === 429 ||
-      (request.status === 500 && !handleError) ||
-      json.includes('rate_limit_exceeded') ||
-      json.includes('Rate limit')
+      retryPolicy !== 'none' && (
+        request.status === 429 ||
+        (request.status === 500 && !handleError) ||
+        json.includes('rate_limit_exceeded') ||
+        json.includes('Rate limit')
+      )
     ) {
       await _ports!.timer(5000);
       return this.fetch(
@@ -359,7 +367,7 @@ export abstract class SocialAbstract {
       );
     }
 
-    if (handleError?.type === 'retry') {
+    if (retryPolicy !== 'none' && handleError?.type === 'retry') {
       await _ports!.timer(5000);
       return this.fetch(
         url,

@@ -1,3 +1,5 @@
+import { maxTarget } from './max-target';
+import { MaxOccurrences } from './max-occurrences';
 import { PrismaRepository, PrismaTransaction } from '@postmill-ai/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Post as PostBody } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
@@ -74,6 +76,7 @@ export class PostsRepository {
     return this._post.model.post.findMany({
       where: {
         integration: {
+          providerIdentifier: { not: 'max' },
           refreshNeeded: false,
           inBetweenSteps: false,
           disabled: false,
@@ -607,6 +610,24 @@ export class PostsRepository {
     });
   }
 
+  private maxOccurrences() { return new MaxOccurrences(this._transaction.model); }
+  pauseMaxOccurrences(id: string, org: string) { return this.maxOccurrences().pause(id, org); }
+  maxWebhookSnapshot(id: string, org: string, occurrence: string) { return this.maxOccurrences().webhookSnapshot(id, org, occurrence); }
+  listMaxOccurrences(id: string, org: string, cursor?: string) { return this.maxOccurrences().list(id, org, cursor); }
+  initialMaxOccurrence(id: string, org: string) { return this.maxOccurrences().initial(id, org); }
+  planMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().plan(id, org, occurrence); }
+  pendingMaxOccurrences() { return this.maxOccurrences().pending(); }
+  failMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().fail(id, org, occurrence); }
+  beginMaxDelivery(id: string, org: string, target: Record<string,string> = {}, occurrence?: string, expectedAttempt?: number) {
+    return this.maxOccurrences().begin(id, org, occurrence, target, expectedAttempt);
+  }
+  confirmMaxDelivery(id: string, org: string, attempt: number, receipt: any, occurrence: string) {
+    return this.maxOccurrences().confirm(id, org, occurrence, attempt, receipt);
+  }
+  authorizeMaxRetry(id: string, org: string, attempt: number, actor: string, occurrence: string) {
+    return this.maxOccurrences().authorize(id, org, occurrence, attempt, actor);
+  }
+
   // 0.7: atomic publish state-claim. Flips exactly one QUEUE post to PUBLISHING and
   // returns the affected row count — the worker aborts the run when count === 0 so a
   // recovery enqueue racing a live run (or a "post now" during sleep) can't double-post.
@@ -619,16 +640,13 @@ export class PostsRepository {
     return count;
   }
 
-  // 0.7 follow-up: recover posts orphaned in PUBLISHING by a terminal Inngest run
-  // loss *after* the atomic claim (the claim moves QUEUE -> PUBLISHING, but if the
-  // run then dies unrecoverably the row is stuck: the missing-post finder only
-  // matches QUEUE). Reset stale PUBLISHING rows (same >3h grace / 2-day floor as the
-  // finder) back to QUEUE so the finder re-enqueues them; the atomic claim on the
-  // re-run — plus the `post/cancel` the recovery sends first — keeps it
-  // double-publish-safe if the original run were somehow still alive.
+  // Recover ordinary providers and provably unstarted MAX work normally.
+  // A MAX STARTED marker survives crashes and cannot be automatically requeued.
+  // Quarantine it after the grace period, without the old finder's two-day floor.
   async resetStalePublishingToQueue(): Promise<number> {
     const { count } = await this._post.model.post.updateMany({
       where: {
+        integration: { providerIdentifier: { not: 'max' } },
         state: 'PUBLISHING',
         deletedAt: null,
         publishDate: {
@@ -668,6 +686,8 @@ export class PostsRepository {
         // 4.4a: org scoping is REQUIRED on the publish-path mutators — always
         // scope the write so a mis-threaded id can't touch another org's row.
         organizationId: orgId,
+        ...(state === 'PUBLISHED' ? {} : { OR: [{ integration: { providerIdentifier: { not: 'max' } } }, { maxDelivery: { equals: Prisma.DbNull } },
+          { maxDelivery: { path: ['state'], not: 'CONFIRMED' } }] }),
       },
       data: {
         state,
@@ -682,6 +702,13 @@ export class PostsRepository {
           },
         },
       },
+    }).catch(async err => {
+      if (err?.code === 'P2025') {
+        const confirmed = await this._post.model.post.findFirst({ where: { id, organizationId: orgId,
+          maxDelivery: { path: ['state'], equals: 'CONFIRMED' } }, include: { integration: { select: { providerIdentifier: true } } } });
+        if (confirmed) return confirmed;
+      }
+      throw err;
     });
 
     if (state === 'ERROR' && err && body) {
@@ -712,12 +739,18 @@ export class PostsRepository {
     });
   }
 
+  async changeMaxDate(org: string, id: string, date: string, isDraft: boolean, action: 'schedule' | 'update') {
+    const post = await this._transaction.model.$transaction(tx => tx.post.findFirstOrThrow({ where: { id, organizationId: org, integration: { providerIdentifier: 'max' } }, include: { integration: true } }));
+    return this.changeDate(org, id, date, isDraft, action, maxTarget(post.integration));
+  }
+
   async changeDate(
     orgId: string,
     id: string,
     date: string,
     isDraft: boolean,
-    action: 'schedule' | 'update' = 'schedule'
+    action: 'schedule' | 'update' = 'schedule',
+    binding?: ReturnType<typeof maxTarget>
   ) {
     return this._post.model.post.update({
       where: {
@@ -726,6 +759,7 @@ export class PostsRepository {
       },
       data: {
         publishDate: dayjs(date).toDate(),
+        ...(binding && action === 'schedule' ? { maxTarget: binding, maxScheduleRevision: { increment: 1 } } : {}),
         // schedule: set state to QUEUE (or DRAFT if it was a draft)
         // update: don't change the state
         ...(action === 'schedule'
@@ -790,10 +824,14 @@ export class PostsRepository {
         };
       };
     }>[] = [];
+    const maxIntegration = (body.settings as any)?.__type === 'max'
+      ? await this._transaction.model.$transaction(tx => tx.integration.findFirstOrThrow({ where: { id: body.integration.id, organizationId: orgId, providerIdentifier: 'max', deletedAt: null } }))
+      : undefined;
     const uuid = uuidv4();
 
     for (const value of body.value) {
       const updateData = (type: 'create' | 'update') => ({
+        ...(maxIntegration && (type === 'create' || state !== 'update') ? { maxTarget: maxTarget(maxIntegration) } : {}),
         publishDate: dayjs(date).toDate(),
         integration: {
           connect: {
@@ -852,6 +890,7 @@ export class PostsRepository {
           create: { ...updateData('create'), ...(campaignId ? { campaign: { connect: { id: campaignId } } } : {}), ...(brandId ? { brand: { connect: { id: brandId } } } : {}) },
           update: {
             ...updateData('update'),
+            ...(maxIntegration && ['schedule', 'now'].includes(state) ? { maxScheduleRevision: { increment: 1 } } : {}),
 
           },
           select: {
@@ -1371,6 +1410,9 @@ export class PostsRepository {
       where: {
         id,
         organizationId: orgId,
+        state: 'ERROR',
+        OR: [{ integration: { providerIdentifier: { not: 'max' } } },
+          { maxDelivery: { equals: Prisma.DbNull } }, { maxDelivery: { path: ['state'], equals: 'READY' } }],
       },
       data: {
         state: State.QUEUE,

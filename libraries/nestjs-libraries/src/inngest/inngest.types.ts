@@ -9,6 +9,9 @@ export type InngestEvents = {
       taskQueue: string;
       maxConcurrentJob: number;
       postNow?: boolean;
+      repeat?: boolean;
+      maxOccurrenceId?: string;
+      maxDeliveryAttempt?: number;
     };
   };
   'post/cancel': {

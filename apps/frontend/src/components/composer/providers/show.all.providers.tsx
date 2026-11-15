@@ -52,7 +52,10 @@ import TumblrProvider from '@postmill-ai/frontend/components/composer/providers/
 import PixelfedProvider from '@postmill-ai/frontend/components/composer/providers/pixelfed/pixelfed.provider';
 import PeerTubeProvider from '@postmill-ai/frontend/components/composer/providers/peertube/peertube.provider';
 
+import MaxProvider from './max/max.provider';
+
 export const Providers = [
+  { identifier: 'max', component: MaxProvider },
   {
     identifier: 'devto',
     component: DevtoProvider,

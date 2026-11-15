@@ -288,6 +288,7 @@ export class IntegrationRepository {
 
     const upsert = await this._integration.model.integration.upsert({
       where: {
+        ...(provider === 'max' ? { providerIdentifier: 'max' } : {}),
         organizationId_internalId: {
           internalId,
           organizationId: org,
