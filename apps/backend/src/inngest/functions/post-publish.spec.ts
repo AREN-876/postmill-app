@@ -455,8 +455,9 @@ describe('runPostPublish handler', () => {
     expect(activity.notifyPostFailed).not.toHaveBeenCalled();
     expect(activity.notifyPostPublished).not.toHaveBeenCalled();
     expect(activity.sendWebhooks).not.toHaveBeenCalled();
-    expect(step.sendEvent).toHaveBeenCalledTimes(1);
-    expect((step.sendEvent.mock.calls[0] as any)[1].id).toBe('max_occurrence_occ-3');
+    // An existing READY child remains in PostgreSQL. A deferred predecessor
+    // must not emit another Inngest chain; the safe recovery sweep picks it up.
+    expect(step.sendEvent).not.toHaveBeenCalled();
   });
 
   it('MAX replay returning no new delivery never triggers success side effects',async()=>{
