@@ -99,6 +99,8 @@ export const METRIC_REGISTRY: Record<string, MetricDef> = {
 };
 
 export const PROVIDER_METRIC_MAP: Record<string, Record<string, string>> = {
+  // MAX exposes post-level stat.views via GET /messages?message_ids=...
+  max: { Views: 'views' },
   facebook: {
     // Channel-level (analytics)
     'Page Impressions': 'impressions',

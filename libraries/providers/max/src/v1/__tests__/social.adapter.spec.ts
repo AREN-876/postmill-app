@@ -280,3 +280,131 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
     );
   });
 });
+
+describe('MAX post analytics (synthetic GET only)', () => {
+  const mid = 'mid.ffffbd8f0123abc';
+  const message = (views: unknown, recipient: unknown = { chat_id: chat.chat_id }) => ({
+    recipient,
+    body: { mid },
+    stat: { views },
+  });
+
+  it('reads cumulative views for exactly the selected MAX channel', async () => {
+    wire.mockResolvedValueOnce(response({ messages: [message(42)] }));
+    const result = await provider.postAnalytics(`max:${chatId}`, token, mid, 2);
+    expect(result).toEqual([{
+      label: 'Views',
+      data: [{ total: '42', date: new Date().toISOString().slice(0, 10) }],
+    }]);
+    expect(wire).toHaveBeenCalledTimes(1);
+    const [url, init] = wire.mock.calls[0];
+    expect(url).toBe(`https://platform-api2.max.ru/messages?message_ids=${mid}`);
+    expect(init.method).toBe('GET');
+    expect(init.headers.Authorization).toBe(token);
+    expect(url).not.toContain(token);
+    expect(init.dispatcher).toEqual({ synthetic: true });
+  });
+
+  it('preserves zero as a measured value, not absent data', async () => {
+    wire.mockResolvedValueOnce(response({ messages: [message(0)] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toMatchObject([
+      { label: 'Views', data: [{ total: '0' }] },
+    ]);
+  });
+
+  it.each([
+    { stat: null },
+    {},
+    { stat: { views: null } },
+    { stat: { views: -1 } },
+    { stat: { views: '4' } },
+    { stat: { views: 1.4 } },
+    { stat: { views: 9007199254740992 } },
+  ])('does not fabricate a value for missing or unsafe stats %#', async (fields) => {
+    wire.mockResolvedValueOnce(response({
+      messages: [{ recipient: { chat_id: chat.chat_id }, body: { mid }, ...fields }],
+    }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toEqual([]);
+  });
+
+  it.each([
+    { recipient: { chat_id: 999999 }, body: { mid }, stat: { views: 80 } },
+    { recipient: null, body: { mid }, stat: { views: 80 } },
+    { recipient: { chat_id: chat.chat_id }, body: { mid: 'mid.other' }, stat: { views: 80 } },
+  ])('does not accept an unrelated channel or MID %#', async (received) => {
+    wire.mockResolvedValueOnce(response({ messages: [received] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toEqual([]);
+  });
+
+  it('handles full-width MAX int64 channel IDs without Number rounding', async () => {
+    wire.mockResolvedValueOnce(new Response(
+      '{"messages":[{"recipient":{"chat_id":9223372036854775807},"body":{"mid":"mid.ffffbd8f0123abc"},"stat":{"views":8}}]}',
+    ));
+    expect(await provider.postAnalytics('max:9223372036854775807', token, mid, 2)).toMatchObject([
+      { label: 'Views', data: [{ total: '8' }] },
+    ]);
+  });
+
+  it.each(['', 'mid.a,mid.b', 'a/b', '?anything', 'x'.repeat(201)])(
+    'rejects unsafe or ambiguous MID %# before HTTP',
+    async invalid => {
+      expect(await provider.postAnalytics(chatId, token, invalid, 2)).toEqual([]);
+      expect(wire).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects malformed response envelopes without recording a metric', async () => {
+    wire.mockResolvedValueOnce(response({ messages: null }));
+    await expect(provider.postAnalytics(chatId, token, mid, 2)).rejects.toThrow(
+      'unexpected response',
+    );
+  });
+
+  it('rejects invalid JSON without leaking response data', async () => {
+    wire.mockResolvedValueOnce(new Response('{"messages":', { status: 200 }));
+    await expect(provider.postAnalytics(chatId, token, mid, 2)).rejects.toThrow(
+      'unexpected response',
+    );
+  });
+
+  it('rejects ambiguous duplicate matches instead of choosing one', async () => {
+    wire.mockResolvedValueOnce(response({ messages: [message(7), message(9)] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toEqual([]);
+  });
+
+  it.each([401, 403, 404])(
+    'keeps GET %i failures sanitized and never fabricates zero',
+    async status => {
+      wire.mockResolvedValueOnce(response({ error: token }, status));
+      const error = await provider.postAnalytics(chatId, token, mid, 2).catch(e => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).not.toContain(token);
+      expect(JSON.stringify(error)).not.toContain(token);
+      expect(wire).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retries a rate-limited GET and accepts a later valid response', async () => {
+    wire.mockResolvedValueOnce(response({ error: token }, 429))
+      .mockResolvedValueOnce(response({ messages: [message(17)] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toMatchObject([
+      { label: 'Views', data: [{ total: '17' }] },
+    ]);
+    expect(wire).toHaveBeenCalledTimes(2);
+    expect(timer).toHaveBeenCalledWith(5000);
+    expect(wire.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  });
+
+  it.each([429, 500, 503])(
+    'exhausts GET %i retries without leaking tokens or fabricating views',
+    async status => {
+      wire.mockImplementation(async () => response({ error: token }, status));
+      const error = await provider.postAnalytics(chatId, token, mid, 2).catch(e => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).not.toContain(token);
+      expect(JSON.stringify(error)).not.toContain(token);
+      expect(wire).toHaveBeenCalledTimes(4);
+      expect(timer).toHaveBeenCalledTimes(3);
+    },
+  );
+});
