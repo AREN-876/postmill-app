@@ -29,7 +29,7 @@ const MaxSettings = () => {
           </label>
           <textarea id="max-story-continuations" rows={10}
             {...register('continuationText')}
-            placeholder={'Часть 2...\\n' + STORYGO_DIVIDER + '\\nЧасть 3...'}
+            placeholder={'Часть 2...\n' + STORYGO_DIVIDER + '\nЧасть 3...'}
             className="w-full rounded border border-borderPreview bg-newBgColorInner p-[8px]"
           />
           <p className="text-[12px]">
