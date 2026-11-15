@@ -621,6 +621,9 @@ export class PostActivity {
         } : {}),
       }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
     if (maxAttempt?.alreadyConfirmed) return [];
+    // A previous StoryGo revision is unresolved. Leave this occurrence READY;
+    // the existing missing-post sweep will safely redispatch its stable key.
+    if (maxAttempt?.deferred) return [];
     if (integration.providerIdentifier === 'max' && (!maxAttempt || maxAttempt.blocked || !Number.isInteger(maxAttempt.attempt))) throw new BadBodyError('max', '{}', '', 'MAX delivery unknown or already in progress: operator review required');
     const outbound = storyMode && maxAttempt?.occurrenceId
       ? postPayload.map((item) => ({
