@@ -20,6 +20,15 @@ export class MaxOccurrences {
       return action(tx, post);
     });
   }
+  private storyMode(post: any) {
+    try {
+      return JSON.parse(post.settings || '{}')?.mode === 'story';
+    } catch {
+      // A malformed persisted setting must not allow an unreviewed story.
+      return false;
+    }
+  }
+
   private fingerprint(p: any) {
     return createHash('sha256')
       .update(
@@ -34,6 +43,11 @@ export class MaxOccurrences {
           p.integration.internalId,
           p.integration.providerVersion,
           p.campaignId,
+          ...(this.storyMode(p) ? [
+            p.approvalStatus ?? null,
+            p.approvedById ?? null,
+            p.approvedAt?.toISOString?.() ?? null,
+          ] : []),
         ]),
       )
       .digest('hex');
@@ -56,6 +70,10 @@ export class MaxOccurrences {
   private active(p: any) {
     return (
       p.integration.providerIdentifier === 'max' &&
+      (!this.storyMode(p) ||
+        p.approvalStatus === null ||
+        p.approvalStatus === undefined ||
+        p.approvalStatus === 'approved') &&
       (!p.integration.providerConfigId ||
         (p.integration.providerConfig?.organizationId === p.organizationId &&
           p.integration.providerConfig?.identifier === 'max' &&
@@ -170,9 +188,7 @@ export class MaxOccurrences {
    * concurrent claims for the same Post.id.
    */
   private async storyPredecessorPending(tx: any, post: any, occurrence: any) {
-    let settings: any;
-    try { settings = JSON.parse(post.settings || '{}'); } catch { return false; }
-    if (settings?.mode !== 'story') return false;
+    if (!this.storyMode(post)) return false;
     const earlier = await tx.maxDeliveryOccurrence.findFirst({
       where: {
         postId: occurrence.postId,
