@@ -13,8 +13,16 @@ export function maxStoryParts(first: unknown, continuation: unknown) {
   }
   // Preserve every approved byte: CRLF normalization would mutate the snapshot.
   const source = [first, continuation];
-  if (source.some((s) => s.includes('\r') || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(s))) {
+  if (source.some((s) => s.includes('\r') || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(s))) {
     throw new MaxStoryValidationError('Story contains unsupported control characters or CRLF.');
+  }
+  // Python StoryGo checked_story_text rejects lone UTF-16 surrogates. A JS
+  // for-of loop preserves valid supplementary Unicode codepoints (emoji).
+  if (source.some((s) => [...s].some((ch) => {
+    const codepoint = ch.codePointAt(0)!;
+    return codepoint >= 0xd800 && codepoint <= 0xdfff;
+  }))) {
+    throw new MaxStoryValidationError('Story contains an invalid Unicode surrogate.');
   }
   if (first.split('\n').some((line) => line === STORYGO_DIVIDER || DIVIDER_LINE.test(line.trim()))) {
     throw new MaxStoryValidationError('The public first part must not contain continuation dividers.');
