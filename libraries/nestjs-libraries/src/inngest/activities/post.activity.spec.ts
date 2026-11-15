@@ -467,7 +467,7 @@ describe('MAX StoryGo crash-safe receipt recovery', () => {
       },
       _integrationManager: {
         getSocialIntegration: vi.fn().mockResolvedValue({
-          rawProvider: { reconcileStoryGoOperation: lookup },
+          reconcileStoryGoOperation: lookup,
         }),
       },
     });
@@ -493,7 +493,7 @@ describe('MAX StoryGo crash-safe receipt recovery', () => {
       },
       _integrationManager: {
         getSocialIntegration: vi.fn().mockResolvedValue({
-          rawProvider: { reconcileStoryGoOperation: vi.fn().mockRejectedValue(new Error('synthetic timeout')) },
+          reconcileStoryGoOperation: vi.fn().mockRejectedValue(new Error('synthetic timeout')),
         }),
       },
     });
