@@ -479,6 +479,18 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
     });
   });
 
+  it('maps 202 then NEEDS_REVIEW to an unknown delivery without a second POST', async () => {
+    await withGatewayEnv(async () => {
+      wire.mockResolvedValueOnce(response(receipt('SENDING'), 202))
+        .mockResolvedValueOnce(response(receipt('NEEDS_REVIEW')));
+      await expect(provider.post(chatId, token, [
+        { ...post, message: 'Заголовок', settings: settings() },
+      ])).rejects.toThrow('operator review');
+      expect(wire.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+      expect(wire.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    });
+  });
+
   it('fails closed without channel allowlist or on a foreign/invalid receipt', async () => {
     const payload = [{ ...post, message: 'Заголовок', settings: settings() }];
     await expect(provider.post(chatId, token, payload)).rejects.toThrow('disabled');
