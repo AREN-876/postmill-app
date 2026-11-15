@@ -17,6 +17,7 @@ import {
 } from '@postmill-ai/provider-kernel';
 import { metadata } from './metadata';
 import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 
 const API = 'https://platform-api2.max.ru';
 const errors = {
@@ -300,6 +301,155 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     ];
   }
 
+  /**
+   * StoryGo transport is opt-in and bound to an operator-controlled HTTPS
+   * origin, service credential and explicit channel allowlist. It NEVER
+   * receives the MAX bot token and it never follows redirects.
+   */
+  private gatewayConfig(chatId: string) {
+    const raw = process.env.STORYGO_GATEWAY_BASE_URL;
+    const secret = process.env.STORYGO_GATEWAY_SERVICE_KEY;
+    const allowed = (process.env.STORYGO_GATEWAY_ALLOWED_CHANNELS || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (process.env.STORYGO_GATEWAY_ENABLED !== '1' ||
+        !raw || !secret || secret.length < 32 ||
+        !allowed.includes(chatId)) {
+      this.fail('StoryGo Gateway is disabled or this MAX channel is not allowed.');
+    }
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      this.fail('StoryGo Gateway HTTPS origin is invalid.');
+    }
+    if (url.protocol !== 'https:' || !!url.username || !!url.password ||
+        url.pathname !== '/' || !!url.search || !!url.hash) {
+      this.fail('StoryGo Gateway requires an HTTPS origin without path or credentials.');
+    }
+    return { origin: url.origin, secret };
+  }
+
+  private async gatewayRequest(
+    origin: string, secret: string, method: 'POST' | 'GET',
+    path: string, operationId: string, body?: object,
+  ): Promise<any> {
+    try {
+      const response = await this.fetch(
+        origin + path,
+        {
+          method,
+          redirect: 'error',
+          retryPolicy: 'none',
+          headers: {
+            Authorization: 'Bearer ' + secret,
+            ...(method === 'POST' ? {
+              'Content-Type': 'application/json',
+              'Idempotency-Key': operationId,
+            } : {}),
+          },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        },
+        'storygo-gateway',
+      );
+      // A gateway's 202 is explicitly NOT a published post.
+      if (![200, 202].includes(response.status)) {
+        this.fail('StoryGo Gateway returned an unexpected status.');
+      }
+      const data = await response.json();
+      if (!data || typeof data !== 'object') this.fail('Invalid StoryGo Gateway receipt.');
+      return data;
+    } catch {
+      // MAX token, gateway token and upstream error bodies must never escape
+      // into Inngest state, Sentry, journal errors or user-facing notifications.
+      this.fail('StoryGo Gateway response unavailable; delivery requires operator review.');
+    }
+  }
+
+  private verifiedGatewayReceipt(
+    receipt: any, operationId: string, chatId: string,
+  ): string | null {
+    if (receipt.operation_id !== operationId ||
+        receipt.channel_id !== chatId ||
+        !['PENDING', 'SENDING', 'PUBLISHED', 'FAILED', 'NEEDS_REVIEW'].includes(receipt.state)) {
+      this.fail('StoryGo Gateway receipt does not match the requested operation or channel.');
+    }
+    if (receipt.state === 'PUBLISHED') {
+      if (typeof receipt.message_id !== 'string' ||
+          !/^[A-Za-z0-9_.-]{1,200}$/.test(receipt.message_id)) {
+        this.fail('StoryGo Gateway did not confirm a valid MAX MID.');
+      }
+      return receipt.message_id;
+    }
+    return null;
+  }
+
+  private async publishStory(
+    chatId: string,
+    post: PostDetails,
+  ): Promise<PostResponse[]> {
+    const gateway = (post.settings as any)?.__gateway;
+    const operationId = gateway?.operationId;
+    if (typeof operationId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId) ||
+        typeof gateway?.externalPostId !== 'string' ||
+        gateway.externalPostId !== post.id ||
+        !/^max_[a-f0-9]{64}$/.test(gateway?.revision || '')) {
+      this.fail('StoryGo Gateway requires a stable confirmed MAX occurrence.');
+    }
+    if (post.media?.length || post.poll || post.firstComment || post.settings?.firstComment) {
+      this.fail('StoryGo Gateway text-only phase does not allow media, polls or comments.');
+    }
+    let story: ReturnType<typeof maxStoryParts>;
+    try {
+      story = maxStoryParts(post.message, (post.settings as any).continuationText);
+    } catch {
+      this.fail('StoryGo Gateway rejected malformed story parts.');
+    }
+    const { origin, secret } = this.gatewayConfig(chatId);
+    const path = '/gateway/v1/publications';
+    const body = {
+      type: 'story',
+      channel_id: chatId,
+      external_post_id: post.id,
+      operation_id: operationId,
+      revision: gateway.revision,
+      title: story.title,
+      parts: story.parts,
+    };
+    let receipt: any;
+    try {
+      // One and only one remote POST for a claimed occurrence. Never retry it.
+      receipt = await this.gatewayRequest(origin, secret, 'POST', path, operationId, body);
+    } catch {
+      // POST outcome may be unknown. GET is read-only and safe to reconcile.
+      receipt = null;
+    }
+    if (receipt) {
+      const mid = this.verifiedGatewayReceipt(receipt, operationId, chatId);
+      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
+      if (receipt.state === 'FAILED' || receipt.state === 'NEEDS_REVIEW') {
+        this.fail('StoryGo Gateway has not confirmed delivery; operator review required.');
+      }
+    }
+    // A competing request can leave PENDING/SENDING. Never interpret 202 as
+    // success and never issue a second POST, even after a transport timeout.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      let lookup: any;
+      try {
+        lookup = await this.gatewayRequest(
+          origin, secret, 'GET', path + '/' + operationId, operationId,
+        );
+      } catch {
+        continue;
+      }
+      const mid = this.verifiedGatewayReceipt(lookup, operationId, chatId);
+      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
+      if (lookup.state === 'FAILED' || lookup.state === 'NEEDS_REVIEW') break;
+    }
+    this.fail('StoryGo Gateway delivery unconfirmed; operator review required.');
+  }
+
   async post(
     id: string,
     accessToken: string,
@@ -309,6 +459,12 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     const token = this.token(accessToken);
     if (posts.length !== 1) this.fail('MAX requires exactly one text post.');
     const post = posts[0];
+    if (post.settings?.mode === 'story') {
+      return this.publishStory(chatId, post);
+    }
+    if (post.settings?.mode && post.settings.mode !== 'normal') {
+      this.fail('Unsupported MAX post type.');
+    }
     if (
       typeof post.message !== 'string' ||
       !post.message.trim() ||
