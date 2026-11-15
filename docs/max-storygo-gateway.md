@@ -24,12 +24,18 @@ fingerprint. UTM, link shortening, tag placeholder replacement and
 formatting are not applied to a story at dispatch. A missing/invalid
 continuation fails validation before scheduling.
 
-**This draft does not support photos yet:** the Gateway contract permits
-one PNG/JPEG via `POST /gateway/v1/media`, but this Postmill client
-must still implement safe upload from a verified organization-owned file.
-In particular, it must not download arbitrary user-supplied URLs.
-Until that is completed, the provider rejects media instead of silently
-omitting it.
+**One optional photo is supported in story mode only.** Choose it using
+the existing Postmill media picker in the MAX story settings, which stores
+`Post.settings.storyImageId` (an org-owned File ID, not a URL). The server
+re-reads the actual bytes via the org-scoped configured storage adapter
+with a **streaming 8 MiB cap**, verifies detected PNG/JPEG MIME, image
+structure and SHA-256, and freezes the digest in
+`Post.settings.storyImageSha256`. At send time a changed/missing file
+fails before MAX delivery. The photo bytes are passed ephemerally to
+the MAX provider, uploaded to `POST /gateway/v1/media` immediately
+before the single publication POST; the one-hour `upload_id` is not
+persisted days earlier. User-supplied URLs are NEVER fetched directly.
+A normal MAX post still rejects photo attachments.
 
 ## Identity and confirmation
 
@@ -58,6 +64,12 @@ StoryGo receipts older than five minutes. A confirmed MID is safely
 recovered by GET and committed into the existing occurrence journal.
 Manual replay of an uncertain Gateway operation is blocked; explicit
 rescheduling after independent operator review creates a new occurrence.
+For recurring story posts, a later occurrence remains `READY` while any
+earlier unsent or unresolved revision exists; its stable identity is kept
+and the existing missing-post sweep rechecks it. This prevents StoryGo's
+`EXTERNAL_POST_UNRESOLVED` conflict without a second scheduler or a
+false ERROR notification. Story-specific fingerprints also bind the
+approval status/actor/time; unapproved or rejected stories are not sent.
 MAX `stat.views` continue to come from MAX directly via Postmill.
 
 ## Deployment configuration (not set by this PR)
