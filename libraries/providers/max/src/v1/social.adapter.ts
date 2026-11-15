@@ -16,6 +16,7 @@ import {
   ValidityMedia,
 } from '@postmill-ai/provider-kernel';
 import { metadata } from './metadata';
+import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
 
 const API = 'https://platform-api2.max.ru';
 const errors = {
@@ -33,6 +34,7 @@ const errors = {
 export class MaxProvider extends SocialAbstract implements SocialProvider {
   identifier = 'max';
   name = 'MAX';
+  dto = MaxSettingsDto;
   editor = 'normal' as const;
   scopes: string[] = [];
   isBetweenSteps = false;
