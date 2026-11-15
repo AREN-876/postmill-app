@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { MaxProvider, maxSocialModule } from '../social.adapter';
 import { isProviderVerified } from '@postmill-ai/provider-kernel';
 import { bot, chat, chatId, member, post, sent, token } from './fixtures';
@@ -476,6 +477,64 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
       ]);
       expect(result[0].postId).toBe('mid.after-timeout');
       expect(wire.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+    });
+  });
+
+  it('uploads an approved PNG by multipart without URLs, then publishes with its upload_id', async () => {
+    await withGatewayEnv(async () => {
+      const bytes = Buffer.from('synthetic PNG bytes (validated by PostsService)');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const uploadId = 'a8db6639-7ba0-42b7-8587-dd39d630c91b';
+      wire.mockResolvedValueOnce(response({
+        upload_id: uploadId, sha256, mime_type: 'image/png', bytes: bytes.length,
+      }, 201)).mockResolvedValueOnce(response(receipt('PUBLISHED', 'mid.photo')));
+      const result = await provider.post(chatId, token, [{
+        ...post,
+        message: 'Заголовок',
+        settings: {
+          ...settings(),
+          __gateway: {
+            ...settings().__gateway,
+            image: { base64: bytes.toString('base64'), mimeType: 'image/png', sha256 },
+          },
+        },
+      }]);
+      expect(result[0].postId).toBe('mid.photo');
+      expect(wire.mock.calls.map(([url]) => url)).toEqual([
+        'https://gateway.example.invalid/gateway/v1/media',
+        'https://gateway.example.invalid/gateway/v1/publications',
+      ]);
+      const mediaRequest = wire.mock.calls[0][1];
+      expect(mediaRequest.method).toBe('POST');
+      expect(mediaRequest.headers.Authorization).toBe('Bearer ' + gatewayKey);
+      expect(mediaRequest.headers['content-type']).toContain('multipart/form-data; boundary=');
+      expect(mediaRequest.body).toBeInstanceOf(Buffer);
+      expect(mediaRequest.body.toString()).toContain('name="channel_id"');
+      expect(mediaRequest.body.toString()).toContain('name="file"; filename="story.png"');
+      expect(JSON.parse(wire.mock.calls[1][1].body).upload_id).toBe(uploadId);
+      expect(JSON.stringify(wire.mock.calls.map(([url, init]) => [url, init.headers])))
+        .not.toContain(token);
+    });
+  });
+
+  it('rejects photo content changes before any HTTP request', async () => {
+    await withGatewayEnv(async () => {
+      const err = await provider.post(chatId, token, [{
+        ...post, message: 'Заголовок',
+        settings: {
+          ...settings(),
+          __gateway: {
+            ...settings().__gateway,
+            image: {
+              base64: Buffer.from('not this digest').toString('base64'),
+              mimeType: 'image/png',
+              sha256: 'f'.repeat(64),
+            },
+          },
+        },
+      }]).catch((e) => e);
+      expect(err.message).toContain('approved snapshot');
+      expect(wire).not.toHaveBeenCalled();
     });
   });
 
