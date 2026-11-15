@@ -55,6 +55,7 @@ vi.mock('sharp', () => ({
     jpeg: vi.fn().mockReturnValue({
       toBuffer: vi.fn().mockResolvedValue(Buffer.from('mock-jpeg-data')),
     }),
+    metadata: vi.fn().mockResolvedValue({ width: 1, height: 1, format: 'png' }),
   }),
 }));
 
@@ -1355,5 +1356,59 @@ describe('getPostsByGroup', () => {
       picture: 'picture.png',
       profile: 'profile',
     });
+  });
+});
+
+describe('StoryGo approved photo snapshot (org-owned storage only)', () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lG0AAAAASUVORK5CYII=',
+    'base64',
+  );
+  const file = {
+    id: 'file-owned', organizationId: 'org-1', type: 'image',
+    fileSize: png.length, deletedAt: null, folderId: 'folder-owned',
+    path: 'https://operator-owned-storage.invalid/image.png',
+  };
+  function setup(overrides: Record<string, unknown> = {}) {
+    const getFileById = vi.fn().mockResolvedValue({ ...file, ...overrides });
+    const readFile = vi.fn().mockResolvedValue(png);
+    const resolveAdapterForFolder = vi.fn().mockResolvedValue({ readFile });
+    const service = new PostsService(
+      {} as any, {} as any, {} as any, {} as any,
+      { getFileById } as any, {} as any, {} as any, {} as any,
+      {} as any, { resolveAdapterForFolder } as any,
+      {} as any, {} as any, {} as any,
+    );
+    return { service, getFileById, resolveAdapterForFolder, readFile };
+  }
+
+  it('reads only the org-scoped File adapter and produces stable SHA-256', async () => {
+    const { service, getFileById, resolveAdapterForFolder, readFile } = setup();
+    const result = await service.readStoryGoImage('org-1', 'file-owned');
+    expect(result.mimeType).toBe('image/png');
+    expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.bytes).toEqual(png);
+    expect(getFileById).toHaveBeenCalledWith('org-1', 'file-owned');
+    expect(resolveAdapterForFolder).toHaveBeenCalledWith('folder-owned', 'org-1');
+    expect(readFile).toHaveBeenCalledWith(file.path);
+  });
+
+  it('rejects missing/foreign/deleted or oversized File without any read', async () => {
+    for (const over of [{ deletedAt: new Date() }, { fileSize: 9 * 1024 * 1024 }]) {
+      const { service, readFile } = setup(over);
+      await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
+      expect(readFile).not.toHaveBeenCalled();
+    }
+    const { service, getFileById, readFile } = setup();
+    getFileById.mockResolvedValue(null);
+    await expect(service.readStoryGoImage('other-org', 'file-owned')).rejects.toThrow();
+    expect(getFileById).toHaveBeenCalledWith('other-org', 'file-owned');
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects changed bytes and non-PNG/JPEG signatures', async () => {
+    const { service, readFile } = setup();
+    readFile.mockResolvedValue(Buffer.from('synthetic unrelated bytes'));
+    await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
   });
 });
