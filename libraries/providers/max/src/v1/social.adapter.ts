@@ -1,4 +1,5 @@
 import {
+  AnalyticsData,
   AuthTokenDetails,
   BadBody,
   ChannelSetupDescriptor,
@@ -243,6 +244,58 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     return posts.some((media) => media.length)
       ? 'MAX supports text only in this MVP.'
       : true;
+  }
+
+  /**
+   * Read cumulative channel-post views by MAX MID. These are post metrics,
+   * distinct from channel-wide analytics and StoryGo reader completions.
+   * No write operation, new scheduler or raw response persistence.
+   */
+  async postAnalytics(
+    id: string,
+    accessToken: string,
+    postId: string,
+    _daysBack: number,
+  ): Promise<AnalyticsData[]> {
+    const channelId = this.chatId(id.startsWith('max:') ? id.slice(4) : id);
+    const token = this.token(accessToken);
+    // MID is a single opaque identifier, never a list or arbitrary URL.
+    // Live MAX ids include a dot (e.g. mid.ffff...), so do not use the
+    // more restrictive path-parameter regexp from GET /messages/{id}.
+    if (typeof postId !== 'string' || !/^[A-Za-z0-9_.-]{1,200}$/.test(postId))
+      return [];
+
+    const result = await this.request(
+      `/messages?message_ids=${encodeURIComponent(postId)}`,
+      token,
+    );
+    if (!Array.isArray(result.messages)) this.fail(errors.response);
+
+    const matches = result.messages.filter(
+      (message: any) => message?.body?.mid === postId,
+    );
+    if (matches.length !== 1) return [];
+    const message = matches[0];
+    // One bot may administer several channels. Never attribute a MID
+    // from a different channel to this Postmill integration.
+    const recipientId =
+      typeof message?.recipient?.chat_id === 'string'
+        ? message.recipient.chat_id
+        : Number.isSafeInteger(message?.recipient?.chat_id)
+          ? String(message.recipient.chat_id)
+          : '';
+    if (recipientId !== channelId) return [];
+
+    // stat may legitimately be absent. Missing is NOT zero.
+    const views = message?.stat?.views;
+    if (!Number.isSafeInteger(views) || views < 0) return [];
+
+    return [
+      {
+        label: 'Views',
+        data: [{ total: String(views), date: new Date().toISOString().slice(0, 10) }],
+      },
+    ];
   }
 
   async post(
