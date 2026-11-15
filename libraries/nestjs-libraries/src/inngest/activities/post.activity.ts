@@ -184,7 +184,9 @@ export class PostActivity {
         const adapter = await this._integrationManager.getSocialIntegration(
           'max', item.organizationId, item.providerVersion ?? undefined,
         );
-        const publisher = (adapter as any).rawProvider;
+        // IntegrationManager.getSocialIntegration() already returns the raw
+        // provider (unwrapped from SocialProviderKernelAdapter).
+        const publisher = adapter as any;
         if (typeof publisher?.reconcileStoryGoOperation !== 'function') continue;
         const mid = await publisher.reconcileStoryGoOperation(
           item.channelId, item.operationId,
