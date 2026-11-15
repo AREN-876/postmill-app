@@ -4,7 +4,7 @@ import {
   PostComment,
   withProvider,
 } from '@postmill-ai/frontend/components/composer/providers/high.order.provider';
-import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
+import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos/max.dto';
 import { STORYGO_DIVIDER } from '@postmill-ai/provider-kernel/domains/max-story';
 import { useSettings } from '@postmill-ai/frontend/components/launches/helpers/use.values';
 import { useWatch } from 'react-hook-form';
