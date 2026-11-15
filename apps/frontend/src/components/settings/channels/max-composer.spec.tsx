@@ -1,6 +1,10 @@
 import { supportsMediaAttachments } from '../../composer/media-capabilities';
 import { describe, expect, it, vi } from 'vitest';
 const options = vi.hoisted(() => ({ value: null as any }));
+vi.mock('@postmill-ai/frontend/components/media-tools/use-media-picker', () => ({
+  // This test verifies composer metadata, not the heavyweight media modal.
+  useMediaPicker: () => ({ open: () => {}, element: null }),
+}));
 vi.mock(
   '@postmill-ai/frontend/components/composer/providers/high.order.provider',
   () => ({
