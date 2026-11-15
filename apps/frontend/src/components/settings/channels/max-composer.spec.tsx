@@ -13,7 +13,7 @@ vi.mock(
 );
 import MaxComposer from '../../composer/providers/max/max.provider';
 describe('MAX composer', () => {
-  it('offers one text post with the exact MAX limit and no comments/settings', () => {
+  it('preserves the first-part MAX limit and exposes story settings', () => {
     expect(supportsMediaAttachments('max')).toBe(false);
     expect(supportsMediaAttachments('telegram')).toBe(true);
     expect(supportsMediaAttachments()).toBe(true);
@@ -22,7 +22,8 @@ describe('MAX composer', () => {
       maximumCharacters: 4000,
       comments: false,
       postComment: 'post',
-      SettingsComponent: null,
+      SettingsComponent: expect.any(Function),
+      dto: expect.any(Function),
     });
   });
 });
