@@ -14,6 +14,7 @@ const MaxSettings = () => {
   const { register, control, setValue } = useSettings();
   const mode = useWatch({ control, name: 'mode' });
   const imageId = useWatch({ control, name: 'storyImageId' });
+  const continuation = useWatch({ control, name: 'continuationText' });
   const imagePicker = useMediaPicker({
     title: 'Фотография для истории',
     kinds: ['image'],
@@ -34,6 +35,19 @@ const MaxSettings = () => {
         <option value="normal">Обычный пост</option>
         <option value="story">История с продолжениями</option>
       </select>
+      {mode !== 'story' && (imageId || continuation?.trim()) && (
+        <div className="flex flex-col gap-[8px] text-[12px]">
+          <p>Для обычного MAX-поста остались сохранённые части или фото истории.
+            Верни режим «История» либо явно очисти эти данные.</p>
+          <button type="button" className="rounded border border-borderPreview p-[8px]"
+            onClick={() => {
+              setValue('continuationText', '', { shouldDirty: true, shouldValidate: true });
+              setValue('storyImageId', '', { shouldDirty: true, shouldValidate: true });
+            }}>
+            Очистить продолжения и фото
+          </button>
+        </div>
+      )}
       {mode === 'story' && (
         <>
           <label htmlFor="max-story-continuations" className="text-[14px]">
