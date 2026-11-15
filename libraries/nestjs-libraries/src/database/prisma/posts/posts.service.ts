@@ -554,13 +554,29 @@ export class PostsService {
         file.fileSize < 1 || file.fileSize > limit) {
       throw new BadRequestException('StoryGo photo must be an owned PNG/JPEG of at most 8 MiB');
     }
-    const adapter = await this._storageService.resolveAdapterForFolder(
-      file.folderId, orgId,
-    );
-    const bytes = await adapter.readFile(file.path);
-    if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > limit ||
-        bytes.length !== file.fileSize) {
-      throw new BadRequestException('StoryGo photo size changed or is invalid');
+    // Stream with a hard byte limit, even when the DB's size metadata is
+    // stale: a replaced cloud object must not exhaust a small Postmill VPS.
+    let bytes: Buffer;
+    try {
+      const adapter = await this._storageService.resolveAdapterForFolder(
+        file.folderId, orgId,
+      );
+      const stream = await adapter.readFileStream(file.path);
+      const chunks: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of stream) {
+        const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        length += value.length;
+        if (length > limit) {
+          stream.destroy();
+          throw Error('photo size limit');
+        }
+        chunks.push(value);
+      }
+      if (!length || length !== file.fileSize) throw Error('photo size changed');
+      bytes = Buffer.concat(chunks, length);
+    } catch {
+      throw new BadRequestException('StoryGo photo could not be safely read');
     }
     const kind = await fromBuffer(bytes);
     if (kind?.mime !== 'image/png' && kind?.mime !== 'image/jpeg') {
