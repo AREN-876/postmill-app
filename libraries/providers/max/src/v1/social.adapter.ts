@@ -15,6 +15,7 @@ import {
   SocialProviderKernelAdapter,
   ValidityMedia,
 } from '@postmill-ai/provider-kernel';
+import { createHash } from 'node:crypto';
 import { metadata } from './metadata';
 import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos';
 import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
@@ -397,6 +398,55 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     return this.verifiedGatewayReceipt(receipt, operationId, chatId);
   }
 
+  /**
+   * Upload exactly one verified, organization-owned PNG/JPEG from ephemeral
+   * server memory. A source URL or filesystem path is NEVER accepted here.
+   * The response binds upload_id to the channel/principal and the SHA.
+   */
+  private async uploadStoryPhoto(
+    origin: string, secret: string, chatId: string,
+    image: { base64: string; mimeType: string; sha256: string },
+  ) {
+    if (!image || typeof image.base64 !== 'string' ||
+        !['image/jpeg', 'image/png'].includes(image.mimeType) ||
+        typeof image.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(image.sha256)) {
+      this.fail('Invalid StoryGo photo snapshot.');
+    }
+    const bytes = Buffer.from(image.base64, 'base64');
+    if (!bytes.length || bytes.length > 8 * 1024 * 1024 ||
+        bytes.toString('base64') !== image.base64 ||
+        createHash('sha256').update(bytes).digest('hex') !== image.sha256) {
+      this.fail('StoryGo photo bytes do not match the approved snapshot.');
+    }
+    const form = new FormData();
+    form.set('channel_id', chatId);
+    form.set('file', new Blob([new Uint8Array(bytes)], {
+      type: image.mimeType,
+    }), image.mimeType === 'image/png' ? 'story.png' : 'story.jpg');
+    try {
+      const response = await this.fetch(origin + '/gateway/v1/media', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + secret },
+        body: form,
+        retryPolicy: 'none',
+        redirect: 'error',
+      }, 'storygo-gateway');
+      if (response.status !== 201) this.fail('Unexpected StoryGo photo upload response.');
+      const data = await response.json();
+      if (!data || typeof data.upload_id !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(data.upload_id) ||
+          data.sha256 !== image.sha256 || data.mime_type !== image.mimeType ||
+          data.bytes !== bytes.length) {
+        this.fail('StoryGo photo receipt does not match the approved image.');
+      }
+      return data.upload_id as string;
+    } catch {
+      // Gateway may have stored bytes; this is NOT a publication receipt.
+      // Do not resend on an uncertain response in the same occurrence.
+      this.fail('StoryGo photo upload unresolved; operator review required.');
+    }
+  }
+
   private async publishStory(
     chatId: string,
     post: PostDetails,
@@ -421,6 +471,12 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     }
     const { origin, secret } = this.gatewayConfig(chatId);
     const path = '/gateway/v1/publications';
+    // Upload is performed immediately before the single publication POST.
+    // upload_id expires in one hour and must never be persisted in Postmill
+    // settings days before scheduling.
+    const uploadId = gateway.image
+      ? await this.uploadStoryPhoto(origin, secret, chatId, gateway.image)
+      : undefined;
     const body = {
       type: 'story',
       channel_id: chatId,
@@ -429,6 +485,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       revision: gateway.revision,
       title: story.title,
       parts: story.parts,
+      ...(uploadId ? { upload_id: uploadId } : {}),
     };
     let receipt: any;
     try {
