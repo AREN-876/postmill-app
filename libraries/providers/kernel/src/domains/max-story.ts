@@ -45,7 +45,7 @@ export function maxStoryParts(first: unknown, continuation: unknown) {
     throw new MaxStoryValidationError('The first nonempty title line must contain 1–160 characters.');
   }
   // Recheck total JSON boundary with generous room for metadata and UTF-8 expansion.
-  if (Buffer.byteLength(JSON.stringify(parts), 'utf8') > 7 * 1024 * 1024) {
+  if (new TextEncoder().encode(JSON.stringify(parts)).length > 7 * 1024 * 1024) {
     throw new MaxStoryValidationError('Story exceeds the Gateway JSON size limit.');
   }
   return { title, parts };
