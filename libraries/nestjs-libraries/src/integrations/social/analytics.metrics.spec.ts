@@ -41,7 +41,7 @@ describe('METRIC_REGISTRY', () => {
 });
 
 describe('PROVIDER_METRIC_MAP', () => {
-  const providers = ['facebook', 'instagram', 'instagram-standalone', 'linkedin-page', 'tiktok', 'youtube', 'gmb', 'pinterest', 'threads', 'x', 'bluesky', 'mastodon', 'reddit', 'telegram', 'discord'];
+  const providers = ['max', 'facebook', 'instagram', 'instagram-standalone', 'linkedin-page', 'tiktok', 'youtube', 'gmb', 'pinterest', 'threads', 'x', 'bluesky', 'mastodon', 'reddit', 'telegram', 'discord'];
 
   it('covers all expected providers', () => {
     for (const p of providers) {
@@ -67,6 +67,11 @@ describe('PROVIDER_METRIC_MAP', () => {
 });
 
 describe('normalizeMetric', () => {
+  it('maps MAX post views without claiming unsupported channel statistics', () => {
+    expect(normalizeMetric('max', 'Views')).toBe('views');
+    expect(normalizeMetric('max', 'Followers')).toBeUndefined();
+  });
+
   it('resolves facebook labels correctly', () => {
     expect(normalizeMetric('facebook', 'Page Impressions')).toBe('impressions');
     expect(normalizeMetric('facebook', 'Posts Engagement')).toBe('engagement');
