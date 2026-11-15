@@ -991,6 +991,45 @@ describe('AnalyticsActivity', () => {
       ]);
     });
 
+    it('preserves MAX zero views over a nonzero impressions fallback', async () => {
+      const posts = [buildPost({
+        integration: {
+          id: 'int-1',
+          providerIdentifier: 'max',
+          internalId: 'max:-73052031470103',
+          token: 'test-token',
+          tokenExpiration: null,
+          organizationId: orgId,
+        },
+      })];
+      const provider = stubProvider();
+      provider.postAnalytics.mockResolvedValue([
+        buildAnalyticsEntry('Views', [
+          { date: dayjs().toISOString(), total: 0 },
+        ]),
+      ]);
+
+      (analyticsRepository.findPostsForSnapshots as any).mockResolvedValue(posts);
+      (integrationManager.getSocialIntegrationUnchecked as any).mockReturnValue(provider);
+      (normalizeMetric as any).mockReturnValue('views');
+      (analyticsRepository.getLatestPostSnapshots as any).mockResolvedValue([
+        { postId: 'post-1', metric: 'impressions', value: 99 },
+        { postId: 'post-1', metric: 'views', value: 0 },
+      ]);
+
+      await activity.collectPostSnapshots(orgId, daysBack);
+
+      expect(provider.postAnalytics).toHaveBeenCalledWith(
+        'max:-73052031470103', 'test-token', 'release-1', 2, expect.anything()
+      );
+      expect(analyticsRepository.upsertPostSnapshots).toHaveBeenCalledWith([
+        expect.objectContaining({ metric: 'views', value: 0 }),
+      ]);
+      expect(analyticsRepository.updatePostCounters).toHaveBeenCalledWith(
+        orgId, 'post-1', { lastViews: 0 }
+      );
+    });
+
     it('skips entries where normalizeMetric returns undefined for posts', async () => {
       const posts = [buildPost()];
       const provider = stubProvider();
