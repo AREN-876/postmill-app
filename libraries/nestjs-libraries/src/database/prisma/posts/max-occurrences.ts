@@ -229,6 +229,15 @@ export class MaxOccurrences {
         });
         return null;
       }
+      // Do not extend the recurring chain at all while a preceding StoryGo
+      // revision is unsettled. This also prevents the hourly recovery sweep
+      // from creating one more future child on every invocation.
+      const deferred = current.state === 'READY'
+        ? await this.storyPredecessorPending(tx, p, current)
+        : false;
+      if (deferred) {
+        return { current, next: null, deferred: true };
+      }
       let next = null;
       if (
         !current.legacy &&
@@ -262,9 +271,7 @@ export class MaxOccurrences {
       return {
         current,
         next,
-        deferred: current.state === 'READY'
-          ? await this.storyPredecessorPending(tx, p, current)
-          : false,
+        deferred: false,
       };
     });
   }
@@ -605,6 +612,7 @@ export class MaxOccurrences {
       if (!plan) continue;
       // Terminal runs may die before checkpointing successor dispatch. Re-emit
       // its stable identity; PostgreSQL remains authoritative beyond dedup TTL.
+      if (plan.deferred) continue;
       if (o.state === 'READY') result.push(o);
       if (plan.next?.state === 'READY') result.push(plan.next);
     }
