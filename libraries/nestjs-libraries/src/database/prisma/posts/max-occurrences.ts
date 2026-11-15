@@ -70,10 +70,13 @@ export class MaxOccurrences {
   private active(p: any) {
     return (
       p.integration.providerIdentifier === 'max' &&
+      // Campaign drafts require explicit approval. Manual composer posts
+      // legitimately have a null approvalStatus (no approval workflow), but
+      // pending/rejected always block dispatch.
       (!this.storyMode(p) ||
-        p.approvalStatus === null ||
-        p.approvalStatus === undefined ||
-        p.approvalStatus === 'approved') &&
+        (p.campaignId
+          ? p.approvalStatus === 'approved'
+          : (p.approvalStatus == null || p.approvalStatus === 'approved'))) &&
       (!p.integration.providerConfigId ||
         (p.integration.providerConfig?.organizationId === p.organizationId &&
           p.integration.providerConfig?.identifier === 'max' &&
