@@ -617,6 +617,7 @@ export class PostsRepository {
   initialMaxOccurrence(id: string, org: string) { return this.maxOccurrences().initial(id, org); }
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().plan(id, org, occurrence); }
   pendingMaxOccurrences() { return this.maxOccurrences().pending(); }
+  unresolvedStoryGoOccurrences() { return this.maxOccurrences().unresolvedStoryGo(); }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this.maxOccurrences().fail(id, org, occurrence); }
   beginMaxDelivery(id: string, org: string, target: Record<string,string> = {}, occurrence?: string, expectedAttempt?: number) {
     return this.maxOccurrences().begin(id, org, occurrence, target, expectedAttempt);
