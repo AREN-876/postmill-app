@@ -810,7 +810,9 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     });
     const first = await repo.initialMaxOccurrence(post.id, org);
     const next = await due(first);
-    expect((await repo.planMaxOccurrence(post.id, org, next.id))!.deferred).toBe(true);
+    const deferredPlan = await repo.planMaxOccurrence(post.id, org, next.id);
+    expect(deferredPlan?.deferred).toBe(true);
+    expect(deferredPlan?.next).toBeNull();
 
     const started = await repo.beginMaxDelivery(post.id, org, {
       storygoOperationId: 'uuid-of-first',
@@ -826,6 +828,18 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     expect(await db.maxDeliveryAttempt.count({
       where: { occurrenceId: next.id },
     })).toBe(0);
+    // Repeated hourly sweeps must not emit this blocked successor or create
+    // later generations while the predecessor is REVIEW.
+    const countBeforeRecovery = await db.maxDeliveryOccurrence.count({
+      where: { postId: post.id },
+    });
+    for (let n = 0; n < 3; n++) {
+      expect((await repo.pendingMaxOccurrences()).map((o) => o.id))
+        .not.toContain(next.id);
+    }
+    expect(await db.maxDeliveryOccurrence.count({
+      where: { postId: post.id },
+    })).toBe(countBeforeRecovery);
 
     // When the previous revision's actual MID is recovered, the original
     // next occurrence (same UUID) can finally begin; no duplicate job intent.
