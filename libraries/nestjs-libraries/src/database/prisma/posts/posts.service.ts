@@ -14,6 +14,7 @@ import { isSafePublicHttpsUrl } from '@postmill-ai/nestjs-libraries/dtos/webhook
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
@@ -437,9 +438,21 @@ export class PostsService {
             );
           }
 
+          const isStory = integration.providerIdentifier === 'max' &&
+            (post.settings as any)?.mode === 'story';
           return {
             type: replaceDraft ? 'schedule' : body?.type,
             ...post,
+            ...(isStory ? {
+              value: post.value?.map((item) => ({
+                ...item,
+                // The normal composer emits TipTap HTML. Canonicalize once,
+                // before persisting and fingerprinting the approved story.
+                content: /<\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\s|>)/i.test(item.content)
+                  ? stripHtmlValidation('normal', item.content, false, true)
+                  : item.content,
+              })),
+            } : {}),
             settings: {
               // Strip settings keys the provider does not support (shared composer
               // fields leak e.g. `firstComment`/`thread_finisher` into every
@@ -1058,6 +1071,18 @@ export class PostsService {
           valid = validationErrors.length === 0;
         }
 
+        if (integration.providerIdentifier === 'max' && settings.mode === 'story') {
+          try {
+            if (post.value?.length !== 1) {
+              throw Error('A MAX story must be one Postmill post, not a thread.');
+            }
+            maxStoryParts(post.value[0].content, settings.continuationText);
+          } catch (error) {
+            valid = false;
+            settingsError = (error as Error).message;
+          }
+        }
+
         // Provider-specific media validation (the old client `checkValidity`).
         let errors: string | true = true;
         try {
@@ -1187,18 +1212,22 @@ export class PostsService {
         orgId
       );
       const removeLinks = !!provider?.stripLinks?.();
+      const isStory = providerIdentifier === 'max' &&
+        (post.settings as any)?.mode === 'story';
 
       let messages = (post.value || []).map((p) => p.content);
       // Append campaign UTM params before short-linking so short links carry them.
-      messages = await this._appendUtmToMessages(
-        messages,
-        body.campaignId,
-        orgId,
-        providerIdentifier
-      );
+      if (!isStory) {
+        messages = await this._appendUtmToMessages(
+          messages,
+          body.campaignId,
+          orgId,
+          providerIdentifier
+        );
+      }
       // No point shortlinking links on platforms that strip them out anyway
       const updateContent =
-        !body.shortLink || removeLinks
+        isStory || !body.shortLink || removeLinks
           ? messages
           : await this._shortLinkService.convertTextToShortLinks(
               orgId,
