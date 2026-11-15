@@ -18,7 +18,8 @@ import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
-import { randomInt } from 'crypto';
+import { randomInt, createHash } from 'crypto';
+import { fromBuffer } from '@postmill-ai/nestjs-libraries/upload/file-type.compat';
 import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/analytics/analytics.repository';
 import { CampaignsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/campaigns/campaigns.repository';
@@ -534,6 +535,47 @@ export class PostsService {
 
   async setGroupColor(orgId: string, group: string, color: string | null) {
     return this._postRepository.setGroupColor(orgId, group, color);
+  }
+
+  /**
+   * Read ONLY an organization-owned File ID through its configured storage
+   * adapter. No arbitrary URL/path from Post.settings reaches a fetch or fs.
+   * File and bytes are validated before the Gateway media upload.
+   */
+  async readStoryGoImage(orgId: string, fileId: string) {
+    if (typeof fileId !== 'string' || !/^[a-zA-Z0-9_-]{6,128}$/.test(fileId)) {
+      throw new BadRequestException('Invalid StoryGo photo file identifier');
+    }
+    const file = await this._fileService.getFileById(orgId, fileId);
+    const limit = 8 * 1024 * 1024;
+    if (!file || file.deletedAt || file.type !== 'image' ||
+        !Number.isSafeInteger(file.fileSize) ||
+        file.fileSize < 1 || file.fileSize > limit) {
+      throw new BadRequestException('StoryGo photo must be an owned PNG/JPEG of at most 8 MiB');
+    }
+    const adapter = await this._storageService.resolveAdapterForFolder(
+      file.folderId, orgId,
+    );
+    const bytes = await adapter.readFile(file.path);
+    if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > limit ||
+        bytes.length !== file.fileSize) {
+      throw new BadRequestException('StoryGo photo size changed or is invalid');
+    }
+    const kind = await fromBuffer(bytes);
+    if (kind?.mime !== 'image/png' && kind?.mime !== 'image/jpeg') {
+      throw new BadRequestException('StoryGo photo must be PNG or JPEG');
+    }
+    // The source file is decoded here as well as by StoryGo. Fail before the
+    // occurrence claim for malformed/truncated files and decompression bombs.
+    const md = await sharp(bytes, { limitInputPixels: 40_000_000 }).metadata();
+    if (!md.width || !md.height || !['jpeg', 'png'].includes(md.format ?? '')) {
+      throw new BadRequestException('StoryGo photo cannot be decoded');
+    }
+    return {
+      bytes,
+      mimeType: kind.mime,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
   }
 
   async updateMedia(id: string, imagesList: any[], convertToJPEG = false, orgId: string) {
@@ -1078,6 +1120,12 @@ export class PostsService {
               throw Error('A MAX story must be one Postmill post, not a thread.');
             }
             maxStoryParts(post.value[0].content, settings.continuationText);
+            if (settings.storyImageId) {
+              await this.readStoryGoImage(orgId, settings.storyImageId);
+            }
+            if ((post.value[0].image || []).length) {
+              throw Error('Attach the StoryGo photo in the MAX story settings, not as a normal media post.');
+            }
           } catch (error) {
             valid = false;
             settingsError = (error as Error).message;
@@ -1215,6 +1263,16 @@ export class PostsService {
       const removeLinks = !!provider?.stripLinks?.();
       const isStory = providerIdentifier === 'max' &&
         (post.settings as any)?.mode === 'story';
+      if (isStory) {
+        // Never accept a digest claimed by the browser. Resolve the File by
+        // organization ownership and freeze the actual bytes' SHA at save.
+        if ((post.settings as any).storyImageId) {
+          const image = await this.readStoryGoImage(orgId, (post.settings as any).storyImageId);
+          (post.settings as any).storyImageSha256 = image.sha256;
+        } else {
+          delete (post.settings as any).storyImageSha256;
+        }
+      }
 
       let messages = (post.value || []).map((p) => p.content);
       // Append campaign UTM params before short-linking so short links carry them.
