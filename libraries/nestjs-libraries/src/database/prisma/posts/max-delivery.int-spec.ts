@@ -736,6 +736,33 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
     expect(o.state).toBe('REVIEW');
     expect(o.attempt).toBe(1);
   });
+  it('prevents unapproved StoryGo scheduled release and invalidates approval changes', async () => {
+    const post = await createPost('max', 'QUEUE');
+    await db.post.update({
+      where: { id: post.id },
+      data: {
+        content: 'Одобренная первая часть',
+        settings: JSON.stringify({ mode: 'story', continuationText: 'Часть два' }),
+        approvalStatus: 'pending',
+      },
+    });
+    expect(await repo.initialMaxOccurrence(post.id, org)).toBeNull();
+    await db.post.update({
+      where: { id: post.id },
+      data: { approvalStatus: 'approved' },
+    });
+    const occurrence = await repo.initialMaxOccurrence(post.id, org);
+    expect(occurrence.state).toBe('READY');
+    await db.post.update({
+      where: { id: post.id },
+      data: { approvalStatus: 'rejected' },
+    });
+    expect(await repo.planMaxOccurrence(post.id, org, occurrence.id)).toBeNull();
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({
+      where: { id: occurrence.id },
+    })).state).toBe('CANCELLED');
+  });
+
   it('defers recurring StoryGo successor until preceding Gateway revision is confirmed', async () => {
     const post = await createPost('max', 'QUEUE');
     await db.post.update({
