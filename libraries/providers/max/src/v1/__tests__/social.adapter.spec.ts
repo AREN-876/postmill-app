@@ -398,7 +398,7 @@ describe('MAX post analytics (synthetic GET only)', () => {
   it.each([429, 500, 503])(
     'exhausts GET %i retries without leaking tokens or fabricating views',
     async status => {
-      wire.mockResolvedValue(response({ error: token }, status));
+      wire.mockImplementation(async () => response({ error: token }, status));
       const error = await provider.postAnalytics(chatId, token, mid, 2).catch(e => e);
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain(token);
