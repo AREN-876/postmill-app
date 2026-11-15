@@ -582,11 +582,21 @@ export class PostsService {
     if (kind?.mime !== 'image/png' && kind?.mime !== 'image/jpeg') {
       throw new BadRequestException('StoryGo photo must be PNG or JPEG');
     }
-    // The source file is decoded here as well as by StoryGo. Fail before the
-    // occurrence claim for malformed/truncated files and decompression bombs.
-    const md = await sharp(bytes, { limitInputPixels: 40_000_000 }).metadata();
-    if (!md.width || !md.height || !['jpeg', 'png'].includes(md.format ?? '')) {
-      throw new BadRequestException('StoryGo photo cannot be decoded');
+    // Match StoryGo's 12-megapixel static-image cap, then force a full decode
+    // (metadata() by itself does not detect every truncated image). Reject
+    // before claiming an occurrence; StoryGo will independently decode again.
+    const maxPixels = 12_000_000;
+    try {
+      const picture = sharp(bytes, { limitInputPixels: maxPixels, failOn: 'error' });
+      const md = await picture.metadata();
+      if (!md.width || !md.height || md.width * md.height > maxPixels ||
+          !['jpeg', 'png'].includes(md.format ?? '') ||
+          (md.pages ?? 1) !== 1) {
+        throw Error('invalid or animated image');
+      }
+      await picture.stats();
+    } catch {
+      throw new BadRequestException('StoryGo photo must be a valid static PNG/JPEG within 12 megapixels');
     }
     return {
       bytes,
