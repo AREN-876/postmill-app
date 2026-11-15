@@ -360,7 +360,19 @@ describe('MAX post analytics (synthetic GET only)', () => {
     );
   });
 
-  it.each([401, 403, 404])(
+  it('rejects invalid JSON without leaking response data', async () => {
+    wire.mockResolvedValueOnce(new Response('{"messages":', { status: 200 }));
+    await expect(provider.postAnalytics(chatId, token, mid, 2)).rejects.toThrow(
+      'unexpected response',
+    );
+  });
+
+  it('rejects ambiguous duplicate matches instead of choosing one', async () => {
+    wire.mockResolvedValueOnce(response({ messages: [message(7), message(9)] }));
+    expect(await provider.postAnalytics(chatId, token, mid, 2)).toEqual([]);
+  });
+
+  it.each([401, 403, 404, 429, 500, 503])(
     'keeps GET %i failures sanitized and never fabricates zero',
     async status => {
       wire.mockResolvedValueOnce(response({ error: token }, status));
