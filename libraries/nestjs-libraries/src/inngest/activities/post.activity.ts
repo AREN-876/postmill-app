@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { v5 as uuidv5 } from 'uuid';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { Injectable, Logger } from '@nestjs/common';
 import { PostsService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.service';
 import { NotificationService } from '@postmill-ai/nestjs-libraries/database/prisma/notifications/notification.service';
@@ -500,7 +502,11 @@ export class PostActivity {
       integration.providerVersion
     );
 
-    const newPosts = await this._postService.updateTags(
+    // A story is an approved immutable package. No cross-post substitution
+    // after the occurrence was claimed.
+    const storyMode = integration.providerIdentifier === 'max' &&
+      JSON.parse(posts[0]?.settings || '{}')?.mode === 'story';
+    const newPosts = storyMode ? posts : await this._postService.updateTags(
       integration.organizationId,
       posts
     );
@@ -517,7 +523,7 @@ export class PostActivity {
 
     const postPayload = await Promise.all(
       (newPosts || []).map(async (p) => {
-        const contentWithUtm = await this._maybeAppendUtm(
+        const contentWithUtm = storyMode ? p.content : await this._maybeAppendUtm(
           p.content,
           p.campaignId,
           integration.organizationId,
@@ -526,7 +532,7 @@ export class PostActivity {
         const settings = JSON.parse(p.settings || '{}');
         return {
           id: p.id,
-          message: stripHtmlValidation(
+          message: storyMode ? contentWithUtm : stripHtmlValidation(
             getIntegration.editor,
             contentWithUtm,
             true,
@@ -565,16 +571,37 @@ export class PostActivity {
         content: postPayload[0].message, integrationName: integration.name,
         integrationId: integration.id, chatId: integration.internalId, providerConfigId: integration.providerConfigId ?? null, version: integration.providerVersion ?? 'v1',
         textSha256: createHash('sha256').update(postPayload[0].message).digest('hex'),
+        ...(storyMode ? {
+          storyPartsSha256: createHash('sha256').update(JSON.stringify(
+            maxStoryParts(postPayload[0].message, postPayload[0].settings.continuationText)
+          )).digest('hex'),
+        } : {}),
       }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
     if (maxAttempt?.alreadyConfirmed) return [];
     if (integration.providerIdentifier === 'max' && (!maxAttempt || maxAttempt.blocked || !Number.isInteger(maxAttempt.attempt))) throw new BadBodyError('max', '{}', '', 'MAX delivery unknown or already in progress: operator review required');
+    const outbound = storyMode && maxAttempt?.occurrenceId
+      ? postPayload.map((item) => ({
+          ...item,
+          settings: {
+            ...item.settings,
+            __gateway: {
+              operationId: uuidv5(
+                'postmill:max:occurrence:' + maxAttempt.occurrenceId,
+                uuidv5.URL,
+              ),
+              externalPostId: posts[0].id,
+              revision: maxAttempt.occurrenceId,
+            },
+          },
+        }))
+      : postPayload;
     let postNow;
     try {
       postNow = await runWithVpnDispatcher(vpnDispatcher, () =>
         getIntegration.post(
           integration.internalId,
           integration.token,
-          postPayload,
+          outbound,
           integration,
           clientInformation
         )
