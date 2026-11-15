@@ -178,9 +178,13 @@ export class MaxOccurrences {
         postId: occurrence.postId,
         organizationId: occurrence.organizationId,
         id: { not: occurrence.id },
-        scheduledAt: { lt: occurrence.scheduledAt },
-        state: { in: ['READY', 'STARTED', 'REVIEW'] },
-        fingerprint: occurrence.fingerprint,
+        OR: [
+          // Any already-started revision of this Post.id might still exist
+          // in StoryGo, regardless of a later edit or schedule change.
+          { state: { in: ['STARTED', 'REVIEW'] } },
+          // Earlier READY intents must publish in causal order.
+          { state: 'READY', scheduledAt: { lt: occurrence.scheduledAt } },
+        ],
       },
       select: { id: true },
     });
