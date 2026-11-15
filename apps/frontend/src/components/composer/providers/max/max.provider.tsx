@@ -8,10 +8,22 @@ import { MaxSettingsDto } from '@postmill-ai/provider-kernel/domains/social-dtos
 import { STORYGO_DIVIDER } from '@postmill-ai/provider-kernel/domains/max-story';
 import { useSettings } from '@postmill-ai/frontend/components/launches/helpers/use.values';
 import { useWatch } from 'react-hook-form';
+import { useMediaPicker } from '@postmill-ai/frontend/components/media-tools/use-media-picker';
 
 const MaxSettings = () => {
-  const { register, control } = useSettings();
+  const { register, control, setValue } = useSettings();
   const mode = useWatch({ control, name: 'mode' });
+  const imageId = useWatch({ control, name: 'storyImageId' });
+  const imagePicker = useMediaPicker({
+    title: 'Фотография для истории',
+    kinds: ['image'],
+    requireFile: true,
+    onSelect: (item) => {
+      if (item.fileId) setValue('storyImageId', item.fileId, {
+        shouldDirty: true, shouldValidate: true,
+      });
+    },
+  });
   return (
     <div className="flex flex-col gap-[12px] pb-[14px]">
       <label htmlFor="max-post-mode" className="text-[14px]">
@@ -32,6 +44,22 @@ const MaxSettings = () => {
             placeholder={'Часть 2...\n' + STORYGO_DIVIDER + '\nЧасть 3...'}
             className="w-full rounded border border-borderPreview bg-newBgColorInner p-[8px]"
           />
+          <input type="hidden" {...register('storyImageId')} />
+          <div className="flex items-center gap-[10px]">
+            <button type="button" onClick={imagePicker.open}
+              className="rounded border border-borderPreview p-[8px]">
+              {imageId ? 'Заменить фотографию' : 'Выбрать фотографию'}
+            </button>
+            {imageId && (
+              <button type="button"
+                onClick={() => setValue('storyImageId', '', { shouldDirty: true, shouldValidate: true })}
+                className="rounded border border-borderPreview p-[8px]">
+                Убрать
+              </button>
+            )}
+          </div>
+          {imageId && <p className="text-[12px]">Фото выбрано. Допускается один PNG/JPEG до 8 МиБ.</p>}
+          {imagePicker.element}
           <p className="text-[12px]">
             Первую часть пиши в обычном редакторе (до 4000 символов).
             Остальные части разделяй точной строкой {STORYGO_DIVIDER}.
