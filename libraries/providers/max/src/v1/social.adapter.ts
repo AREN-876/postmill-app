@@ -32,7 +32,7 @@ const errors = {
     'MAX delivery was not confirmed. Automatic resend is disabled; check the channel before retrying manually.',
 };
 
-/** Text-only MAX Bot API. No channel discovery, uploads or OAuth. */
+/** MAX Bot API: text, one normal media attachment, and StoryGo stories. */
 export class MaxProvider extends SocialAbstract implements SocialProvider {
   identifier = 'max';
   name = 'MAX';
@@ -121,6 +121,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     path: string,
     token: string,
     text?: string,
+    attachments?: Array<{ type: 'image' | 'video'; payload: { token: string } }>,
   ): Promise<any> {
     try {
       const response = await this.fetch(
@@ -133,7 +134,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
             ? {}
             : { retryPolicy: 'none' as const, redirect: 'error' as const }),
           headers: { Authorization: token, 'Content-Type': 'application/json' },
-          ...(text === undefined ? {} : { body: JSON.stringify({ text }) }),
+          ...(text === undefined ? {} : { body: JSON.stringify({ text, ...(attachments?.length ? { attachments } : {}) }) }),
         },
         'max-api',
       );
@@ -245,8 +246,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   ): Promise<string | true> {
     if (posts.length > 1)
       return 'MAX does not support threads or comments in this MVP.';
-    return posts.some((media) => media.length)
-      ? 'MAX supports text only in this MVP.'
+    return posts.some((media) => media.length > 1)
+      ? 'MAX supports a maximum of one image or video per normal post.'
       : true;
   }
 
@@ -521,6 +522,74 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     this.fail('StoryGo Gateway delivery unconfirmed; operator review required.');
   }
 
+
+  /**
+   * MAX media is uploaded from a verified ephemeral library snapshot, never
+   * by handing MAX a private Postmill URL or following an arbitrary upload URL.
+   * Only an explicit, successful upload returns a token for POST /messages.
+   */
+  private async uploadNormalMedia(
+    botToken: string,
+    media: { base64: string; mimeType: string; mediaType: 'image' | 'video'; sha256: string },
+  ): Promise<{ type: 'image' | 'video'; payload: { token: string } }> {
+    const allowed = media?.mediaType === 'image'
+      ? ['image/jpeg', 'image/png']
+      : media?.mediaType === 'video' ? ['video/mp4', 'video/webm'] : [];
+    const limit = media?.mediaType === 'video' ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
+    if (!media || !allowed.includes(media.mimeType) || typeof media.base64 !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(media.sha256 || '')) {
+      this.fail('Invalid MAX media snapshot.');
+    }
+    const bytes = Buffer.from(media.base64, 'base64');
+    if (!bytes.length || bytes.length > limit || bytes.toString('base64') !== media.base64 ||
+        createHash('sha256').update(bytes).digest('hex') !== media.sha256) {
+      this.fail('MAX media bytes do not match the approved snapshot.');
+    }
+    const uploadHost = media.mediaType === 'video' ? 'vu.okcdn.ru' : 'iu.oneme.ru';
+    try {
+      const reservation = await this.fetch(API + '/uploads?type=' + media.mediaType, {
+        method: 'POST', headers: { Authorization: botToken }, retryPolicy: 'none', redirect: 'error',
+      }, 'max-api');
+      if (reservation.status !== 200) throw Error('MAX upload reservation refused');
+      const setup = await reservation.json() as any;
+      if (typeof setup?.url !== 'string') throw Error('MAX upload URL missing');
+      const uploadUrl = new URL(setup.url);
+      // MAX specifies these fixed media upload hosts. No credentials or bot
+      // token are ever forwarded to the signed upload URL.
+      if (uploadUrl.protocol !== 'https:' || uploadUrl.hostname !== uploadHost ||
+          uploadUrl.username || uploadUrl.password || uploadUrl.port) {
+        throw Error('MAX upload target is outside the official media host');
+      }
+      const form = new FormData();
+      const extension = media.mimeType === 'image/jpeg' ? 'jpg'
+        : media.mimeType === 'image/png' ? 'png'
+        : media.mimeType === 'video/mp4' ? 'mp4' : 'webm';
+      form.set('data', new Blob([new Uint8Array(bytes)], { type: media.mimeType }), 'post.' + extension);
+      const uploaded = await this.fetch(uploadUrl.href, {
+        method: 'POST', body: form, retryPolicy: 'none', redirect: 'error',
+      }, 'max-upload');
+      if (uploaded.status !== 200 && uploaded.status !== 201) {
+        throw Error('MAX media upload refused');
+      }
+      let result: any;
+      try { result = await uploaded.json(); } catch { result = {}; }
+      if (result?.success === false || result?.error || result?.code || result?.retval === false) {
+        throw Error('MAX rejected the uploaded media');
+      }
+      const mediaToken = (media.mediaType === 'video'
+        ? setup.token || result.token
+        : result.token || setup.token || uploadUrl.searchParams.get('token'));
+      if (typeof mediaToken !== 'string' || !mediaToken.trim() || mediaToken.length > 2048) {
+        throw Error('MAX did not return a media attachment token');
+      }
+      return { type: media.mediaType, payload: { token: mediaToken } };
+    } catch {
+      // Never expose signed URL query parameters or authorization headers.
+      // The occurrence gate prevents another send after an ambiguous result.
+      this.fail('MAX media upload was not confirmed; operator review required.');
+    }
+  }
+
   async post(
     id: string,
     accessToken: string,
@@ -528,7 +597,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   ): Promise<PostResponse[]> {
     const chatId = this.chatId(id.startsWith('max:') ? id.slice(4) : id);
     const token = this.token(accessToken);
-    if (posts.length !== 1) this.fail('MAX requires exactly one text post.');
+    if (posts.length !== 1) this.fail('MAX requires exactly one post.');
     const post = posts[0];
     if (post.settings?.mode === 'story') {
       return this.publishStory(chatId, post);
@@ -538,27 +607,32 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     }
     if (
       typeof post.message !== 'string' ||
-      !post.message.trim() ||
+      (!post.message.trim() && !post.media?.length) ||
       post.message.length > this.maxLength()
     ) {
       this.fail('MAX text must contain 1–4000 characters.');
     }
     if (
-      post.media?.length ||
       post.poll ||
       post.firstComment ||
       post.settings?.firstComment
     ) {
-      this.fail(
-        'MAX supports text only, without media, polls or first comments.',
-      );
+      this.fail('MAX does not support polls or first comments.');
+    }
+    if ((post.media?.length || 0) > 1 ||
+        Boolean(post.media?.length) !== Boolean((post.settings as any)?.__maxMedia)) {
+      this.fail('MAX supports one verified media attachment from the Postmill library.');
     }
     // Recheck rights before writing: permissions can change after connection.
     await this.channel(chatId, token);
+    const attachments = post.media?.length
+      ? [await this.uploadNormalMedia(token, (post.settings as any).__maxMedia)]
+      : undefined;
     const data = await this.request(
       `/messages?chat_id=${encodeURIComponent(chatId)}&disable_link_preview=true`,
       token,
       post.message,
+      attachments,
     );
     const message = data.message;
     if (typeof message?.body?.mid !== 'string' || !message.body.mid.trim())
