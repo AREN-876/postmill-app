@@ -556,12 +556,14 @@ export class PostsService {
    * 16 MiB PNG/JPEG photos or 32 MiB MP4/WebM clips. Larger clips need a
    * separate streaming implementation, not an unbounded Buffer.
    */
-  async readMaxNormalMedia(orgId: string, fileId: string) {
+  async readMaxNormalMedia(orgId: string, fileId: string): Promise<{
+    bytes: Buffer; mimeType: string; mediaType: 'image' | 'video'; sha256: string;
+  }> {
     if (typeof fileId !== 'string' || !/^[a-zA-Z0-9_-]{6,128}$/.test(fileId)) {
       throw new BadRequestException('MAX attachment must reference an uploaded library file');
     }
     const file = await this._fileService.getFileById(orgId, fileId);
-    const mediaType = file?.type === 'video' ? 'video' : file?.type === 'image' ? 'image' : null;
+    const mediaType: 'image' | 'video' | null = file?.type === 'video' ? 'video' : file?.type === 'image' ? 'image' : null;
     const limit = mediaType === 'video' ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
     if (!file || file.deletedAt || !mediaType ||
         !Number.isSafeInteger(file.fileSize) || file.fileSize < 1 || file.fileSize > limit) {
@@ -1221,7 +1223,7 @@ export class PostsService {
         if (integration.providerIdentifier === 'max' && settings.mode !== 'story' &&
             (post.value?.[0]?.image || []).length === 1) {
           const attachment = post.value[0].image[0];
-          const file = await this._fileService.getFileById(orgId, attachment.id);
+          const file = await this._fileService.getFileById(orgId, (attachment as any).id);
           const isImage = file?.type === 'image' && file.fileSize > 0 && file.fileSize <= 16 * 1024 * 1024;
           const isVideo = file?.type === 'video' && file.fileSize > 0 && file.fileSize <= 32 * 1024 * 1024;
           if (!file || file.deletedAt || (!isImage && !isVideo)) {
