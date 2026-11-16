@@ -11,6 +11,7 @@ import { useWatch } from 'react-hook-form';
 import { useMediaPicker } from '@postmill-ai/frontend/components/media-tools/use-media-picker';
 import { useEffect, useMemo } from 'react';
 import { useLaunchStore } from '@postmill-ai/frontend/components/composer/store';
+import { useIntegration } from '@postmill-ai/frontend/components/launches/helpers/use.integration';
 import { stripHtmlValidation } from '@postmill-ai/helpers/utils/strip.html.validation';
 
 const MaxSettings = () => {
@@ -21,20 +22,18 @@ const MaxSettings = () => {
   const current = useLaunchStore((state) => state.current);
   const setTotalChars = useLaunchStore((state) => state.setTotalChars);
   const setChars = useLaunchStore((state) => state.setChars);
-  const editorText = useLaunchStore((state) =>
-    state.internal.find((i) => i.integration.id === state.current)
-      ?.integrationValue?.[0]?.content || state.global[0]?.content || ''
-  );
+  const { integration, value } = useIntegration();
+  const editorText = value?.[0]?.content || '';
 
   // The composer counter applies to the entire editor. In story mode it must
   // not reject a valid multi-part document at the normal 4000-char MAX limit.
   // The backend validates the strict 4000 UTF-16 limit separately per part.
   useEffect(() => {
-    if (current === 'global') return;
+    if (!integration || current !== integration.id) return;
     const budget = mode === 'story' ? 4_000_000 : 4000;
     setTotalChars?.(budget);
-    setChars(current, budget);
-  }, [current, mode, setTotalChars, setChars]);
+    setChars(integration.id, budget);
+  }, [current, integration?.id, mode, setTotalChars, setChars]);
 
   const partLengths = useMemo(() => {
     if (mode !== 'story') return [];
