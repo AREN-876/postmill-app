@@ -194,8 +194,8 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
   });
 
   it.each([
-    ['image', 'image/png', 'https://iu.oneme.ru/upload.do?token=url-photo-token', {}, { token: 'image-upload-token' }, 'image-upload-token'],
-    ['video', 'video/mp4', 'https://vu.okcdn.ru/upload.do?upload=xyz', { token: 'video-reserved-token' }, { retval: 1 }, 'video-reserved-token'],
+    ['image', 'image/png', 'https://iu.oneme.ru/uploadImage?apiToken=abc', {}, { photos: { photoIds: { token: 'image-upload-token' } } }, 'image-upload-token'],
+    ['video', 'video/mp4', 'https://omub.okcdn.ru/upload.do?upload=xyz', { token: 'video-reserved-token' }, { retval: 1 }, 'video-reserved-token'],
   ] as const)('sends one %s attachment after upload and only one message POST', async (
     mediaType, mimeType, uploadUrl, extraSetup, uploadResult, expectedToken,
   ) => {
@@ -227,6 +227,45 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
       text: 'Media caption', attachments: [{ type: mediaType, payload: { token: expectedToken } }],
     });
     expect(calls.filter(([, init]) => init.method === 'POST')).toHaveLength(3);
+  });
+
+
+  it('accepts MAX XML video upload success before sending the sole message', async () => {
+    const bytes = Buffer.from('synthetic video upload bytes');
+    const media = { mediaType: 'video', mimeType: 'video/mp4',
+      base64: bytes.toString('base64'),
+      sha256: createHash('sha256').update(bytes).digest('hex') };
+    checks();
+    wire.mockResolvedValueOnce(response({
+      url: 'https://omub.okcdn.ru/upload.do?sig=test', token: 'video-token',
+    })).mockResolvedValueOnce(new Response('<retval>1</retval>', {
+      status: 200, headers: { 'Content-Type': 'text/xml' },
+    })).mockResolvedValueOnce(response(sent));
+    await expect(provider.post(chatId, token, [{
+      ...post, media: [{ type: 'video', path: '/ignored' }],
+      settings: { __type: 'max', __maxMedia: media },
+    }])).resolves.toHaveLength(1);
+    expect(JSON.parse(wire.mock.calls[5][1].body).attachments).toEqual([
+      { type: 'video', payload: { token: 'video-token' } },
+    ]);
+  });
+
+  it('blocks a message on MAX XML video upload failure', async () => {
+    const bytes = Buffer.from('synthetic video upload bytes');
+    checks();
+    wire.mockResolvedValueOnce(response({
+      url: 'https://omub.okcdn.ru/upload.do?sig=test', token: 'video-token',
+    })).mockResolvedValueOnce(new Response('<retval>0</retval>', { status: 200 }));
+    const err = await provider.post(chatId, token, [{
+      ...post, media: [{ type: 'video', path: '/ignored' }],
+      settings: { __type: 'max', __maxMedia: {
+        mediaType: 'video', mimeType: 'video/mp4',
+        base64: bytes.toString('base64'),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      } },
+    }]).catch(e => e);
+    expect(err.message).toContain('operator review');
+    expect(wire).toHaveBeenCalledTimes(5);
   });
 
   it('rejects non-MAX upload hosts without leaking the bot token or sending a message', async () => {
