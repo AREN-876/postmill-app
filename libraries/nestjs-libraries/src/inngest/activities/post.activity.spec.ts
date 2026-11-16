@@ -518,6 +518,100 @@ describe('PostActivity MAX StoryGo immutable photo package', () => {
   });
 });
 
+describe('PostActivity MAX normal media immutable snapshot', () => {
+  it('reads owned media before occurrence claim and passes bytes ephemerally to the adapter', async () => {
+    const bytes = Buffer.from('synthetic image bytes');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const post = {
+      id: 'post-media', content: 'MAX image with caption',
+      organizationId: 'org-1', campaignId: null,
+      settings: JSON.stringify({ __type: 'max', mode: 'normal', maxMediaSha256: sha256 }),
+      image: JSON.stringify([{ id: 'file-owned', path: 'photo.png' }]),
+    } as any;
+    const integration = {
+      id: 'integration-1', organizationId: 'org-1',
+      providerIdentifier: 'max', internalId: 'max:-123',
+      providerVersion: 'v1', providerConfigId: null,
+      name: 'Test MAX', token: 'BOT-SECRET',
+    } as any;
+    const sendPost = vi.fn().mockResolvedValue([
+      { id: post.id, postId: 'mid.normal', status: 'completed', releaseURL: '' },
+    ]);
+    const beginMaxDelivery = vi.fn().mockResolvedValue({
+      attempt: 1, occurrenceId: 'max_' + 'c'.repeat(64),
+    });
+    const confirmMaxDelivery = vi.fn().mockResolvedValue(undefined);
+    const updateMedia = vi.fn();
+    const readMaxNormalMedia = vi.fn().mockResolvedValue({
+      bytes, sha256, mimeType: 'image/png', mediaType: 'image',
+    });
+    const { activity } = build({
+      _postService: {
+        updateTags: vi.fn().mockResolvedValue([post]),
+        updateMedia, readMaxNormalMedia, beginMaxDelivery, confirmMaxDelivery,
+      },
+      _integrationService: { getIntegrationById: vi.fn().mockResolvedValue(integration) },
+      _integrationManager: {
+        getSocialIntegration: vi.fn().mockResolvedValue({
+          editor: 'normal', post: sendPost,
+        }),
+        requireClientInformation: vi.fn().mockResolvedValue(undefined),
+      },
+      _orgProviderConfigService: {
+        getVpnSelectionForIntegration: vi.fn().mockResolvedValue(null),
+      },
+    });
+    const result = await activity.postSocial(integration, [post], 'max_' + 'c'.repeat(64), 1);
+    expect(result[0].postId).toBe('mid.normal');
+    expect(readMaxNormalMedia).toHaveBeenCalledWith('org-1', 'file-owned');
+    expect(updateMedia).not.toHaveBeenCalled();
+    expect(sendPost.mock.calls[0][2][0].settings.__maxMedia).toMatchObject({
+      base64: bytes.toString('base64'), sha256, mimeType: 'image/png', mediaType: 'image',
+    });
+    expect(beginMaxDelivery.mock.calls[0][2]).toMatchObject({
+      maxMediaSha256: sha256, maxMediaType: 'image',
+    });
+    expect(JSON.stringify(beginMaxDelivery.mock.calls)).not.toContain(bytes.toString('base64'));
+    expect(JSON.stringify(confirmMaxDelivery.mock.calls)).not.toContain(bytes.toString('base64'));
+  });
+  it('refuses changed files before claiming a MAX occurrence', async () => {
+    const bytes = Buffer.from('new bytes');
+    const post = {
+      id: 'post-media', content: 'Caption', campaignId: null,
+      image: JSON.stringify([{ id: 'file-owned', path: 'photo.png' }]),
+      settings: JSON.stringify({ mode: 'normal', maxMediaSha256: 'f'.repeat(64) }),
+    } as any;
+    const integration = {
+      id: 'integration-1', organizationId: 'org-1',
+      providerIdentifier: 'max', internalId: 'max:-123',
+      providerVersion: 'v1', providerConfigId: null,
+      name: 'MAX', token: 'BOT-SECRET',
+    } as any;
+    const beginMaxDelivery = vi.fn();
+    const { activity } = build({
+      _postService: {
+        updateTags: vi.fn().mockResolvedValue([post]),
+        readMaxNormalMedia: vi.fn().mockResolvedValue({
+          bytes, mimeType: 'image/png', mediaType: 'image',
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        }),
+        beginMaxDelivery,
+      },
+      _integrationService: { getIntegrationById: vi.fn().mockResolvedValue(integration) },
+      _integrationManager: {
+        getSocialIntegration: vi.fn().mockResolvedValue({ editor: 'normal' }),
+        requireClientInformation: vi.fn().mockResolvedValue(undefined),
+      },
+      _orgProviderConfigService: {
+        getVpnSelectionForIntegration: vi.fn().mockResolvedValue(null),
+      },
+    });
+    await expect(activity.postSocial(integration, [post], 'max_' + 'c'.repeat(64), 1))
+      .rejects.toThrow('attachment has changed');
+    expect(beginMaxDelivery).not.toHaveBeenCalled();
+  });
+});
+
 describe('MAX StoryGo crash-safe receipt recovery', () => {
   const candidate = {
     id: 'max_' + 'a'.repeat(64),

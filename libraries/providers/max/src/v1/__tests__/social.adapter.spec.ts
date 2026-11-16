@@ -19,9 +19,11 @@ beforeEach(() => {
 });
 
 describe('MAX credentials and channel checks', () => {
-  it('advertises only text and remains unverified without a live sandbox', () => {
+  it('advertises one media attachment and remains unverified without a live sandbox', () => {
     expect(maxSocialModule.manifest.capabilities).toMatchObject({
-      maxMedia: 0,
+      maxMedia: 1,
+      video: true,
+      altText: false,
       analytics: false,
       comments: false,
       refreshToken: false,
@@ -171,27 +173,137 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
     },
   );
   it.each([
-    { media: [{ type: 'image', path: 'not-fetched' }] },
     { poll: { options: ['a', 'b'], duration: 1 } },
     { firstComment: 'comment' },
     { settings: { firstComment: 'comment' } },
   ])('rejects unsupported payload %# before any HTTP', async (extra) => {
     await expect(
       provider.post(chatId, token, [{ ...post, ...extra } as any]),
-    ).rejects.toThrow('text only');
+    ).rejects.toThrow('first comments');
     expect(wire).not.toHaveBeenCalled();
   });
-  it('rejects threads and media in server validation', async () => {
+  it('rejects threads and multiple media items in server validation', async () => {
     expect(await provider.checkValidity([[], []])).toMatch('threads');
-    expect(await provider.checkValidity([[{ path: 'image.png' }]])).toMatch(
-      'text only',
-    );
+    expect(await provider.checkValidity([[{ path: 'image.png' }]])).toBe(true);
+    expect(await provider.checkValidity([[{ path: 'a.png' }, { path: 'b.png' }]])).toMatch('one image');
     expect(await provider.checkValidity([[]])).toBe(true);
     await expect(provider.post(chatId, token, [post, post])).rejects.toThrow(
       'exactly one',
     );
     expect(wire).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['image', 'image/png', 'https://iu.oneme.ru/uploadImage?apiToken=abc', {}, { photos: { photoIds: { token: 'image-upload-token' } } }, 'image-upload-token'],
+    ['video', 'video/mp4', 'https://omub.okcdn.ru/upload.do?upload=xyz', { token: 'video-reserved-token' }, { retval: 1 }, 'video-reserved-token'],
+  ] as const)('sends one %s attachment after upload and only one message POST', async (
+    mediaType, mimeType, uploadUrl, extraSetup, uploadResult, expectedToken,
+  ) => {
+    const bytes = Buffer.from('synthetic media bytes validated by PostsService');
+    const media = { mediaType, mimeType, base64: bytes.toString('base64'),
+      sha256: createHash('sha256').update(bytes).digest('hex') };
+    checks();
+    wire.mockResolvedValueOnce(response({ url: uploadUrl, ...extraSetup }))
+      .mockResolvedValueOnce(response(uploadResult))
+      .mockResolvedValueOnce(response(sent));
+    const result = await provider.post(chatId, token, [{
+      ...post, message: 'Media caption',
+      media: [{ type: mediaType, path: '/ignored', id: 'file-id' }],
+      settings: { __type: 'max', mode: 'normal', __maxMedia: media },
+    } as any]);
+    expect(result[0].postId).toBe('synthetic-mid');
+    const calls = wire.mock.calls;
+    expect(calls).toHaveLength(6);
+    expect(calls[3][0]).toBe('https://platform-api2.max.ru/uploads?type=' + mediaType);
+    expect(calls[3][1].method).toBe('POST');
+    expect(calls[3][1].headers.Authorization).toBe(token);
+    expect(calls[4][0]).toBe(uploadUrl);
+    expect(calls[4][1].method).toBe('POST');
+    expect(calls[4][1].headers?.Authorization).toBe(
+      mediaType === 'image' ? token : undefined,
+    );
+    expect(calls[4][1].headers['content-type']).toContain('multipart/form-data; boundary=');
+    expect(calls[4][1].body).toBeInstanceOf(Buffer);
+    expect(calls[4][1].body.toString()).toContain('name="data"');
+    expect(JSON.parse(calls[5][1].body)).toEqual({
+      text: 'Media caption', attachments: [{ type: mediaType, payload: { token: expectedToken } }],
+    });
+    expect(calls.filter(([, init]) => init.method === 'POST')).toHaveLength(3);
+    expect(timer).toHaveBeenCalledWith(mediaType === 'video' ? 10000 : 2000);
+  });
+
+
+  it('accepts MAX XML video upload success before sending the sole message', async () => {
+    const bytes = Buffer.from('synthetic video upload bytes');
+    const media = { mediaType: 'video', mimeType: 'video/mp4',
+      base64: bytes.toString('base64'),
+      sha256: createHash('sha256').update(bytes).digest('hex') };
+    checks();
+    wire.mockResolvedValueOnce(response({
+      url: 'https://omub.okcdn.ru/upload.do?sig=test', token: 'video-token',
+    })).mockResolvedValueOnce(new Response('<retval>1</retval>', {
+      status: 200, headers: { 'Content-Type': 'text/xml' },
+    })).mockResolvedValueOnce(response(sent));
+    await expect(provider.post(chatId, token, [{
+      ...post, media: [{ type: 'video', path: '/ignored' }],
+      settings: { __type: 'max', __maxMedia: media },
+    }])).resolves.toHaveLength(1);
+    expect(JSON.parse(wire.mock.calls[5][1].body).attachments).toEqual([
+      { type: 'video', payload: { token: 'video-token' } },
+    ]);
+  });
+
+  it('blocks a message on MAX XML video upload failure', async () => {
+    const bytes = Buffer.from('synthetic video upload bytes');
+    checks();
+    wire.mockResolvedValueOnce(response({
+      url: 'https://omub.okcdn.ru/upload.do?sig=test', token: 'video-token',
+    })).mockResolvedValueOnce(new Response('<retval>0</retval>', { status: 200 }));
+    const err = await provider.post(chatId, token, [{
+      ...post, media: [{ type: 'video', path: '/ignored' }],
+      settings: { __type: 'max', __maxMedia: {
+        mediaType: 'video', mimeType: 'video/mp4',
+        base64: bytes.toString('base64'),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      } },
+    }]).catch(e => e);
+    expect(err.message).toContain('operator review');
+    expect(wire).toHaveBeenCalledTimes(5);
+  });
+
+  it('rejects non-MAX upload hosts without leaking the bot token or sending a message', async () => {
+    const bytes = Buffer.from('media');
+    checks();
+    wire.mockResolvedValueOnce(response({ url: 'https://example.invalid/upload' }));
+    const err = await provider.post(chatId, token, [{
+      ...post, media: [{ type: 'image', path: 'ignored' }],
+      settings: { __type: 'max', __maxMedia: {
+        mediaType: 'image', mimeType: 'image/png', base64: bytes.toString('base64'),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      } },
+    }]).catch((e) => e);
+    expect(err.message).toContain('operator review');
+    expect(JSON.stringify(err)).not.toContain(token);
+    expect(wire).toHaveBeenCalledTimes(4);
+    expect(wire.mock.calls.every(([url]) => !String(url).startsWith('https://example.invalid'))).toBe(true);
+  });
+
+  it('rejects missing or mismatched media snapshot without any write', async () => {
+    const media = [{ type: 'image' as const, path: 'ignored' }];
+    await expect(provider.post(chatId, token, [{ ...post, media }])).rejects.toThrow('verified media');
+    expect(wire).not.toHaveBeenCalled();
+    const bytes = Buffer.from('changed');
+    checks();
+    await expect(provider.post(chatId, token, [{
+      ...post, media,
+      settings: { __type: 'max', __maxMedia: {
+        mediaType: 'image', mimeType: 'image/png', base64: bytes.toString('base64'),
+        sha256: 'f'.repeat(64),
+      } },
+    }])).rejects.toThrow('approved snapshot');
+    expect(wire.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  });
+
   it('does not send text if rights are revoked', async () => {
     wire
       .mockResolvedValueOnce(response(bot))

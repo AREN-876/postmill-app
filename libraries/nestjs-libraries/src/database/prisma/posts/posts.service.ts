@@ -15,6 +15,8 @@ import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/p
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
 import { preparePostmillMaxStory, normalizeMaxStoryEditorText } from './max-story-input';
+import { resolveMaxPostMode } from '@postmill-ai/provider-kernel/domains/max-story';
+import { PROVIDER_CAPABILITIES } from '@postmill-ai/provider-kernel';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
@@ -440,8 +442,20 @@ export class PostsService {
             );
           }
 
-          const isStory = integration.providerIdentifier === 'max' &&
-            (post.settings as any)?.mode === 'story';
+          const requestedMode = (post.settings as any)?.mode;
+          // Preserve unsupported explicit values for the DTO to reject.
+          // Only absent/auto or a recognized override may be normalized.
+          const maxMode = integration.providerIdentifier === 'max'
+            ? requestedMode != null &&
+              !['auto', 'normal', 'story'].includes(requestedMode)
+                ? requestedMode
+                : resolveMaxPostMode(
+                    requestedMode,
+                    normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+                    (post.settings as any)?.continuationText || '',
+                  )
+            : undefined;
+          const isStory = maxMode === 'story';
           // One editor for a new story, but preserve the existing StoryGo
           // storage contract and the legacy separate continuation field.
           const values = isStory
@@ -453,8 +467,20 @@ export class PostsService {
           const settings = {
             ...sanitizeProviderSettings(integration.providerIdentifier, post.settings),
             __type: integration.providerIdentifier,
+            ...(maxMode ? { mode: maxMode } : {}),
           };
           if (isStory && values?.length === 1) {
+            // Unified media input: story photos come from the same composer/
+            // n8n media attachment as normal MAX photos. Keep old storyImageId
+            // for editing previously saved stories, but reject conflicts.
+            const attached = values[0].image || [];
+            if (attached.length === 1 &&
+                typeof (attached[0] as any).id === 'string' &&
+                (!(settings as any).storyImageId ||
+                  (settings as any).storyImageId === (attached[0] as any).id)) {
+              (settings as any).storyImageId = (attached[0] as any).id;
+              values[0].image = [];
+            }
             try {
               const parsed = preparePostmillMaxStory(
                 values[0].content,
@@ -548,6 +574,72 @@ export class PostsService {
    * adapter. No arbitrary URL/path from Post.settings reaches a fetch or fs.
    * File and bytes are validated before the Gateway media upload.
    */
+
+  /**
+   * Read exactly one organization-owned attachment for a normal MAX post.
+   * The current single-worker VPS uses bounded in-memory upload snapshots:
+   * 16 MiB PNG/JPEG photos or 32 MiB MP4/WebM clips. Larger clips need a
+   * separate streaming implementation, not an unbounded Buffer.
+   */
+  async readMaxNormalMedia(orgId: string, fileId: string): Promise<{
+    bytes: Buffer; mimeType: string; mediaType: 'image' | 'video'; sha256: string;
+  }> {
+    if (typeof fileId !== 'string' || !/^[a-zA-Z0-9_-]{6,128}$/.test(fileId)) {
+      throw new BadRequestException('MAX attachment must reference an uploaded library file');
+    }
+    const file = await this._fileService.getFileById(orgId, fileId);
+    const mediaType: 'image' | 'video' | null = file?.type === 'video' ? 'video' : file?.type === 'image' ? 'image' : null;
+    const limit = mediaType === 'video' ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
+    if (!file || file.deletedAt || !mediaType ||
+        !Number.isSafeInteger(file.fileSize) || file.fileSize < 1 || file.fileSize > limit) {
+      throw new BadRequestException('MAX supports one owned PNG/JPEG image (16 MiB) or MP4/WebM video (32 MiB)');
+    }
+    let bytes: Buffer;
+    try {
+      const adapter = await this._storageService.resolveAdapterForFolder(file.folderId, orgId);
+      const stream = await adapter.readFileStream(file.path);
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of stream) {
+        const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += value.length;
+        if (total > limit) {
+          stream.destroy();
+          throw Error('MAX media limit exceeded');
+        }
+        chunks.push(value);
+      }
+      if (total !== file.fileSize) throw Error('MAX media bytes changed');
+      bytes = Buffer.concat(chunks, total);
+    } catch {
+      throw new BadRequestException('MAX attachment could not be read safely from media library');
+    }
+    const kind = await fromBuffer(bytes);
+    const allowed = mediaType === 'image'
+      ? ['image/png', 'image/jpeg']
+      : ['video/mp4', 'video/webm'];
+    if (!kind || !allowed.includes(kind.mime)) {
+      throw new BadRequestException('MAX attachment file format does not match its media type');
+    }
+    if (mediaType === 'image') {
+      try {
+        const image = sharp(bytes, { limitInputPixels: 7680 * 7680, failOn: 'error' });
+        const m = await image.metadata();
+        if (!m.width || !m.height || m.width > 7680 || m.height > 7680 ||
+            !['png', 'jpeg'].includes(m.format || '') || (m.pages ?? 1) !== 1) {
+          throw Error('Invalid image dimensions');
+        }
+        await image.stats();
+      } catch {
+        throw new BadRequestException('MAX image must be a valid static PNG/JPEG within 7680x7680');
+      }
+    }
+    return {
+      bytes, mimeType: kind.mime, mediaType,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+  }
+
   async readStoryGoImage(orgId: string, fileId: string) {
     if (typeof fileId !== 'string' || !/^[a-zA-Z0-9_-]{6,128}$/.test(fileId)) {
       throw new BadRequestException('Invalid StoryGo photo file identifier');
@@ -1130,8 +1222,22 @@ export class PostsService {
           additionalSettings = [];
         }
 
-        const settings = post.settings || {};
-        const media = (post.value || []).map((p) => p.image || []);
+        const rawSettings = post.settings || {};
+        const isMax = integration.providerIdentifier === 'max';
+        const mode = isMax
+          ? rawSettings.mode != null &&
+            !['auto', 'normal', 'story'].includes(rawSettings.mode)
+              ? rawSettings.mode
+              : resolveMaxPostMode(
+                  rawSettings.mode,
+                  normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+                  rawSettings.continuationText || '',
+                )
+          : undefined;
+        const settings = { ...rawSettings, ...(mode ? { mode } : {}) };
+        const media = (post.value || []).map((p) =>
+          isMax && mode === 'story' ? [] : (p.image || [])
+        );
 
         // Settings DTO validation — mirrors the client `form.trigger()`.
         let valid = true;
@@ -1153,18 +1259,38 @@ export class PostsService {
           settingsError = 'MAX photo/continuations require Story mode. Clear them before selecting a normal post.';
         }
 
+        if (integration.providerIdentifier === 'max' && settings.mode !== 'story' &&
+            (post.value?.[0]?.image || []).length === 1) {
+          const attachment = post.value[0].image[0];
+          const file = await this._fileService.getFileById(orgId, (attachment as any).id);
+          const isImage = file?.type === 'image' && file.fileSize > 0 && file.fileSize <= 16 * 1024 * 1024;
+          const isVideo = file?.type === 'video' && file.fileSize > 0 && file.fileSize <= 32 * 1024 * 1024;
+          if (!file || file.deletedAt || (!isImage && !isVideo)) {
+            valid = false;
+            settingsError = 'MAX accepts one owned photo (up to 16 MiB) or video (up to 32 MiB).';
+          }
+        }
+
         if (integration.providerIdentifier === 'max' && settings.mode === 'story') {
           try {
             if (post.value?.length !== 1) {
               throw Error('A MAX story must be one Postmill post, not a thread.');
             }
             preparePostmillMaxStory(post.value[0].content, settings.continuationText || '');
-            if (settings.storyImageId) {
-              await this.readStoryGoImage(orgId, settings.storyImageId);
+            const attachments = post.value[0].image || [];
+            if (attachments.length > 1) {
+              throw Error('MAX stories accept only one photograph.');
             }
-            if ((post.value[0].image || []).length) {
-              throw Error('Attach the StoryGo photo in the MAX story settings, not as a normal media post.');
+            const attachedId = attachments.length === 1
+              ? (attachments[0] as any).id : undefined;
+            if (attachments.length === 1 && !attachedId) {
+              throw Error('MAX story photo must be an uploaded library file.');
             }
+            if (settings.storyImageId && attachedId && settings.storyImageId !== attachedId) {
+              throw Error('Two different StoryGo photos selected; keep only one.');
+            }
+            const photoId = attachedId || settings.storyImageId;
+            if (photoId) await this.readStoryGoImage(orgId, photoId);
           } catch (error) {
             valid = false;
             settingsError = (error as Error).message;
@@ -1312,6 +1438,17 @@ export class PostsService {
           (post.settings as any).storyImageSha256 = image.sha256;
         } else {
           delete (post.settings as any).storyImageSha256;
+        }
+        delete (post.settings as any).maxMediaSha256;
+      } else if (providerIdentifier === 'max') {
+        // Normal MAX posts use the ordinary composer attachment. Pin its
+        // verified bytes so edits to a library file cannot swap approved media.
+        const attached = post.value?.[0]?.image || [];
+        if (attached.length === 1) {
+          const asset = await this.readMaxNormalMedia(orgId, attached[0].id);
+          (post.settings as any).maxMediaSha256 = asset.sha256;
+        } else {
+          delete (post.settings as any).maxMediaSha256;
         }
       }
 
@@ -1506,7 +1643,7 @@ export class PostsService {
 
         // Check alt text on media
         const post = body.posts?.find((p) => p.integration?.id === result.id);
-        if (post?.value) {
+        if (post?.value && integration && PROVIDER_CAPABILITIES[integration.providerIdentifier]?.altText) {
           for (const val of post.value) {
             if (val.image?.length) {
               for (const img of val.image) {

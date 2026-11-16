@@ -292,3 +292,17 @@ For n8n/API ingestion, send a single MAX post with
 remain in force. Each nonempty part must be at most 4000 UTF-16 units,
 the first nonempty title line 1–160 units. For a story photo, use an
 org-owned `storyImageId`; regular MAX media attachments remain forbidden.
+
+## MAX normal media transport
+
+The MAX v1 adapter handles normal image/video media via `POST /uploads` (the
+restricted MAX upload hosts) followed by one `POST /messages` with an attachment
+token. The StoryGo story mode is separate. Normal posts accept at most one
+org-owned File (PNG/JPEG <=16 MiB or MP4/WebM <=32 MiB), with `maxMediaSha256`
+written server-side at create and verified again at send, not a user-supplied
+URL. PostActivity passes ephemeral `__maxMedia` bytes to the adapter; do not
+persist them in Post settings, Inngest events or logs. Upload errors are
+fail-closed and never authorize a second message POST for the same occurrence.
+`PROVIDER_CAPABILITIES.max` advertises `maxMedia: 1`, `video: true`, and
+`altText: false`; preflight alt-text warnings must honor the capability.
+Streaming upload for larger videos is a separate future change.

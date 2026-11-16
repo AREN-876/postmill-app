@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { maxStoryDraft, maxStoryParts, STORYGO_DIVIDER } from './max-story';
+import { maxStoryDraft, maxStoryParts, resolveMaxPostMode, STORYGO_DIVIDER } from './max-story';
+
+describe('MAX auto content routing', () => {
+  const wholeStory = ['Тема', 'Первый эпизод', STORYGO_DIVIDER, 'Второй эпизод'].join('\n');
+
+  it('infers only from the exact standalone StoryGo separator', () => {
+    expect(resolveMaxPostMode(undefined, 'Текст обычного поста')).toBe('normal');
+    expect(resolveMaxPostMode('auto', wholeStory)).toBe('story');
+    expect(resolveMaxPostMode(undefined, 'Текст ' + STORYGO_DIVIDER + ' продолжение')).toBe('normal');
+    expect(resolveMaxPostMode(undefined, 'Текст\n ' + STORYGO_DIVIDER)).toBe('normal');
+    expect(resolveMaxPostMode(undefined, 'Текст\r\n' + STORYGO_DIVIDER)).toBe('story');
+    expect(resolveMaxPostMode(undefined, 'Текст\n' + STORYGO_DIVIDER + '\r\nФинал')).toBe('normal');
+  });
+
+  it('honors manual override and legacy saved continuation', () => {
+    expect(resolveMaxPostMode('normal', wholeStory)).toBe('normal');
+    expect(resolveMaxPostMode('story', 'Простой текст')).toBe('story');
+    expect(resolveMaxPostMode('auto', 'Начало', 'Продолжение')).toBe('story');
+    expect(resolveMaxPostMode('normal', 'Начало', 'Продолжение')).toBe('normal');
+  });
+});
 
 describe('MAX → StoryGo canonical story parts', () => {
   it('preserves exact paragraphs and recognizes only the full divider line', () => {

@@ -1414,3 +1414,131 @@ describe('StoryGo approved photo snapshot (org-owned storage only)', () => {
     await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
   });
 });
+
+
+describe('Normal MAX media snapshot (no public URL fetch)', () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lG0AAAAASUVORK5CYII=',
+    'base64',
+  );
+  function setup(fileOverrides: Record<string, any> = {}) {
+    const getFileById = vi.fn().mockResolvedValue({
+      id: 'file-owned', type: 'image', fileSize: png.length,
+      folderId: 'private-folder', path: 'private://owned.png',
+      deletedAt: null, ...fileOverrides,
+    });
+    const readFileStream = vi.fn().mockImplementation(async () => Readable.from([png]));
+    const resolveAdapterForFolder = vi.fn().mockResolvedValue({ readFileStream });
+    const service = new PostsService(
+      {} as any, {} as any, {} as any, {} as any,
+      { getFileById } as any, {} as any, {} as any, {} as any,
+      {} as any, { resolveAdapterForFolder } as any,
+      {} as any, {} as any, {} as any,
+    );
+    return { service, getFileById, resolveAdapterForFolder, readFileStream };
+  }
+  it('loads a verified photo from the selected organization storage adapter', async () => {
+    const { service, getFileById, resolveAdapterForFolder, readFileStream } = setup();
+    const result = await service.readMaxNormalMedia('org-1', 'file-owned');
+    expect(result).toMatchObject({
+      mediaType: 'image', mimeType: 'image/png', bytes: png,
+    });
+    expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(getFileById).toHaveBeenCalledWith('org-1', 'file-owned');
+    expect(resolveAdapterForFolder).toHaveBeenCalledWith('private-folder', 'org-1');
+    expect(readFileStream).toHaveBeenCalledWith('private://owned.png');
+  });
+  it('rejects foreign, deleted, oversized and mutated media before network publication', async () => {
+    for (const fields of [
+      { deletedAt: new Date() },
+      { type: 'video', fileSize: 33 * 1024 * 1024 },
+      { type: 'image', fileSize: 17 * 1024 * 1024 },
+      { type: 'audio' },
+    ]) {
+      const { service, readFileStream } = setup(fields);
+      await expect(service.readMaxNormalMedia('org-1', 'file-owned')).rejects.toThrow();
+      expect(readFileStream).not.toHaveBeenCalled();
+    }
+    const { service, getFileById, readFileStream } = setup();
+    getFileById.mockResolvedValue(null);
+    await expect(service.readMaxNormalMedia('other-org', 'file-owned')).rejects.toThrow();
+    expect(readFileStream).not.toHaveBeenCalled();
+    const other = setup();
+    other.readFileStream.mockResolvedValue(Readable.from([Buffer.from('other bytes')]));
+    await expect(other.service.readMaxNormalMedia('org-1', 'file-owned')).rejects.toThrow();
+  });
+});
+
+describe('MAX unified auto-mode ingestion (manual editor and n8n API)', () => {
+  const divider = '────────────────────────';
+  const testImage = { id: 'file-owned', path: 'https://files.example.com/photo.png' };
+  const storyText = ['Тема', 'Первый эпизод', divider, 'Второй эпизод', divider, 'Финал'].join('\n');
+
+  function createService() {
+    const integrationService = {
+      getIntegrationById: vi.fn().mockResolvedValue({ providerIdentifier: 'max' }),
+    };
+    const service = new PostsService(
+      {} as any, {} as any, {} as any, integrationService as any,
+      {} as any, {} as any, {} as any, {} as any,
+      {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    return { service, integrationService };
+  }
+
+  function request(content: string, image: any[], mode?: string, extraSettings: any = {}) {
+    return {
+      type: 'draft', date: '2026-11-18T12:00:00.000Z', shortLink: false,
+      tags: [], posts: [{
+        integration: { id: 'integration-1' },
+        value: [{ content, image }],
+        settings: { __type: 'max', ...(mode ? { mode } : {}), ...extraSettings },
+      }],
+    } as any;
+  }
+
+  it('detects a whole three-part story and moves a normal image to StoryGo settings', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(request(storyText, [testImage], 'auto'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('story');
+    expect((mapped.posts[0].settings as any).storyImageId).toBe('file-owned');
+    expect((mapped.posts[0].settings as any).continuationText).toBe(
+      ['Второй эпизод', 'Финал'].join('\n' + divider + '\n'),
+    );
+    expect(mapped.posts[0].value[0].content).toBe('Тема\nПервый эпизод');
+    expect(mapped.posts[0].value[0].image).toEqual([]);
+  });
+
+  it('detects story when mode is omitted, including TipTap HTML paragraphs', async () => {
+    const { service } = createService();
+    const html = '<p>Заголовок</p><p>Часть один</p><p>' + divider + '</p><p>Часть два</p>';
+    const mapped = await service.mapTypeToPost(request(html, [], undefined), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('story');
+    expect(mapped.posts[0].value[0].content).toBe('Заголовок\nЧасть один');
+  });
+
+  it('preserves normal text plus one image or video attachment', async () => {
+    const { service } = createService();
+    const video = { id: 'clip-owned', path: 'https://files.example.com/clip.mp4' };
+    const mapped = await service.mapTypeToPost(request('Подпись к ролику', [video], 'auto'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('normal');
+    expect(mapped.posts[0].value[0].image).toEqual([video]);
+  });
+
+  it('manual normal override defeats automatic separator classification', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(request(storyText, [testImage], 'normal'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('normal');
+    expect(mapped.posts[0].value[0].image).toEqual([testImage]);
+    expect(mapped.posts[0].value[0].content).toContain(divider);
+  });
+
+  it('retains a legacy selected StoryGo photograph without a second selector', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(
+      request(storyText, [], 'story', { storyImageId: 'previous-owned' }), 'org-1',
+    );
+    expect((mapped.posts[0].settings as any).storyImageId).toBe('previous-owned');
+    expect(mapped.posts[0].value[0].image).toEqual([]);
+  });
+});

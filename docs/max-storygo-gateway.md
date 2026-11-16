@@ -8,8 +8,40 @@ StoryGo-side publication scheduler is introduced.
 
 ## Publication types
 
-- **Normal** (default, including legacy posts): Postmill → MAX. One text
-  message of at most 4000 UTF-16 units; current behavior unchanged.
+### Automatic route selection (composer and Public API)
+
+The MAX composer defaults to `settings.mode = "auto"` (also applies if the
+mode field is omitted by n8n). A plain text scan of the normalized editor
+content selects StoryGo **only** when the complete
+`────────────────────────` divider appears on its own line (or when a
+legacy `continuationText` field is populated). No LLM inference, image
+heuristics, or automatic splitting of oversized ordinary posts. The server
+persists the resulting explicit `normal`/`story` mode when creating or
+scheduling a post, so the scheduled delivery path cannot change
+spontaneously. Operators may override the route explicitly through the
+small `Изменить` control.
+
+**One media input for both modes:** use the standard composer attachment,
+or supply a Postmill media-library `image: [{id, path}]` entry through
+the API. A detected story with one image automatically moves the owned File
+ID to `storyImageId` and clears the ordinary attachment list at persistence
+time; native normal posts retain the attachment. StoryGo still validates
+the same 8 MiB PNG/JPEG and unchanged SHA-256. Older stories with a stored
+`storyImageId` remain editable without re-uploading. Conflicting old/new
+photo selections and video in story mode are rejected before sending.
+
+- **Normal** (default, including legacy posts): Postmill → MAX via the native
+  MAX Bot API. Text of at most 4000 UTF-16 units, optionally with one
+  ordinary media-library attachment (PNG/JPEG photo up to 16 MiB or MP4/WebM
+  video up to 32 MiB in this bounded-memory implementation). The caption can
+  be omitted when media is present. This is the same normal composer/API input
+  n8n uses; no StoryGo reader buttons. MAX supports larger files, but this
+  self-hosted adapter deliberately limits payloads until streaming uploads
+  are implemented. Media is read from an organization-owned File, checked
+  for size/signature, pinned by SHA-256 and rechecked before posting. A
+  signed /uploads URL restricted to MAX's media upload hosts is used to send
+  bytes, then POST /messages references its attachment token. No public URL
+  to Postmill's private image library is needed.
 - **Story**: Postmill → StoryGo Gateway → MAX. Exactly one Postmill Post
   per scheduled occurrence. The operator pastes the **entire story in the
   primary editor**, with the exact separator `────────────────────────`
@@ -31,8 +63,8 @@ fingerprint. UTM, link shortening, tag placeholder replacement and
 formatting are not applied to a story at dispatch. A missing/invalid
 continuation fails validation before scheduling.
 
-**One optional photo is supported in story mode only.** Choose it using
-the existing Postmill media picker in the MAX story settings, which stores
+**One optional photo is supported in story mode.** Choose it using
+the ordinary composer media attachment; at save the server stores
 `Post.settings.storyImageId` (an org-owned File ID, not a URL). The server
 re-reads the actual bytes via the org-scoped configured storage adapter
 with a **streaming 8 MiB cap**, verifies detected PNG/JPEG MIME, image
@@ -42,7 +74,8 @@ fails before MAX delivery. The photo bytes are passed ephemerally to
 the MAX provider, uploaded to `POST /gateway/v1/media` immediately
 before the single publication POST; the one-hour `upload_id` is not
 persisted days earlier. User-supplied URLs are NEVER fetched directly.
-A normal MAX post still rejects photo attachments.
+A normal MAX post accepts one photo or video through the same composer media
+attachment. The old StoryGo-only photo selector is no longer needed.
 
 ## Identity and confirmation
 

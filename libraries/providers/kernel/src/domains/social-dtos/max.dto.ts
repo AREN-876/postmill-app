@@ -5,8 +5,8 @@ export class MaxSettingsDto {
   __type?: string;
 
   @IsOptional()
-  @IsIn(['normal', 'story'])
-  mode?: 'normal' | 'story';
+  @IsIn(['auto', 'normal', 'story'])
+  mode?: 'auto' | 'normal' | 'story';
 
   // Exact continuation text. Individual parts are separated by the StoryGo
   // divider on its own line; never turn continuations into Postmill threads.
@@ -23,4 +23,10 @@ export class MaxSettingsDto {
   @IsOptional()
   @Matches(/^[0-9a-f]{64}$/)
   storyImageSha256?: string;
+
+  // Server-owned digest of the one normal MAX photo/video attachment.
+  // Recomputed at save and verified before any outbound MAX request.
+  @IsOptional()
+  @Matches(/^[0-9a-f]{64}$/)
+  maxMediaSha256?: string;
 }
