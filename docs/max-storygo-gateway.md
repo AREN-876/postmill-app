@@ -1,6 +1,7 @@
 # Postmill MAX-03 → StoryGo Gateway v1
 
-Status: **development PR; do not deploy or enable until reviewed.**
+Status: **opt-in integration**. Gateway activation and real MAX publishing
+require explicit operator authorization.
 The StoryGo server endpoint comes from merged [StoryGo PR #60](https://github.com/AREN-876/max-channel-bridge/pull/60).
 This document describes the Postmill client only; no second MAX provider or
 StoryGo-side publication scheduler is introduced.
@@ -10,16 +11,22 @@ StoryGo-side publication scheduler is introduced.
 - **Normal** (default, including legacy posts): Postmill → MAX. One text
   message of at most 4000 UTF-16 units; current behavior unchanged.
 - **Story**: Postmill → StoryGo Gateway → MAX. Exactly one Postmill Post
-  per scheduled occurrence. The public part is stored in `Post.content`,
-  continuation text in `Post.settings.continuationText`, mode in
-  `Post.settings.mode = "story"`. The continuation textarea uses the exact
-  separator `────────────────────────` alone on a line for parts 3+.
-  StoryGo owns the reader bot and subscription gating.
+  per scheduled occurrence. The operator pastes the **entire story in the
+  primary editor**, with the exact separator `────────────────────────`
+  on its own line between every part. This is also the ingestion format for
+  n8n or other authorized Postmill API clients: one post value containing
+  the complete story and `settings.mode = "story"`. The server splits
+  parts before persistence: the first part goes into `Post.content` and
+  the rest into `Post.settings.continuationText`. Legacy API requests
+  supplying first part + continuationText remain supported, as do edits of
+  previously stored stories (the composer reconstructs one editor input).
+  StoryGo still owns the reader bot and subscription gating.
 
 Server-side validation requires 2–1000 nonempty parts; each part at most
 4000 UTF-16 code units. The first nonempty title line of the public part
-must be at most 160. Input is canonicalized from TipTap HTML to plain text
-once on create/update and then hashed in the existing Postmill occurrence
+must be at most 160. The same TipTap-HTML-to-plain-text normalization is used for preflight
+and create/update, eliminating misleading title/length failures caused by
+markup. Canonical parts are then hashed in the existing Postmill occurrence
 fingerprint. UTM, link shortening, tag placeholder replacement and
 formatting are not applied to a story at dispatch. A missing/invalid
 continuation fails validation before scheduling.
