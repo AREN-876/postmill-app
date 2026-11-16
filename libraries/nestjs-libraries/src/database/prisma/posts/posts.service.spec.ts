@@ -1414,3 +1414,57 @@ describe('StoryGo approved photo snapshot (org-owned storage only)', () => {
     await expect(service.readStoryGoImage('org-1', 'file-owned')).rejects.toThrow();
   });
 });
+
+
+describe('Normal MAX media snapshot (no public URL fetch)', () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lG0AAAAASUVORK5CYII=',
+    'base64',
+  );
+  function setup(fileOverrides: Record<string, any> = {}) {
+    const getFileById = vi.fn().mockResolvedValue({
+      id: 'file-owned', type: 'image', fileSize: png.length,
+      folderId: 'private-folder', path: 'private://owned.png',
+      deletedAt: null, ...fileOverrides,
+    });
+    const readFileStream = vi.fn().mockImplementation(async () => Readable.from([png]));
+    const resolveAdapterForFolder = vi.fn().mockResolvedValue({ readFileStream });
+    const service = new PostsService(
+      {} as any, {} as any, {} as any, {} as any,
+      { getFileById } as any, {} as any, {} as any, {} as any,
+      {} as any, { resolveAdapterForFolder } as any,
+      {} as any, {} as any, {} as any,
+    );
+    return { service, getFileById, resolveAdapterForFolder, readFileStream };
+  }
+  it('loads a verified photo from the selected organization storage adapter', async () => {
+    const { service, getFileById, resolveAdapterForFolder, readFileStream } = setup();
+    const result = await service.readMaxNormalMedia('org-1', 'file-owned');
+    expect(result).toMatchObject({
+      mediaType: 'image', mimeType: 'image/png', bytes: png,
+    });
+    expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(getFileById).toHaveBeenCalledWith('org-1', 'file-owned');
+    expect(resolveAdapterForFolder).toHaveBeenCalledWith('private-folder', 'org-1');
+    expect(readFileStream).toHaveBeenCalledWith('private://owned.png');
+  });
+  it('rejects foreign, deleted, oversized and mutated media before network publication', async () => {
+    for (const fields of [
+      { deletedAt: new Date() },
+      { type: 'video', fileSize: 33 * 1024 * 1024 },
+      { type: 'image', fileSize: 17 * 1024 * 1024 },
+      { type: 'audio' },
+    ]) {
+      const { service, readFileStream } = setup(fields);
+      await expect(service.readMaxNormalMedia('org-1', 'file-owned')).rejects.toThrow();
+      expect(readFileStream).not.toHaveBeenCalled();
+    }
+    const { service, getFileById, readFileStream } = setup();
+    getFileById.mockResolvedValue(null);
+    await expect(service.readMaxNormalMedia('other-org', 'file-owned')).rejects.toThrow();
+    expect(readFileStream).not.toHaveBeenCalled();
+    const other = setup();
+    other.readFileStream.mockResolvedValue(Readable.from([Buffer.from('other bytes')]));
+    await expect(other.service.readMaxNormalMedia('org-1', 'file-owned')).rejects.toThrow();
+  });
+});
