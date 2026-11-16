@@ -15,6 +15,7 @@ import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/p
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
 import { preparePostmillMaxStory, normalizeMaxStoryEditorText } from './max-story-input';
+import { PROVIDER_CAPABILITIES } from '@postmill-ai/provider-kernel';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
@@ -1506,7 +1507,7 @@ export class PostsService {
 
         // Check alt text on media
         const post = body.posts?.find((p) => p.integration?.id === result.id);
-        if (post?.value) {
+        if (post?.value && integration && PROVIDER_CAPABILITIES[integration.providerIdentifier]?.altText) {
           for (const val of post.value) {
             if (val.image?.length) {
               for (const img of val.image) {
