@@ -219,7 +219,9 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
     expect(calls[3][1].headers.Authorization).toBe(token);
     expect(calls[4][0]).toBe(uploadUrl);
     expect(calls[4][1].method).toBe('POST');
-    expect(calls[4][1].headers?.Authorization).toBeUndefined();
+    expect(calls[4][1].headers?.Authorization).toBe(
+      mediaType === 'image' ? token : undefined,
+    );
     expect(calls[4][1].headers['content-type']).toContain('multipart/form-data; boundary=');
     expect(calls[4][1].body).toBeInstanceOf(Buffer);
     expect(calls[4][1].body.toString()).toContain('name="data"');
