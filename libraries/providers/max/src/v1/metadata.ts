@@ -8,7 +8,7 @@ export const metadata: ProviderMetadata = {
   "website": "https://max.ru",
   "docsUrl": "https://dev.max.ru/docs-api",
   "description": {
-    "en": "MAX bot channel. Text only; live sandbox verification pending."
+    "en": "MAX bot channel. Text, one image or video in ordinary posts, and StoryGo serialized stories; live sandbox verification pending."
   },
   "mediaCategories": []
 };
