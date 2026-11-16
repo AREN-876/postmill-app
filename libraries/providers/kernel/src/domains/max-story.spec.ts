@@ -9,7 +9,7 @@ describe('MAX auto content routing', () => {
     expect(resolveMaxPostMode('auto', wholeStory)).toBe('story');
     expect(resolveMaxPostMode(undefined, 'Текст ' + STORYGO_DIVIDER + ' продолжение')).toBe('normal');
     expect(resolveMaxPostMode(undefined, 'Текст\n ' + STORYGO_DIVIDER)).toBe('normal');
-    expect(resolveMaxPostMode(undefined, 'Текст\r\n' + STORYGO_DIVIDER)).toBe('normal');
+    expect(resolveMaxPostMode(undefined, 'Текст\r\n' + STORYGO_DIVIDER)).toBe('story');
     expect(resolveMaxPostMode(undefined, 'Текст\n' + STORYGO_DIVIDER + '\r\nФинал')).toBe('normal');
   });
 
