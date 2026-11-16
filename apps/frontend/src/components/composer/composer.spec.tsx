@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExistingDataContextProvider } from '@postmill-ai/frontend/components/launches/helpers/use.existing.data';
 import { Composer } from './composer';
 import { useLaunchStore } from './store';
+import { STORYGO_DIVIDER } from '@postmill-ai/provider-kernel/domains/max-story';
 
 vi.mock('@postmill-ai/helpers/utils/custom.fetch', () => ({
   useFetch: () => vi.fn(),
@@ -44,10 +45,10 @@ const existingData = {
   ],
 };
 
-const renderComposer = () =>
+const renderComposer = (data = existingData, selected = channel) =>
   render(
-    <ExistingDataContextProvider value={existingData}>
-      <Composer allIntegrations={[channel]} integrations={[channel]} />
+    <ExistingDataContextProvider value={data}>
+      <Composer allIntegrations={[selected]} integrations={[selected]} />
     </ExistingDataContextProvider>
   );
 
@@ -75,6 +76,24 @@ describe('Composer existing-data initialization', () => {
   afterEach(() => {
     cleanup();
     useLaunchStore.getState().reset();
+  });
+
+  it('opens an existing MAX story as one editable text and clears legacy continuation state', async () => {
+    const maxChannel = { ...channel, identifier: 'max' };
+    const data = {
+      ...existingData,
+      settings: { mode: 'story', continuationText: 'Вторая\n' + STORYGO_DIVIDER + '\nФинал' },
+      posts: [{ ...existingData.posts[0], content: 'Заголовок\nНачало' }],
+    };
+    renderComposer(data, maxChannel);
+    await waitFor(() => {
+      const state = useLaunchStore.getState();
+      expect(state.internal[0]?.integrationValue[0]?.content).toBe(
+        ['Заголовок', 'Начало', STORYGO_DIVIDER, 'Вторая', STORYGO_DIVIDER, 'Финал']
+          .map((line) => `<p>${line}</p>`).join('')
+      );
+      expect(state.selectedIntegrations[0]?.settings.continuationText).toBe('');
+    });
   });
 
   it('preserves loaded posts when the store is cold', async () => {
