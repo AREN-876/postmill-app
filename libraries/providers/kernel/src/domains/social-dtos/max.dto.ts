@@ -5,8 +5,8 @@ export class MaxSettingsDto {
   __type?: string;
 
   @IsOptional()
-  @IsIn(['normal', 'story'])
-  mode?: 'normal' | 'story';
+  @IsIn(['auto', 'normal', 'story'])
+  mode?: 'auto' | 'normal' | 'story';
 
   // Exact continuation text. Individual parts are separated by the StoryGo
   // divider on its own line; never turn continuations into Postmill threads.
