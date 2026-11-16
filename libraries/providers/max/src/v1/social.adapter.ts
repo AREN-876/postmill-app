@@ -569,7 +569,12 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         : media.mimeType === 'video/mp4' ? 'mp4' : 'webm';
       form.set('data', new Blob([new Uint8Array(bytes)], { type: media.mimeType }), 'post.' + extension);
       const uploaded = await this.fetch(uploadUrl.href, {
-        method: 'POST', body: form, retryPolicy: 'none', redirect: 'error',
+        method: 'POST',
+        // The official MAX image-upload example requires the bot's
+        // Authorization header on iu.oneme.ru. Never forward it to the
+        // separate video CDN or to a redirect/non-allowlisted host.
+        ...(media.mediaType === 'image' ? { headers: { Authorization: botToken } } : {}),
+        body: form, retryPolicy: 'none', redirect: 'error',
       }, 'max-upload');
       if (uploaded.status !== 200 && uploaded.status !== 201) {
         throw Error('MAX media upload refused');
