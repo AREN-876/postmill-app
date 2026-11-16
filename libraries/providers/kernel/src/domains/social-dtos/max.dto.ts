@@ -23,4 +23,10 @@ export class MaxSettingsDto {
   @IsOptional()
   @Matches(/^[0-9a-f]{64}$/)
   storyImageSha256?: string;
+
+  // Server-owned digest of the one normal MAX photo/video attachment.
+  // Recomputed at save and verified before any outbound MAX request.
+  @IsOptional()
+  @Matches(/^[0-9a-f]{64}$/)
+  maxMediaSha256?: string;
 }
