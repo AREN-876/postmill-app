@@ -403,14 +403,12 @@ export class PostActivity {
             getIntegration.mentionFormat
           ),
           settings,
-          media: normalMax || storyMode
-            ? JSON.parse(p.image || '[]')
-            : await this._postService.updateMedia(
-                p.id,
-                JSON.parse(p.image || '[]'),
-                getIntegration?.convertToJPEG || false,
-                integration.organizationId
-              ),
+          media: await this._postService.updateMedia(
+            p.id,
+            JSON.parse(p.image || '[]'),
+            getIntegration?.convertToJPEG || false,
+            integration.organizationId
+          ),
           // 2.2: lift the composer's poll (stored in settings) to the top level.
           ...(settings.poll ? { poll: settings.poll } : {}),
         };
@@ -584,12 +582,14 @@ export class PostActivity {
             getIntegration.mentionFormat
           ),
           settings,
-          media: await this._postService.updateMedia(
-            p.id,
-            JSON.parse(p.image || '[]'),
-            getIntegration?.convertToJPEG || false,
-            integration.organizationId
-          ),
+          media: normalMax || storyMode
+            ? JSON.parse(p.image || '[]')
+            : await this._postService.updateMedia(
+                p.id,
+                JSON.parse(p.image || '[]'),
+                getIntegration?.convertToJPEG || false,
+                integration.organizationId
+              ),
           // 2.2: lift the composer's poll (stored in settings) up to the
           // top-level `poll` the adapter reads.
           ...(settings.poll ? { poll: settings.poll } : {}),
