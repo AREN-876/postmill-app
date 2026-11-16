@@ -545,7 +545,10 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         createHash('sha256').update(bytes).digest('hex') !== media.sha256) {
       this.fail('MAX media bytes do not match the approved snapshot.');
     }
-    const uploadHost = media.mediaType === 'video' ? 'vu.okcdn.ru' : 'iu.oneme.ru';
+    // Current MAX documentation uses iu.oneme.ru for images and omub.okcdn.ru
+    // for video (older docs also mention vu.okcdn.ru).
+    const uploadHosts = media.mediaType === 'video'
+      ? ['omub.okcdn.ru', 'vu.okcdn.ru'] : ['iu.oneme.ru'];
     try {
       const reservation = await this.fetch(API + '/uploads?type=' + media.mediaType, {
         method: 'POST', headers: { Authorization: botToken }, retryPolicy: 'none', redirect: 'error',
@@ -556,7 +559,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       const uploadUrl = new URL(setup.url);
       // MAX specifies these fixed media upload hosts. No credentials or bot
       // token are ever forwarded to the signed upload URL.
-      if (uploadUrl.protocol !== 'https:' || uploadUrl.hostname !== uploadHost ||
+      if (uploadUrl.protocol !== 'https:' || !uploadHosts.includes(uploadUrl.hostname) ||
           uploadUrl.username || uploadUrl.password || uploadUrl.port) {
         throw Error('MAX upload target is outside the official media host');
       }
@@ -571,14 +574,27 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       if (uploaded.status !== 200 && uploaded.status !== 201) {
         throw Error('MAX media upload refused');
       }
+      // Images: {"photos":{"<photo_id>":{"token":"..."}}}.
+      // Video: setup.token plus upload response may be XML <retval>1</retval>.
+      const raw = await uploaded.text();
       let result: any;
-      try { result = await uploaded.json(); } catch { result = {}; }
-      if (result?.success === false || result?.error || result?.code || result?.retval === false) {
-        throw Error('MAX rejected the uploaded media');
+      try { result = JSON.parse(raw); } catch { result = null; }
+      if (media.mediaType === 'video') {
+        const accepted = result
+          ? result.retval === 1 || result.retval === true || result.retval === '1'
+          : /<retval>\s*1\s*<\/retval>/.test(raw);
+        if (!accepted) throw Error('MAX video upload was not acknowledged');
+      } else if (!result || result.success === false || result.error || result.code) {
+        throw Error('MAX image upload was not acknowledged');
       }
-      const mediaToken = (media.mediaType === 'video'
-        ? setup.token || result.token
-        : result.token || setup.token || uploadUrl.searchParams.get('token'));
+      const photoValues = result?.photos && typeof result.photos === 'object'
+        ? Object.values(result.photos) : [];
+      const photoToken = photoValues.length === 1 &&
+        typeof (photoValues[0] as any)?.token === 'string'
+        ? (photoValues[0] as any).token : null;
+      const mediaToken = media.mediaType === 'video'
+        ? setup.token || result?.token
+        : photoToken || result?.token || setup.token || uploadUrl.searchParams.get('token');
       if (typeof mediaToken !== 'string' || !mediaToken.trim() || mediaToken.length > 2048) {
         throw Error('MAX did not return a media attachment token');
       }
