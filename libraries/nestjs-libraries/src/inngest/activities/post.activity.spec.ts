@@ -550,6 +550,7 @@ describe('PostActivity MAX normal media immutable snapshot', () => {
         updateTags: vi.fn().mockResolvedValue([post]),
         updateMedia, readMaxNormalMedia, beginMaxDelivery, confirmMaxDelivery,
       },
+      _integrationService: { getIntegrationById: vi.fn().mockResolvedValue(integration) },
       _integrationManager: {
         getSocialIntegration: vi.fn().mockResolvedValue({
           editor: 'normal', post: sendPost,
@@ -596,6 +597,7 @@ describe('PostActivity MAX normal media immutable snapshot', () => {
         }),
         beginMaxDelivery,
       },
+      _integrationService: { getIntegrationById: vi.fn().mockResolvedValue(integration) },
       _integrationManager: {
         getSocialIntegration: vi.fn().mockResolvedValue({ editor: 'normal' }),
         requireClientInformation: vi.fn().mockResolvedValue(undefined),
