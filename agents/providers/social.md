@@ -262,3 +262,33 @@ Per `agents/providers/overview.md`, the full add-a-provider sequence is: create 
 ## MAX text delivery invariant
 
 `social/max@v1` is text-only. Its `SocialAbstract.fetch` calls use request-local `retryPolicy: 'none'` for message POSTs; other requests/providers keep the default. Do not move this option into the underlying HTTP headers/options or enable POST retries. Every MAX send must pass the PostgreSQL occurrence/attempt gate immediately before invoking the provider, even on Inngest replay. `Post.maxTarget` binds the org-scoped Integration, exact channel, named configuration, version and encrypted-token hash; only explicit rescheduling rebinds an existing post. Never persist decrypted credentials in events, snapshots or logs. See `docs/max-occurrence-scheduling.md` and `docs/max-delivery-recovery.md` for state/rollout contracts.
+
+
+### MAX StoryGo story-input contract
+
+In `mode = "story"`, the composer accepts the whole story in **one** primary
+editor. Separate parts using the exact line `────────────────────────`;
+`apps/frontend/src/components/composer/providers/max/max.provider.tsx`
+displays a per-part UTF-16 counter, not a single-post 4000-char cap.
+Approved legacy records still keep the server storage contract:
+`Post.content` contains the first part, `Post.settings.continuationText`
+the remaining parts. When editing, `composer.tsx` reassembles them into
+one document and clears the old continuation field.
+
+`preparePostmillMaxStory` in
+`libraries/nestjs-libraries/src/database/prisma/posts/max-story-input.ts`
+normalizes TipTap HTML consistently for preflight and create/update.
+`maxStoryDraft` in `libraries/providers/kernel/src/domains/max-story.ts`
+accepts either the full single input or the old first/continuation fields.
+The service persists the exact validated parts using the legacy two-field
+layout; invalid/unfinished drafts may still be saved. Do not split
+one StoryGo story into multiple Postmill posts or switch its scheduler to
+StoryGo.
+
+For n8n/API ingestion, send a single MAX post with
+`value[0].content` equal to the whole separated story,
+`settings.mode = "story"`, and no `continuationText`. The ordinary
+`/posts` authorization, approval, scheduling, and publication workflow
+remain in force. Each nonempty part must be at most 4000 UTF-16 units,
+the first nonempty title line 1–160 units. For a story photo, use an
+org-owned `storyImageId`; regular MAX media attachments remain forbidden.
