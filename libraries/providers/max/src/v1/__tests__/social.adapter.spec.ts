@@ -227,6 +227,7 @@ describe('MAX text posting and errors (synthetic HTTP only)', () => {
       text: 'Media caption', attachments: [{ type: mediaType, payload: { token: expectedToken } }],
     });
     expect(calls.filter(([, init]) => init.method === 'POST')).toHaveLength(3);
+    expect(timer).toHaveBeenCalledWith(mediaType === 'video' ? 10000 : 2000);
   });
 
 
