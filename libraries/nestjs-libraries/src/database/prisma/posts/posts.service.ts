@@ -442,12 +442,18 @@ export class PostsService {
             );
           }
 
+          const requestedMode = (post.settings as any)?.mode;
+          // Preserve unsupported explicit values for the DTO to reject.
+          // Only absent/auto or a recognized override may be normalized.
           const maxMode = integration.providerIdentifier === 'max'
-            ? resolveMaxPostMode(
-                (post.settings as any)?.mode,
-                normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
-                (post.settings as any)?.continuationText || '',
-              )
+            ? requestedMode != null &&
+              !['auto', 'normal', 'story'].includes(requestedMode)
+                ? requestedMode
+                : resolveMaxPostMode(
+                    requestedMode,
+                    normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+                    (post.settings as any)?.continuationText || '',
+                  )
             : undefined;
           const isStory = maxMode === 'story';
           // One editor for a new story, but preserve the existing StoryGo
@@ -469,8 +475,9 @@ export class PostsService {
             // for editing previously saved stories, but reject conflicts.
             const attached = values[0].image || [];
             if (attached.length === 1 &&
-                !(settings as any).storyImageId &&
-                typeof (attached[0] as any).id === 'string') {
+                typeof (attached[0] as any).id === 'string' &&
+                (!(settings as any).storyImageId ||
+                  (settings as any).storyImageId === (attached[0] as any).id)) {
               (settings as any).storyImageId = (attached[0] as any).id;
               values[0].image = [];
             }
@@ -1217,11 +1224,16 @@ export class PostsService {
 
         const rawSettings = post.settings || {};
         const isMax = integration.providerIdentifier === 'max';
-        const mode = isMax ? resolveMaxPostMode(
-          rawSettings.mode,
-          normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
-          rawSettings.continuationText || '',
-        ) : undefined;
+        const mode = isMax
+          ? rawSettings.mode != null &&
+            !['auto', 'normal', 'story'].includes(rawSettings.mode)
+              ? rawSettings.mode
+              : resolveMaxPostMode(
+                  rawSettings.mode,
+                  normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+                  rawSettings.continuationText || '',
+                )
+          : undefined;
         const settings = { ...rawSettings, ...(mode ? { mode } : {}) };
         const media = (post.value || []).map((p) =>
           isMax && mode === 'story' ? [] : (p.image || [])
