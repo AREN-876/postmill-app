@@ -403,12 +403,14 @@ export class PostActivity {
             getIntegration.mentionFormat
           ),
           settings,
-          media: await this._postService.updateMedia(
-            p.id,
-            JSON.parse(p.image || '[]'),
-            getIntegration?.convertToJPEG || false,
-            integration.organizationId
-          ),
+          media: normalMax || storyMode
+            ? JSON.parse(p.image || '[]')
+            : await this._postService.updateMedia(
+                p.id,
+                JSON.parse(p.image || '[]'),
+                getIntegration?.convertToJPEG || false,
+                integration.organizationId
+              ),
           // 2.2: lift the composer's poll (stored in settings) to the top level.
           ...(settings.poll ? { poll: settings.poll } : {}),
         };
@@ -546,6 +548,7 @@ export class PostActivity {
     // after the occurrence was claimed.
     const storyMode = integration.providerIdentifier === 'max' &&
       JSON.parse(posts[0]?.settings || '{}')?.mode === 'story';
+    const normalMax = integration.providerIdentifier === 'max' && !storyMode;
     const newPosts = storyMode ? posts : await this._postService.updateTags(
       integration.organizationId,
       posts
@@ -612,6 +615,24 @@ export class PostActivity {
       };
     }
 
+    // Normal MAX media must resolve to an org-owned stored File, never an
+    // external URL or untrusted path from the request. Recheck the approved
+    // digest immediately before claiming a non-repeatable MAX occurrence.
+    let maxMedia: { base64: string; mimeType: string; mediaType: 'image' | 'video'; sha256: string } | undefined;
+    if (normalMax && postPayload[0].media?.length === 1) {
+      const fileId = (postPayload[0].media[0] as any).id;
+      const asset = await this._postService.readMaxNormalMedia(integration.organizationId, fileId);
+      if (asset.sha256 !== postPayload[0].settings.maxMediaSha256) {
+        throw new BadBodyError('max', '{}', '', 'Approved MAX attachment has changed; do not publish');
+      }
+      maxMedia = {
+        base64: asset.bytes.toString('base64'),
+        mimeType: asset.mimeType,
+        mediaType: asset.mediaType,
+        sha256: asset.sha256,
+      };
+    }
+
     // 2.2: never publish a plain post when a poll was requested but this provider
     // can't do polls — fail hard (non-retriable) instead of silently dropping it.
     this._assertPollSupported(integration.providerIdentifier, postPayload);
@@ -638,6 +659,7 @@ export class PostActivity {
           )).digest('hex'),
           ...(storyPhoto ? { storyPhotoSha256: storyPhoto.sha256 } : {}),
         } : {}),
+        ...(normalMax && maxMedia ? { maxMediaSha256: maxMedia.sha256, maxMediaType: maxMedia.mediaType } : {}),
       }, maxOccurrenceId, maxDeliveryAttempt) : undefined;
     if (maxAttempt?.alreadyConfirmed) return [];
     // A previous StoryGo revision is unresolved. Leave this occurrence READY;
@@ -660,7 +682,12 @@ export class PostActivity {
             },
           },
         }))
-      : postPayload;
+      : normalMax && maxMedia
+        ? postPayload.map((item) => ({
+            ...item,
+            settings: { ...item.settings, __maxMedia: maxMedia },
+          }))
+        : postPayload;
     let postNow;
     try {
       postNow = await runWithVpnDispatcher(vpnDispatcher, () =>
