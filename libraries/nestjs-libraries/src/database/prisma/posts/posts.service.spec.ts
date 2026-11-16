@@ -1468,3 +1468,77 @@ describe('Normal MAX media snapshot (no public URL fetch)', () => {
     await expect(other.service.readMaxNormalMedia('org-1', 'file-owned')).rejects.toThrow();
   });
 });
+
+describe('MAX unified auto-mode ingestion (manual editor and n8n API)', () => {
+  const divider = '────────────────────────';
+  const testImage = { id: 'file-owned', path: 'https://files.example.com/photo.png' };
+  const storyText = ['Тема', 'Первый эпизод', divider, 'Второй эпизод', divider, 'Финал'].join('\n');
+
+  function createService() {
+    const integrationService = {
+      getIntegrationById: vi.fn().mockResolvedValue({ providerIdentifier: 'max' }),
+    };
+    const service = new PostsService(
+      {} as any, {} as any, {} as any, integrationService as any,
+      {} as any, {} as any, {} as any, {} as any,
+      {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    return { service, integrationService };
+  }
+
+  function request(content: string, image: any[], mode?: string, extraSettings: any = {}) {
+    return {
+      type: 'draft', date: '2026-11-18T12:00:00.000Z', shortLink: false,
+      tags: [], posts: [{
+        integration: { id: 'integration-1' },
+        value: [{ content, image }],
+        settings: { __type: 'max', ...(mode ? { mode } : {}), ...extraSettings },
+      }],
+    } as any;
+  }
+
+  it('detects a whole three-part story and moves a normal image to StoryGo settings', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(request(storyText, [testImage], 'auto'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('story');
+    expect((mapped.posts[0].settings as any).storyImageId).toBe('file-owned');
+    expect((mapped.posts[0].settings as any).continuationText).toBe(
+      ['Второй эпизод', 'Финал'].join('\n' + divider + '\n'),
+    );
+    expect(mapped.posts[0].value[0].content).toBe('Тема\nПервый эпизод');
+    expect(mapped.posts[0].value[0].image).toEqual([]);
+  });
+
+  it('detects story when mode is omitted, including TipTap HTML paragraphs', async () => {
+    const { service } = createService();
+    const html = '<p>Заголовок</p><p>Часть один</p><p>' + divider + '</p><p>Часть два</p>';
+    const mapped = await service.mapTypeToPost(request(html, [], undefined), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('story');
+    expect(mapped.posts[0].value[0].content).toBe('Заголовок\nЧасть один');
+  });
+
+  it('preserves normal text plus one image or video attachment', async () => {
+    const { service } = createService();
+    const video = { id: 'clip-owned', path: 'https://files.example.com/clip.mp4' };
+    const mapped = await service.mapTypeToPost(request('Подпись к ролику', [video], 'auto'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('normal');
+    expect(mapped.posts[0].value[0].image).toEqual([video]);
+  });
+
+  it('manual normal override defeats automatic separator classification', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(request(storyText, [testImage], 'normal'), 'org-1');
+    expect((mapped.posts[0].settings as any).mode).toBe('normal');
+    expect(mapped.posts[0].value[0].image).toEqual([testImage]);
+    expect(mapped.posts[0].value[0].content).toContain(divider);
+  });
+
+  it('retains a legacy selected StoryGo photograph without a second selector', async () => {
+    const { service } = createService();
+    const mapped = await service.mapTypeToPost(
+      request(storyText, [], 'story', { storyImageId: 'previous-owned' }), 'org-1',
+    );
+    expect((mapped.posts[0].settings as any).storyImageId).toBe('previous-owned');
+    expect(mapped.posts[0].value[0].image).toEqual([]);
+  });
+});
