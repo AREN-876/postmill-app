@@ -644,6 +644,11 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     const attachments = post.media?.length
       ? [await this.uploadNormalMedia(token, (post.settings as any).__maxMedia)]
       : undefined;
+    // MAX processes attachments asynchronously. Give it time before the
+    // one non-retryable message POST (2s photo, 10s short video).
+    if (attachments?.length) {
+      await this.waitForMediaProcessing(attachments[0].type === 'video' ? 10_000 : 2_000);
+    }
     const data = await this.request(
       `/messages?chat_id=${encodeURIComponent(chatId)}&disable_link_preview=true`,
       token,
