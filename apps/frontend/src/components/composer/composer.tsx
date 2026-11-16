@@ -12,6 +12,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useExistingData } from '@postmill-ai/frontend/components/launches/helpers/use.existing.data';
 import { newDayjs } from '@postmill-ai/frontend/components/layout/set.timezone';
 import { useRouter } from 'next/navigation';
+import { STORYGO_DIVIDER } from '@postmill-ai/provider-kernel/domains/max-story';
 
 export type { ComposerProps, AddEditModalProps } from '@postmill-ai/frontend/components/composer/composer.types';
 
@@ -134,23 +135,37 @@ const ComposerInner: FC<ComposerProps> = (props) => {
         (i) => i.id === existingData.integration
       );
       if (integration) {
-        addOrRemoveSelectedIntegration(integration, existingData.settings);
+        const legacyContinuation =
+          integration.identifier === 'max' &&
+          existingData.settings?.mode === 'story' &&
+          typeof existingData.settings?.continuationText === 'string'
+            ? existingData.settings.continuationText
+            : '';
+        // Existing stories were stored in two fields. Show them as one editable
+        // document, but clear the legacy field to avoid double submission.
+        addOrRemoveSelectedIntegration(
+          integration,
+          legacyContinuation
+            ? { ...existingData.settings, continuationText: '' }
+            : existingData.settings
+        );
         addInternalValue(
           0,
           existingData.integration,
-          existingData.posts.map((post) => ({
-            delay: post.delay,
-            content:
-              post.content.indexOf('<p>') > -1
-                ? post.content
-                : post.content
-                    .split('\n')
-                    .map((line) => `<p>${line}</p>`)
-                    .join(''),
-            id: post.id,
-            // @ts-ignore
-            media: post.image as any[],
-          }))
+          existingData.posts.map((post, index) => {
+            const source = index === 0 && legacyContinuation
+              ? post.content + '\n' + STORYGO_DIVIDER + '\n' + legacyContinuation
+              : post.content;
+            return {
+              delay: post.delay,
+              content: source.indexOf('<p>') > -1
+                ? source
+                : source.split('\n').map((line) => `<p>${line}</p>`).join(''),
+              id: post.id,
+              // @ts-ignore
+              media: post.image as any[],
+            };
+          })
         );
         setCurrent(existingData.integration);
       }
