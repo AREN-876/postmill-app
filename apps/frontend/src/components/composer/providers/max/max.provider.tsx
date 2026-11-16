@@ -67,6 +67,13 @@ const MaxSettings = () => {
         <option value="normal">Обычный пост</option>
         <option value="story">История с продолжениями</option>
       </select>
+      {mode !== 'story' && (
+        <p className="text-[12px]">
+          Обычный пост: добавляй одну фотографию (PNG/JPEG до 16 МиБ) или
+          видео (MP4/WebM до 32 МиБ) как обычное вложение к тексту.
+          Продолжения и фото StoryGo здесь не используются.
+        </p>
+      )}
       {mode !== 'story' && (imageId || continuation?.trim()) && (
         <div className="flex flex-col gap-[8px] text-[12px]">
           <p>Для обычного MAX-поста остались сохранённые части или фото истории.
