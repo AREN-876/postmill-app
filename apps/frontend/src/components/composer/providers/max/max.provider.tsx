@@ -9,12 +9,45 @@ import { STORYGO_DIVIDER } from '@postmill-ai/provider-kernel/domains/max-story'
 import { useSettings } from '@postmill-ai/frontend/components/launches/helpers/use.values';
 import { useWatch } from 'react-hook-form';
 import { useMediaPicker } from '@postmill-ai/frontend/components/media-tools/use-media-picker';
+import { useEffect, useMemo } from 'react';
+import { useLaunchStore } from '@postmill-ai/frontend/components/composer/store';
+import { stripHtmlValidation } from '@postmill-ai/helpers/utils/strip.html.validation';
 
 const MaxSettings = () => {
   const { register, control, setValue } = useSettings();
   const mode = useWatch({ control, name: 'mode' });
   const imageId = useWatch({ control, name: 'storyImageId' });
   const continuation = useWatch({ control, name: 'continuationText' });
+  const current = useLaunchStore((state) => state.current);
+  const setTotalChars = useLaunchStore((state) => state.setTotalChars);
+  const setChars = useLaunchStore((state) => state.setChars);
+  const editorText = useLaunchStore((state) =>
+    state.internal.find((i) => i.integration.id === state.current)
+      ?.integrationValue?.[0]?.content || state.global[0]?.content || ''
+  );
+
+  // The composer counter applies to the entire editor. In story mode it must
+  // not reject a valid multi-part document at the normal 4000-char MAX limit.
+  // The backend validates the strict 4000 UTF-16 limit separately per part.
+  useEffect(() => {
+    if (current === 'global') return;
+    const budget = mode === 'story' ? 4_000_000 : 4000;
+    setTotalChars?.(budget);
+    setChars(current, budget);
+  }, [current, mode, setTotalChars, setChars]);
+
+  const partLengths = useMemo(() => {
+    if (mode !== 'story') return [];
+    const plain = /<\\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\\s|>)/i.test(editorText)
+      ? stripHtmlValidation('normal', editorText.replace(/<br\\s*\\/?>/gi, '\\n'), false, true)
+      : editorText;
+    const groups: string[][] = [[]];
+    for (const line of plain.split('\n')) {
+      if (line === STORYGO_DIVIDER) groups.push([]);
+      else groups[groups.length - 1].push(line);
+    }
+    return groups.map((lines) => lines.join('\n').length);
+  }, [editorText, mode]);
   const imagePicker = useMediaPicker({
     title: 'Фотография для истории',
     kinds: ['image'],
@@ -50,14 +83,20 @@ const MaxSettings = () => {
       )}
       {mode === 'story' && (
         <>
-          <label htmlFor="max-story-continuations" className="text-[14px]">
-            Продолжения истории (части 2 и далее)
-          </label>
-          <textarea id="max-story-continuations" rows={10}
-            {...register('continuationText')}
-            placeholder={'Часть 2...\n' + STORYGO_DIVIDER + '\nЧасть 3...'}
-            className="w-full rounded border border-borderPreview bg-newBgColorInner p-[8px]"
-          />
+          <input type="hidden" {...register('continuationText')} />
+          <p className="text-[12px]">
+            Вставь всю историю в основной редактор: заголовок первой строкой,
+            затем текст. Части разделяй точной строкой {STORYGO_DIVIDER}
+            на отдельной строке. Отдельное поле продолжений больше не нужно.
+          </p>
+          <div className="text-[12px]">
+            {partLengths.slice(0, 15).map((length, index) => (
+              <p key={index} className={length > 4000 ? 'text-dangerText' : 'text-newTableText'}>
+                Часть {index + 1}: {length} / 4000
+              </p>
+            ))}
+            {partLengths.length > 15 && <p>Всего частей: {partLengths.length}</p>}
+          </div>
           <input type="hidden" {...register('storyImageId')} />
           <div className="flex items-center gap-[10px]">
             <button type="button" onClick={imagePicker.open}
@@ -75,9 +114,8 @@ const MaxSettings = () => {
           {imageId && <p className="text-[12px]">Фото выбрано. Допускается один PNG/JPEG до 8 МиБ.</p>}
           {imagePicker.element}
           <p className="text-[12px]">
-            Первую часть пиши в обычном редакторе (до 4000 символов).
-            Остальные части разделяй точной строкой {STORYGO_DIVIDER}.
-            Текст и порядок частей сохраняются без автоматического деления.
+            На сервере части сохраняются раздельно и передаются в StoryGo.
+            Каждая часть — не более 4000 единиц UTF-16, заголовок — до 160.
           </p>
         </>
       )}
