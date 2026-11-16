@@ -8,8 +8,18 @@ StoryGo-side publication scheduler is introduced.
 
 ## Publication types
 
-- **Normal** (default, including legacy posts): Postmill → MAX. One text
-  message of at most 4000 UTF-16 units; current behavior unchanged.
+- **Normal** (default, including legacy posts): Postmill → MAX via the native
+  MAX Bot API. Text of at most 4000 UTF-16 units, optionally with one
+  ordinary media-library attachment (PNG/JPEG photo up to 16 MiB or MP4/WebM
+  video up to 32 MiB in this bounded-memory implementation). The caption can
+  be omitted when media is present. This is the same normal composer/API input
+  n8n uses; no StoryGo reader buttons. MAX supports larger files, but this
+  self-hosted adapter deliberately limits payloads until streaming uploads
+  are implemented. Media is read from an organization-owned File, checked
+  for size/signature, pinned by SHA-256 and rechecked before posting. A
+  signed /uploads URL restricted to MAX's media upload hosts is used to send
+  bytes, then POST /messages references its attachment token. No public URL
+  to Postmill's private image library is needed.
 - **Story**: Postmill → StoryGo Gateway → MAX. Exactly one Postmill Post
   per scheduled occurrence. The operator pastes the **entire story in the
   primary editor**, with the exact separator `────────────────────────`
@@ -42,7 +52,8 @@ fails before MAX delivery. The photo bytes are passed ephemerally to
 the MAX provider, uploaded to `POST /gateway/v1/media` immediately
 before the single publication POST; the one-hour `upload_id` is not
 persisted days earlier. User-supplied URLs are NEVER fetched directly.
-A normal MAX post still rejects photo attachments.
+A normal MAX post accepts one photo or video through the composer’s regular
+media attachments; it never uses the StoryGo-only photo selector.
 
 ## Identity and confirmation
 
