@@ -17,8 +17,8 @@ vi.mock(
 );
 import MaxComposer from '../../composer/providers/max/max.provider';
 describe('MAX composer', () => {
-  it('preserves the first-part MAX limit and exposes story settings', () => {
-    expect(supportsMediaAttachments('max')).toBe(false);
+  it('keeps the MAX length limit and enables ordinary photo/video attachments', () => {
+    expect(supportsMediaAttachments('max')).toBe(true);
     expect(supportsMediaAttachments('telegram')).toBe(true);
     expect(supportsMediaAttachments()).toBe(true);
     expect(MaxComposer).toBeTypeOf('function');
