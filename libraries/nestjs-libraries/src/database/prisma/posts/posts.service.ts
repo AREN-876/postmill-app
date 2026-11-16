@@ -14,7 +14,7 @@ import { isSafePublicHttpsUrl } from '@postmill-ai/nestjs-libraries/dtos/webhook
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
-import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
+import { preparePostmillMaxStory, normalizeMaxStoryEditorText } from './max-story-input';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
 import dayjs from 'dayjs';
@@ -442,30 +442,36 @@ export class PostsService {
 
           const isStory = integration.providerIdentifier === 'max' &&
             (post.settings as any)?.mode === 'story';
+          // One editor for a new story, but preserve the existing StoryGo
+          // storage contract and the legacy separate continuation field.
+          const values = isStory
+            ? post.value?.map((item) => ({
+                ...item,
+                content: normalizeMaxStoryEditorText(item.content),
+              }))
+            : post.value;
+          const settings = {
+            ...sanitizeProviderSettings(integration.providerIdentifier, post.settings),
+            __type: integration.providerIdentifier,
+          };
+          if (isStory && values?.length === 1) {
+            try {
+              const parsed = preparePostmillMaxStory(
+                values[0].content,
+                (settings as any).continuationText || '',
+              );
+              values[0].content = parsed.firstPart;
+              (settings as any).continuationText = parsed.continuationText;
+            } catch {
+              // Permit incomplete drafts; validatePosts rejects invalid
+              // stories before scheduling/publishing.
+            }
+          }
           return {
             type: replaceDraft ? 'schedule' : body?.type,
             ...post,
-            ...(isStory ? {
-              value: post.value?.map((item) => ({
-                ...item,
-                // The normal composer emits TipTap HTML. Canonicalize once,
-                // before persisting and fingerprinting the approved story.
-                content: /<\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\s|>)/i.test(item.content)
-                  ? stripHtmlValidation('normal', item.content, false, true)
-                  : item.content,
-              })),
-            } : {}),
-            settings: {
-              // Strip settings keys the provider does not support (shared composer
-              // fields leak e.g. `firstComment`/`thread_finisher` into every
-              // provider's form values) before persisting, then pin the
-              // discriminator to the integration's real provider identifier.
-              ...sanitizeProviderSettings(
-                integration.providerIdentifier,
-                post.settings
-              ),
-              __type: integration.providerIdentifier,
-            },
+            ...(isStory ? { value: values } : {}),
+            settings,
           };
         }) || []
       ),
@@ -1152,7 +1158,7 @@ export class PostsService {
             if (post.value?.length !== 1) {
               throw Error('A MAX story must be one Postmill post, not a thread.');
             }
-            maxStoryParts(post.value[0].content, settings.continuationText);
+            preparePostmillMaxStory(post.value[0].content, settings.continuationText || '');
             if (settings.storyImageId) {
               await this.readStoryGoImage(orgId, settings.storyImageId);
             }
@@ -1186,7 +1192,9 @@ export class PostsService {
           return length === 0 && (a.image || []).length === 0;
         });
 
-        const tooLong = (post.value || []).some((a) => {
+        const tooLong = (integration.providerIdentifier === 'max' && settings.mode === 'story')
+          ? false // maxStoryDraft already validates each part's UTF-16 length
+          : (post.value || []).some((a) => {
           const strip = stripHtmlValidation('normal', a.content || '', true);
           const weighted = isX ? weightedLength(strip) : strip.length;
           const totalCharacters =

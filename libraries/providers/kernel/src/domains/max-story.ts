@@ -58,3 +58,45 @@ export function maxStoryParts(first: unknown, continuation: unknown) {
   }
   return { title, parts };
 }
+
+
+/**
+ * Accept either the legacy first-part + continuation fields or a whole story
+ * pasted into a single editor. The persisted contract stays unchanged:
+ * Post.content = first part; Post.settings.continuationText = remaining parts.
+ *
+ * The input must already be plain text (TipTap HTML is canonicalized by the
+ * Postmill service before calling this helper). Never silently trim parts.
+ */
+export function maxStoryDraft(
+  firstOrFull: unknown,
+  continuation: unknown = ''
+): ReturnType<typeof maxStoryParts> & { firstPart: string; continuationText: string } {
+  if (typeof firstOrFull !== 'string' || typeof continuation !== 'string') {
+    // Reuse the strict type/error handling of the canonical validator.
+    maxStoryParts(firstOrFull, continuation);
+    throw new MaxStoryValidationError('Story input must be text.');
+  }
+
+  if (continuation.trim()) {
+    const checked = maxStoryParts(firstOrFull, continuation);
+    return { ...checked, firstPart: firstOrFull, continuationText: continuation };
+  }
+
+  const parts: string[] = [];
+  let section: string[] = [];
+  for (const line of firstOrFull.split('\n')) {
+    if (line === STORYGO_DIVIDER) {
+      parts.push(section.join('\n'));
+      section = [];
+    } else {
+      section.push(line);
+    }
+  }
+  parts.push(section.join('\n'));
+
+  const firstPart = parts[0];
+  const continuationText = parts.slice(1).join('\n' + STORYGO_DIVIDER + '\n');
+  const checked = maxStoryParts(firstPart, continuationText);
+  return { ...checked, firstPart, continuationText };
+}
