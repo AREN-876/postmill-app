@@ -5,6 +5,20 @@
 export const STORYGO_DIVIDER = '────────────────────────';
 const DIVIDER_LINE = /^[─━═—–-]{3,}$/u;
 
+/** Determine the MAX publishing path without AI or brittle length heuristics.
+ * Explicit normal/story overrides take precedence. Absent/auto mode is
+ * inferred ONLY from a standalone exact StoryGo divider or legacy continuation.
+ */
+export function resolveMaxPostMode(
+  mode: unknown,
+  plainText: string,
+  continuation = '',
+): 'normal' | 'story' {
+  if (mode === 'normal' || mode === 'story') return mode;
+  if (typeof continuation === 'string' && continuation.trim()) return 'story';
+  return plainText.split('\n').includes(STORYGO_DIVIDER) ? 'story' : 'normal';
+}
+
 export class MaxStoryValidationError extends Error {}
 
 export function maxStoryParts(first: unknown, continuation: unknown) {
