@@ -15,6 +15,7 @@ import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/p
 import { CreatePostDto } from '@postmill-ai/nestjs-libraries/dtos/posts/create.post.dto';
 import { sanitizeProviderSettings } from '@postmill-ai/nestjs-libraries/dtos/posts/providers-settings/sanitize.settings';
 import { preparePostmillMaxStory, normalizeMaxStoryEditorText } from './max-story-input';
+import { resolveMaxPostMode } from '@postmill-ai/provider-kernel/domains/max-story';
 import { PROVIDER_CAPABILITIES } from '@postmill-ai/provider-kernel';
 import { ValidatePostsDto } from '@postmill-ai/nestjs-libraries/dtos/posts/validate.posts.dto';
 import { BulkCreatePostsDto, BulkCreatePostRowDto } from '@postmill-ai/nestjs-libraries/dtos/posts/bulk.create.posts.dto';
@@ -441,8 +442,14 @@ export class PostsService {
             );
           }
 
-          const isStory = integration.providerIdentifier === 'max' &&
-            (post.settings as any)?.mode === 'story';
+          const maxMode = integration.providerIdentifier === 'max'
+            ? resolveMaxPostMode(
+                (post.settings as any)?.mode,
+                normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+                (post.settings as any)?.continuationText || '',
+              )
+            : undefined;
+          const isStory = maxMode === 'story';
           // One editor for a new story, but preserve the existing StoryGo
           // storage contract and the legacy separate continuation field.
           const values = isStory
@@ -454,8 +461,19 @@ export class PostsService {
           const settings = {
             ...sanitizeProviderSettings(integration.providerIdentifier, post.settings),
             __type: integration.providerIdentifier,
+            ...(maxMode ? { mode: maxMode } : {}),
           };
           if (isStory && values?.length === 1) {
+            // Unified media input: story photos come from the same composer/
+            // n8n media attachment as normal MAX photos. Keep old storyImageId
+            // for editing previously saved stories, but reject conflicts.
+            const attached = values[0].image || [];
+            if (attached.length === 1 &&
+                !(settings as any).storyImageId &&
+                typeof (attached[0] as any).id === 'string') {
+              (settings as any).storyImageId = (attached[0] as any).id;
+              values[0].image = [];
+            }
             try {
               const parsed = preparePostmillMaxStory(
                 values[0].content,
@@ -1197,8 +1215,17 @@ export class PostsService {
           additionalSettings = [];
         }
 
-        const settings = post.settings || {};
-        const media = (post.value || []).map((p) => p.image || []);
+        const rawSettings = post.settings || {};
+        const isMax = integration.providerIdentifier === 'max';
+        const mode = isMax ? resolveMaxPostMode(
+          rawSettings.mode,
+          normalizeMaxStoryEditorText(post.value?.[0]?.content || ''),
+          rawSettings.continuationText || '',
+        ) : undefined;
+        const settings = { ...rawSettings, ...(mode ? { mode } : {}) };
+        const media = (post.value || []).map((p) =>
+          isMax && mode === 'story' ? [] : (p.image || [])
+        );
 
         // Settings DTO validation — mirrors the client `form.trigger()`.
         let valid = true;
@@ -1238,12 +1265,20 @@ export class PostsService {
               throw Error('A MAX story must be one Postmill post, not a thread.');
             }
             preparePostmillMaxStory(post.value[0].content, settings.continuationText || '');
-            if (settings.storyImageId) {
-              await this.readStoryGoImage(orgId, settings.storyImageId);
+            const attachments = post.value[0].image || [];
+            if (attachments.length > 1) {
+              throw Error('MAX stories accept only one photograph.');
             }
-            if ((post.value[0].image || []).length) {
-              throw Error('Attach the StoryGo photo in the MAX story settings, not as a normal media post.');
+            const attachedId = attachments.length === 1
+              ? (attachments[0] as any).id : undefined;
+            if (attachments.length === 1 && !attachedId) {
+              throw Error('MAX story photo must be an uploaded library file.');
             }
+            if (settings.storyImageId && attachedId && settings.storyImageId !== attachedId) {
+              throw Error('Two different StoryGo photos selected; keep only one.');
+            }
+            const photoId = attachedId || settings.storyImageId;
+            if (photoId) await this.readStoryGoImage(orgId, photoId);
           } catch (error) {
             valid = false;
             settingsError = (error as Error).message;
