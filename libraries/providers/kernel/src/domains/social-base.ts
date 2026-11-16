@@ -167,6 +167,11 @@ export abstract class SocialAbstract {
   abstract identifier: string;
   maxConcurrentJob = 1;
 
+  /** Provider-safe delay, injected for deterministic transport tests. */
+  protected waitForMediaProcessing(ms: number): Promise<any> {
+    return _ports!.timer(ms);
+  }
+
   /**
    * Optional beginner-friendly setup metadata for the per-tenant channel
    * config form (credential labels, portal link, callback instructions).
