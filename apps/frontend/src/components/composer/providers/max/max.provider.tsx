@@ -30,6 +30,13 @@ const MaxSettings = () => {
   const { integration, value } = useIntegration();
   const editorText = value?.[0]?.content || '';
   const attachedCount = value?.[0]?.image?.length || 0;
+  const firstMediaPath = value?.[0]?.image?.[0]?.path || '';
+  // Display only: the server verifies media signatures and the actual File row.
+  const attachedKind = /\.(mp4|webm)(?:[?#]|$)/i.test(firstMediaPath)
+    ? 'video'
+    : /\.(png|jpe?g)(?:[?#]|$)/i.test(firstMediaPath)
+      ? 'photo'
+      : 'other';
 
   const plain = useMemo(
     () => TIPTAP_HTML.test(editorText)
@@ -76,7 +83,11 @@ const MaxSettings = () => {
       <div className="flex items-center justify-between gap-[10px]">
         <span className="text-[13px]">
           {configuredMode === 'auto' ? 'Определено: ' : 'Выбрано: '}
-          <strong>{mode === 'story' ? 'история с продолжениями' : 'обычный пост'}</strong>
+          <strong>{mode === 'story' ? 'история с продолжениями'
+            : attachedCount === 0 ? 'текстовый пост'
+              : attachedKind === 'video' ? 'видеопост'
+                : attachedKind === 'photo' ? 'пост с фотографией'
+                  : 'пост с вложением'}</strong>
         </span>
         <button
           type="button"
