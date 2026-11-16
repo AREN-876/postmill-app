@@ -557,8 +557,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       const setup = await reservation.json() as any;
       if (typeof setup?.url !== 'string') throw Error('MAX upload URL missing');
       const uploadUrl = new URL(setup.url);
-      // MAX specifies these fixed media upload hosts. No credentials or bot
-      // token are ever forwarded to the signed upload URL.
+      // Accept only MAX-documented media hosts and HTTPS without redirects.
+      // Image authorization is sent only to iu.oneme.ru, never to the video CDN.
       if (uploadUrl.protocol !== 'https:' || !uploadHosts.includes(uploadUrl.hostname) ||
           uploadUrl.username || uploadUrl.password || uploadUrl.port) {
         throw Error('MAX upload target is outside the official media host');
