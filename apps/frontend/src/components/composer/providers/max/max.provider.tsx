@@ -38,8 +38,8 @@ const MaxSettings = () => {
 
   const partLengths = useMemo(() => {
     if (mode !== 'story') return [];
-    const plain = /<\\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\\s|>)/i.test(editorText)
-      ? stripHtmlValidation('normal', editorText.replace(/<br\\s*\\/?>/gi, '\\n'), false, true)
+    const plain = /<\/?(?:p|span|strong|br|a|h[1-6]|ul|li)(?:\s|>)/i.test(editorText)
+      ? stripHtmlValidation('normal', editorText.replace(/<br\s*\/?>/gi, '\n'), false, true)
       : editorText;
     const groups: string[][] = [[]];
     for (const line of plain.split('\n')) {
