@@ -277,6 +277,21 @@ describe('postSocial poll mapping + capability guard (2.2)', () => {
   });
 });
 
+describe('PostActivity managed draft fence', () => {
+  it('does not touch provider dependencies for a managed draft', async () => {
+    const getSocialIntegration = vi.fn();
+    const { activity, deps } = build({ _integrationManager: { getSocialIntegration } });
+    const result = await activity.postSocial(
+      { providerIdentifier: 'max', organizationId: 'org-1' } as any,
+      [{ id: 'managed', editorialTaskId: '4', editorialProfileRef: 'life-stories@v5' }] as any,
+      'stale-occurrence'
+    );
+    expect(result).toEqual([]);
+    expect(getSocialIntegration).not.toHaveBeenCalled();
+    expect(deps._postsRepository.isDeleted).not.toHaveBeenCalled();
+  });
+});
+
 describe('postSocial/postComment delete-after-claim guard', () => {
   it('postSocial returns [] without touching the provider when the post was deleted', async () => {
     const isDeleted = vi.fn().mockResolvedValue(true);
