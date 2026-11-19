@@ -64,6 +64,29 @@ export class PostsRepository {
     return result.result;
   }
 
+  // Inactive persistence only; neither method authenticates its caller.
+  // Remote state must come from verified Editorial authority, never a UI.
+  async anchorEditorialReview(scope: EditorialScope, task: string, target: string, state: Prisma.InputJsonObject) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_anchor_editorial_review_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text, ${JSON.stringify(state)}::jsonb
+      ) AS result
+    `;
+    return result.result;
+  }
+
+  // Future human service must derive actor and scope from authenticated
+  // session + server-owned mapping and enforce org RBAC/CSRF before this call.
+  async queueEditorialDecision(scope: EditorialScope, task: string, target: string, actor: string, command: Prisma.InputJsonObject) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_queue_editorial_decision_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
+        ${actor}::text, ${JSON.stringify(command)}::jsonb
+      ) AS result
+    `;
+    return result.result;
+  }
+
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);
     const unreadMap = new Map<string, number>();
