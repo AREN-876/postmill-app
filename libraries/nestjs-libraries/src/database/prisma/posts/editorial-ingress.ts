@@ -17,7 +17,7 @@ export class EditorialIngressError extends Error {
 
 const MODES = ['after_text_approval', 'automatic', 'manual', 'disabled'] as const;
 type ImageMode = (typeof MODES)[number];
-type Scope = {
+export type EditorialScope = {
   org_id: string;
   integration_id: string;
   campaign_id: string;
@@ -31,7 +31,7 @@ type Content = { title: string; parts: [string, string, string] };
 export type PreparedEditorialDraft = {
   schema_version: 1;
   task_id: string;
-  scope: Scope;
+  scope: EditorialScope;
   text: { revision: 1; sha256: string };
   content: Content;
   firstPart: string;
@@ -50,17 +50,17 @@ const SHA = /^[0-9a-f]{64}$(?![\s\S])/;
 const ID = /^[A-Za-z0-9_.:-]{1,200}$(?![\s\S])/;
 const PROFILE = /^[a-z][a-z0-9_-]{0,63}@v[1-9][0-9]{0,8}$(?![\s\S])/;
 
-function decimal(value: unknown): value is string {
+export function isEditorialTaskId(value: unknown): value is string {
   return typeof value === 'string' && /^[1-9][0-9]{0,18}$(?![\s\S])/.test(value) &&
     (value.length < 19 || value <= '9223372036854775807');
 }
 function identifier(value: unknown): value is string {
   return typeof value === 'string' && ID.test(value);
 }
-function scopeOf(value: Record<string, unknown>): Scope | undefined {
+function scopeOf(value: Record<string, unknown>): EditorialScope | undefined {
   if (!identifier(value.org_id) || !identifier(value.integration_id) ||
       value.integration_id.startsWith('fixture:') || !identifier(value.campaign_id) ||
-      !decimal(value.channel_id) || typeof value.profile_ref !== 'string' ||
+      !isEditorialTaskId(value.channel_id) || typeof value.profile_ref !== 'string' ||
       !PROFILE.test(value.profile_ref) || value.is_test !== true ||
       !MODES.includes(value.image_mode as ImageMode)) return undefined;
   return {
@@ -72,7 +72,7 @@ function scopeOf(value: Record<string, unknown>): Scope | undefined {
 
 // A dedicated 256-bit random machine secret. Only its SHA-256 digest is
 // configured here. No cookie, OAuth, generic pm_live key, or implicit scope.
-function machineScope(authorization: unknown, configured: unknown, now: number): Scope {
+export function authenticateEditorialMachine(authorization: unknown, configured: unknown, now = Date.now()): EditorialScope {
   if (!exact(configured, [...SCOPE_KEYS, 'token_sha256', 'expires_at']) ||
       typeof configured.token_sha256 !== 'string' || !SHA.test(configured.token_sha256) ||
       typeof configured.expires_at !== 'string' ||
@@ -131,9 +131,9 @@ export function prepareEditorialDraft(
   body: unknown,
   now = Date.now(),
 ): PreparedEditorialDraft {
-  const scope = machineScope(authorization, configuredScope, now);
+  const scope = authenticateEditorialMachine(authorization, configuredScope, now);
   if (!exact(body, ['schema_version', 'task_id', ...SCOPE_KEYS, 'text', 'content']) ||
-      body.schema_version !== 1 || !decimal(body.task_id)) {
+      body.schema_version !== 1 || !isEditorialTaskId(body.task_id)) {
     throw new EditorialIngressError('invalid_request');
   }
   const claimed = scopeOf(body);

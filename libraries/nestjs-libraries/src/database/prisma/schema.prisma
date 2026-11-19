@@ -560,6 +560,7 @@ model Post {
 model EditorialDraftReceipt {
   postId    String   @id
   request   Json
+  targetSnapshot Json?
   createdAt DateTime @default(now())
   post      Post     @relation(fields: [postId], references: [id], onDelete: Restrict)
 }
