@@ -319,3 +319,7 @@ enforcement point (exact file/symbol). Cross-refs: `agents/backend.md`,
 - [ ] No secrets/PII in Sentry breadcrumbs, logs, or stored errors.
 - [ ] New gated routes chose the right gate(s): `@CheckPolicies` (402) and/or `@RequirePermission` (403); `isSuperAdmin` not treated as a billing bypass.
 - [ ] Channel credential changes keep org-config-wins order and channels-only env fallback.
+
+### Inactive Editorial machine transport (06B-2B)
+
+The RBAC coverage test explicitly classifies the unregistered `EditorialExchangeController` separately from public and session-authorized controllers. This narrow exception is valid only for the isolated, disabled-by-default module; machine authorization is verified by the separate scoped credential before every repository call. The regression test checks the three runtime entrypoint modules for direct wiring; HTTP tests check null configuration and rejection of ordinary credentials. Neither test alone proves a future deployment's transport isolation. Any activation must revisit the classification and verify actual routing, credential provisioning, test-target mapping and telemetry before enabling writes. Do not weaken ordinary org-resource RBAC or cookie CSRF coverage.

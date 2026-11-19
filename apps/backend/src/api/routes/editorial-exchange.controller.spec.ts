@@ -52,10 +52,10 @@ let url: string;
 
 describe('Editorial Exchange private HTTP (synthetic localhost only)', () => {
   beforeAll(async () => {
-    const module = await Test.createTestingModule({
+    const testingModule = await Test.createTestingModule({
       imports: [FakePostsModule, EditorialExchangeModule],
     }).overrideProvider(EDITORIAL_EXCHANGE_CONFIG).useValue(config).compile();
-    app = module.createNestApplication({ rawBody: true, logger: false });
+    app = testingModule.createNestApplication({ rawBody: true, logger: false });
     await app.listen(0, '127.0.0.1');
     url = (await app.getUrl()) + '/internal/editorial/v1/drafts';
   });
@@ -123,6 +123,18 @@ describe('Editorial Exchange private HTTP (synthetic localhost only)', () => {
     expect(unknown.status).toBe(503);
     expect(await unknown.text()).not.toContain('private provider secret');
     expect(posts.exchangeCreateEditorialDraft).toHaveBeenCalledTimes(2);
+  });
+  it('the isolated module has no configured credential by default', async () => {
+    const disabledModule = await Test.createTestingModule({
+      imports: [FakePostsModule, EditorialExchangeModule],
+    }).compile();
+    try {
+      expect(disabledModule.get(EDITORIAL_EXCHANGE_CONFIG)).toBeNull();
+    } finally {
+      await disabledModule.close();
+    }
+    expect(posts.exchangeCreateEditorialDraft).not.toHaveBeenCalled();
+    expect(posts.exchangeReadEditorialDraft).not.toHaveBeenCalled();
   });
   it('fails closed with null configuration or duplicate Authorization', async () => {
     const svc = app.get(EditorialExchangeService);
