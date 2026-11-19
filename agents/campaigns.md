@@ -136,3 +136,7 @@ Two unrelated "utm" codepaths — do not conflate:
   `posts.service.ts` implementations plus their specs.
 - Schema changes to campaign models follow the migration workflow in
   `agents/database.md`; new DTO fields must be declared or the global pipe 400s.
+
+## Editorial Exchange 06A (inactive)
+
+Managed drafts are distinct from native campaign approvals. See `docs/editorial-exchange.md` for the staged contract and temporary fail-closed boundary. `Post.editorialTaskId`/`editorialProfileRef` are nullable for existing posts. Migration `20261119120000_editorial_draft_fence` restricts managed rows to immutable DRAFT, reserves their stable group namespace, prohibits native approval and state changes, and `MaxOccurrences.active` refuses managed rows. Do not create or activate managed drafts until dedicated authenticated revision APIs, outbox, UI and final release guard are implemented and qualified. Do not bypass the guard via session flags or direct writes. Ordinary campaign workflows remain unchanged.

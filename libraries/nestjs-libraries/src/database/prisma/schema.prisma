@@ -517,6 +517,10 @@ model Post {
   commentCount               Int                       @default(0)
   campaignId                 String?
   campaign                   Campaign?                 @relation(fields: [campaignId], references: [id])
+  // Opt-in Editorial Exchange identity; ordinary posts remain NULL. Managed drafts
+  // are fenced by the SQL migration until revision-aware review endpoints exist.
+  editorialTaskId            String?
+  editorialProfileRef        String?
   approvalStatus             String?                   // campaign draft approval: pending|approved|rejected
   approvedById               String?
   approvedAt                 DateTime?
@@ -543,6 +547,7 @@ model Post {
   @@index([releaseURL])
   @@index([integrationId])
   @@index([commentCount])
+  @@unique([organizationId, editorialTaskId])
   @@index([organizationId, state, publishDate])
   @@index([releaseId])
   @@index([approvedById])

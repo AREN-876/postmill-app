@@ -70,6 +70,10 @@ export class MaxOccurrences {
   private active(p: any) {
     return (
       p.integration.providerIdentifier === 'max' &&
+      // Editorial Exchange is not activated yet. Neither native approval nor
+      // a legacy occurrence may authorize a managed draft in this phase.
+      p.editorialTaskId == null &&
+      p.editorialProfileRef == null &&
       // Campaign drafts require explicit approval. Manual composer posts
       // legitimately have a null approvalStatus (no approval workflow), but
       // pending/rejected always block dispatch.

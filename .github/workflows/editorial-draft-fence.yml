@@ -1,0 +1,35 @@
+name: Editorial managed draft fence
+on:
+  pull_request:
+    paths:
+      - 'libraries/nestjs-libraries/src/database/prisma/**'
+      - 'tools/db/editorial-fence-*.sql'
+      - '.github/workflows/editorial-draft-fence.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres17:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Apply and exercise actual migration on disposable PostgreSQL 17
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          C="postmill-editorial-fence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$C" --network none -e POSTGRES_HOST_AUTH_METHOD=trust postgres:17-alpine
+          for i in $(seq 1 60); do
+            if docker exec "$C" pg_isready -h 127.0.0.1 -U postgres; then break; fi
+            sleep 1
+          done
+          docker exec "$C" pg_isready -h 127.0.0.1 -U postgres
+          {
+            cat tools/db/editorial-fence-fixture.sql
+            cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119120000_editorial_draft_fence/migration.sql
+            cat tools/db/editorial-fence-assertions.sql
+          } | docker exec -i "$C" psql -X -U postgres -v ON_ERROR_STOP=1
