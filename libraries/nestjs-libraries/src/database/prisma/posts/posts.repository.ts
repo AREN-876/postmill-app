@@ -1,5 +1,5 @@
 import { maxTarget } from './max-target';
-import type { PreparedEditorialDraft } from './editorial-ingress';
+import type { EditorialScope, PreparedEditorialDraft } from './editorial-ingress';
 import { MaxOccurrences } from './max-occurrences';
 import { PrismaRepository, PrismaTransaction } from '@postmill-ai/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
@@ -46,6 +46,20 @@ export class PostsRepository {
   async createEditorialDraft(prepared: PreparedEditorialDraft) {
     const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
       SELECT public.postmill_create_editorial_draft_v1(${JSON.stringify(prepared)}::jsonb) AS result
+    `;
+    return result.result;
+  }
+
+  async exchangeCreateEditorialDraft(prepared: PreparedEditorialDraft, target: string) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_exchange_create_v1(${JSON.stringify(prepared)}::jsonb, ${target}::text) AS result
+    `;
+    return result.result;
+  }
+
+  async exchangeReadEditorialDraft(scope: EditorialScope, task: string, target: string) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_read_editorial_draft_v1(${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text) AS result
     `;
     return result.result;
   }

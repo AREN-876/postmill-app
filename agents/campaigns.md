@@ -148,3 +148,7 @@ The offline `prepareEditorialDraft` boundary accepts only an independently scope
 ### Editorial initial receipt (06B-2A)
 
 A managed draft and immutable `EditorialDraftReceipt` must be created together by the trusted parameterized repository path, not native create, raw API payload, or manual SQL. The invoker-only persistence function does not authenticate; HTTP registration is deferred. Replay is historical and only after current target check; conflicts and untracked rows fail closed. Do not grant service visibility or enable any writes until credential scope, authoritative test-channel mapping, cleanup and related-record/review guards are qualified. Never use this receipt as final approval or scheduling authority.
+
+### Editorial Exchange private transport (06B-2B)
+
+The unregistered EditorialExchangeModule contains scoped machine-only create/read handlers with null config by default. Do not register in the public/cookie routes or expose it through the proxy until the activation gates in docs/editorial-exchange.md pass. Native draft reconciliation compares the captured immutable actual MAX target and exact story content; missing evidence or drift fails closed. GET is historical receipt + current check, not review acknowledgement, final approval or dispatch authority.

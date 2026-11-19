@@ -124,6 +124,14 @@ const PUBLIC_CONTROLLERS = new Set<string>([
   'OrgPortabilityDownloadController',
 ]);
 
+// Isolated machine capability: authorization is checked before DB access by
+// EditorialExchangeService; no session roles or generic API keys are accepted.
+// This exemption is valid ONLY while the module is not wired into runtime.
+// Revisit the classification and security tests on any activation.
+const ISOLATED_MACHINE_CONTROLLERS = new Set<string>([
+  'EditorialExchangeController',
+]);
+
 // Operational / health / root controllers.
 const OPS_CONTROLLERS = new Set<string>([
   'MonitorController',
@@ -355,12 +363,13 @@ describe('RBAC coverage — every org-resource mutation is gated or explicitly a
     expect(handlers.length).toBeGreaterThan(20);
   });
 
-  it('every controller file is categorized (org-resource, self-scoped, admin, public, or ops)', () => {
+  it('every controller file is categorized (org-resource, self-scoped, admin, public, isolated machine, or ops)', () => {
     const discovered = discoverControllerClassNames();
     const known = new Set<string>([
       ...SELF_SCOPED_CONTROLLERS,
       ...ADMIN_CONTROLLERS,
       ...PUBLIC_CONTROLLERS,
+      ...ISOLATED_MACHINE_CONTROLLERS,
       ...OPS_CONTROLLERS,
       ...ORG_RESOURCE_CONTROLLERS.map((c) => c.name),
     ]);
@@ -368,9 +377,21 @@ describe('RBAC coverage — every org-resource mutation is gated or explicitly a
     expect(
       uncategorized,
       `Found controller(s) not categorized in rbac-coverage.spec.ts. ` +
-        `Add each to the appropriate set (org-resource / self-scoped / admin / public / ops):\n` +
+        `Add each to the appropriate set (org-resource / self-scoped / admin / public / isolated machine / ops):\n` +
         uncategorized.join('\n')
     ).toEqual([]);
+  });
+
+  it('the isolated Editorial machine controller stays out of runtime entrypoint modules', () => {
+    // Static wiring regression check; no boot, database or real credential.
+    for (const entrypoint of [
+      '../../app.module.ts',
+      '../api.module.ts',
+      '../../public-api/public.api.module.ts',
+    ]) {
+      const source = fs.readFileSync(path.resolve(ROUTES_DIR, entrypoint), 'utf8');
+      expect(source, entrypoint).not.toMatch(/\bEditorialExchange(?:Module|Controller)\b/);
+    }
   });
 
   it('every mutating handler carries @RequirePermission (RBAC, not just @CheckPolicies billing) OR is on the intentional allowlist', () => {
