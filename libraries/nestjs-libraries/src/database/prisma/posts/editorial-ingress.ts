@@ -46,12 +46,12 @@ function exact(value: unknown, keys: readonly string[]): value is Record<string,
 const SCOPE_KEYS = [
   'org_id', 'integration_id', 'campaign_id', 'channel_id', 'profile_ref', 'is_test', 'image_mode',
 ] as const;
-const SHA = /^[0-9a-f]{64}$/;
-const ID = /^[A-Za-z0-9_.:-]{1,200}$/;
-const PROFILE = /^[a-z][a-z0-9_-]{0,63}@v[1-9][0-9]{0,8}$/;
+const SHA = /^[0-9a-f]{64}$(?![\s\S])/;
+const ID = /^[A-Za-z0-9_.:-]{1,200}$(?![\s\S])/;
+const PROFILE = /^[a-z][a-z0-9_-]{0,63}@v[1-9][0-9]{0,8}$(?![\s\S])/;
 
 function decimal(value: unknown): value is string {
-  return typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) &&
+  return typeof value === 'string' && /^[1-9][0-9]{0,18}$(?![\s\S])/.test(value) &&
     (value.length < 19 || value <= '9223372036854775807');
 }
 function identifier(value: unknown): value is string {
@@ -76,9 +76,9 @@ function machineScope(authorization: unknown, configured: unknown, now: number):
   if (!exact(configured, [...SCOPE_KEYS, 'token_sha256', 'expires_at']) ||
       typeof configured.token_sha256 !== 'string' || !SHA.test(configured.token_sha256) ||
       typeof configured.expires_at !== 'string' ||
-      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(configured.expires_at) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$(?![\s\S])/.test(configured.expires_at) ||
       !Number.isFinite(now) || typeof authorization !== 'string' ||
-      !/^Bearer edx_v1_[0-9a-f]{64}$/.test(authorization)) {
+      !/^Bearer edx_v1_[0-9a-f]{64}$(?![\s\S])/.test(authorization)) {
     throw new EditorialIngressError('unauthorized');
   }
   const expiry = Date.parse(configured.expires_at);

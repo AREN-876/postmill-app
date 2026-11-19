@@ -42,11 +42,14 @@ describe('Editorial Exchange 06B-1 ingress', () => {
     expect(prepare({ ...body, content: { parts: [...content.parts], title: content.title } })).toEqual(draft);
     expect(draft.content.parts).not.toBe(content.parts);
   });
-  it.each([null, '', 'Bearer pm_live_test', 'pos_token', secret, auth + ' ', 'Bearer edx_v1_' + 'b'.repeat(64), [auth]])(
+  it.each([null, '', 'Bearer pm_live_test', 'pos_token', secret, auth + ' ', 'Bearer edx_v1_' + 'b'.repeat(64), auth + '\n'])(
     'rejects missing, wrong, generic or ambiguous credentials', (credential) => {
       expect(() => prepare(body, credential)).toThrow('unauthorized');
     },
   );
+  it('rejects duplicate Authorization headers', () => {
+    expect(() => prepare(body, [auth])).toThrow('unauthorized');
+  });
   it.each([
     null, {}, { ...config, token_sha256: '0'.repeat(64) },
     { ...config, expires_at: '2026-11-19T00:00:00.000Z' },
@@ -57,14 +60,14 @@ describe('Editorial Exchange 06B-1 ingress', () => {
     expect(() => prepare(body, auth, cfg)).toThrow('unauthorized');
   });
   it.each([
-    { org_id: 'org-b' }, { integration_id: 'max-b' }, { campaign_id: 'campaign-b' },
+    { org_id: 'org-b' }, { org_id: 'org-a\n' }, { integration_id: 'max-b' }, { campaign_id: 'campaign-b' },
     { channel_id: '43' }, { profile_ref: 'life-stories-terra-test@v2' },
     { is_test: false }, { image_mode: 'disabled' },
   ])('rejects a request outside the credential scope', (patch) => {
     expect(() => prepare({ ...body, ...patch })).toThrow('scope_mismatch');
   });
   it.each([
-    { schema_version: 2 }, { task_id: 1 }, { task_id: '01' }, { task_id: '0' },
+    { schema_version: 2 }, { task_id: 1 }, { task_id: '01' }, { task_id: '1\n' }, { task_id: '0' },
     { task_id: '9223372036854775808' }, { task_id: '-1' },
     { state: 'QUEUE' }, { publishDate: '2026-11-19' }, { image: [] },
     { text: { revision: 2, sha256: digest } },
