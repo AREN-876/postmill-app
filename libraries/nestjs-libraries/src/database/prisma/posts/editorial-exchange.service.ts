@@ -1,4 +1,4 @@
-import { Injectable, HttpException } from '@nestjs/common';
+import { Inject, Injectable, HttpException } from '@nestjs/common';
 import {
   authenticateEditorialMachine, EditorialIngressError, isEditorialTaskId, prepareEditorialDraft,
 } from './editorial-ingress';
@@ -43,7 +43,7 @@ function databaseError(error: unknown): never {
 
 @Injectable()
 export class EditorialExchangeService {
-  constructor(private readonly posts: PostsRepository) {}
+  constructor(@Inject(PostsRepository) private readonly posts: PostsRepository) {}
 
   private authenticate(req: ExchangeRequest, config: ExchangeConfiguration | null) {
     if (!config || typeof config.targetInternalId !== 'string' ||

@@ -31,7 +31,7 @@ function requestOf(req: RawBodyRequest<Request>): ExchangeRequest {
 @Throttle({ default: { limit: 30, ttl: 60000 } })
 export class EditorialExchangeController {
   constructor(
-    private readonly exchange: EditorialExchangeService,
+    @Inject(EditorialExchangeService) private readonly exchange: EditorialExchangeService,
     @Inject(EDITORIAL_EXCHANGE_CONFIG) private readonly config: ExchangeConfiguration | null,
   ) {}
 
