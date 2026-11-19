@@ -586,9 +586,19 @@ model EditorialDecisionOutbox {
   payloadHash String
   createdAt   DateTime @default(now())
   anchor      EditorialReviewAnchor @relation(fields: [postId], references: [postId], onDelete: Restrict)
+  result      EditorialDecisionResult?
 
   @@unique([postId, commandId])
   @@unique([postId, expectedSeq])
+}
+
+// Immutable verified Editorial-013 outcome; transient transport flags excluded.
+model EditorialDecisionResult {
+  eventId     String   @id
+  outcome     Json
+  outcomeHash String
+  createdAt   DateTime @default(now())
+  event       EditorialDecisionOutbox @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
 }
 
 model SocialComment {
