@@ -521,6 +521,7 @@ model Post {
   // are fenced by the SQL migration until revision-aware review endpoints exist.
   editorialTaskId            String?
   editorialProfileRef        String?
+  editorialDraftReceipt      EditorialDraftReceipt?
   approvalStatus             String?                   // campaign draft approval: pending|approved|rejected
   approvedById               String?
   approvedAt                 DateTime?
@@ -553,6 +554,14 @@ model Post {
   @@index([approvedById])
   @@index([createdById])
   @@index([brandId])
+}
+
+// Immutable initial admission receipt; not current review or publication authority.
+model EditorialDraftReceipt {
+  postId    String   @id
+  request   Json
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Restrict)
 }
 
 model SocialComment {

@@ -33,4 +33,7 @@ jobs:
             cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119120000_editorial_draft_fence/migration.sql
             cat tools/db/editorial-fence-assertions.sql
             cat tools/db/editorial-fence-ingress-digest.sql
+            cat tools/db/editorial-fence-receipt-fixture.sql
+            cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119130000_editorial_draft_receipt/migration.sql
+            cat tools/db/editorial-fence-receipt-assertions.sql
           } | docker exec -i "$C" psql -X -U postgres -v ON_ERROR_STOP=1
