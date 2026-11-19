@@ -75,6 +75,11 @@ const runPostPublish = (postActivity: PostActivity) =>
       return;
     }
 
+    // 06A: the managed-draft fence applies even to old postNow/repeat events
+    // or a changed provider configuration. No delivery or error side effects.
+    if ((firstPost as any).editorialTaskId != null ||
+        (firstPost as any).editorialProfileRef != null) return;
+
     const isMax = (firstPost as any).integration?.providerIdentifier === 'max';
     if (event.data.maxOccurrenceId && !isMax) return;
     const maxOccurrenceId = isMax ? event.data.maxOccurrenceId : undefined;

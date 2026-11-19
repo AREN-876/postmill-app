@@ -185,6 +185,29 @@ const runEvent = (over: any = {}) => ({
 });
 
 describe('runPostPublish handler', () => {
+  it.each(['max', 'telegram'])('blocks a managed draft even on a stale %s repeat event', async (provider) => {
+    const post = rootPost({
+      editorialTaskId: '4',
+      editorialProfileRef: 'life-stories@v5',
+      state: 'DRAFT',
+    });
+    post.integration.providerIdentifier = provider;
+    const planMaxOccurrence = vi.fn();
+    const activity = makeActivity({ getPost: vi.fn(async () => post), planMaxOccurrence });
+    const step = makeStep();
+    await getHandler(activity)({ step, event: runEvent({
+      postNow: true, repeat: true,
+      ...(provider === 'max' ? { maxOccurrenceId: 'old-occurrence' } : {}),
+    }) });
+    expect(planMaxOccurrence).not.toHaveBeenCalled();
+    expect(activity.claimForPublish).not.toHaveBeenCalled();
+    expect(activity.getPostsList).not.toHaveBeenCalled();
+    expect(activity.postSocial).not.toHaveBeenCalled();
+    expect(activity.changeState).not.toHaveBeenCalled();
+    expect(activity.sendWebhooks).not.toHaveBeenCalled();
+    expect(step.sendEvent).not.toHaveBeenCalled();
+  });
+
   it('0.7 — aborts without posting when claimForPublish loses the race (0)', async () => {
     const activity = makeActivity({ claimForPublish: vi.fn(async () => 0) });
     const handler = getHandler(activity);

@@ -519,6 +519,11 @@ export class PostActivity {
   }
 
   async postSocial(integration: Integration, posts: Post[], maxOccurrenceId?: string, maxDeliveryAttempt?: number) {
+    // 06A: refuse inactive managed rows at the provider boundary as well.
+    // The row identity cannot be removed or added retroactively in PostgreSQL.
+    if (posts.some((p) => p.editorialTaskId != null || p.editorialProfileRef != null)) {
+      return [];
+    }
     if (await this._bailIfDeleted(posts)) {
       return [];
     }
