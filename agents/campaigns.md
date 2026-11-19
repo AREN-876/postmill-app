@@ -144,3 +144,7 @@ Managed drafts are distinct from native campaign approvals. See `docs/editorial-
 ### Editorial Exchange ingress (06B-1)
 
 The offline `prepareEditorialDraft` boundary accepts only an independently scoped, expiring machine credential digest and an exact test-only initial artifact. It is not yet a registered route. Ordinary API keys/OAuth/cookies cannot stand in for the Exchange credential. Never use a normalized/edited text as the same Editorial-013 digest; check native StoryGo UTF-16 limits including title. Preserve full managed-draft freeze until durable receipt, authoritative target checks, human decisions/outbox, and publication guards are separately implemented and qualified.
+
+### Editorial initial receipt (06B-2A)
+
+A managed draft and immutable `EditorialDraftReceipt` must be created together by the trusted parameterized repository path, not native create, raw API payload, or manual SQL. The invoker-only persistence function does not authenticate; HTTP registration is deferred. Replay is historical and only after current target check; conflicts and untracked rows fail closed. Do not grant service visibility or enable any writes until credential scope, authoritative test-channel mapping, cleanup and related-record/review guards are qualified. Never use this receipt as final approval or scheduling authority.

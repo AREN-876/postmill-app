@@ -1,4 +1,5 @@
 import { maxTarget } from './max-target';
+import type { PreparedEditorialDraft } from './editorial-ingress';
 import { MaxOccurrences } from './max-occurrences';
 import { PrismaRepository, PrismaTransaction } from '@postmill-ai/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
@@ -39,6 +40,15 @@ export class PostsRepository {
     private _postCommentRead: PrismaRepository<'postCommentRead'>,
     private _transaction: PrismaTransaction
   ) {}
+
+  // Inactive adapter: only a trusted, validated 06B-1 result may enter here.
+  // SQL uses invoker permissions and returns a historical initial receipt.
+  async createEditorialDraft(prepared: PreparedEditorialDraft) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_create_editorial_draft_v1(${JSON.stringify(prepared)}::jsonb) AS result
+    `;
+    return result.result;
+  }
 
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);

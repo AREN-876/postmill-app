@@ -33,4 +33,26 @@ jobs:
             cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119120000_editorial_draft_fence/migration.sql
             cat tools/db/editorial-fence-assertions.sql
             cat tools/db/editorial-fence-ingress-digest.sql
+            cat tools/db/editorial-fence-receipt-fixture.sql
+            cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119130000_editorial_draft_receipt/migration.sql
+            cat tools/db/editorial-fence-receipt-assertions.sql
           } | docker exec -i "$C" psql -X -U postgres -v ON_ERROR_STOP=1
+          # Two independent sessions, one org/task; second call waits for
+          # the first transaction, then must return the same historical receipt.
+          REQ="jsonb_build_object('schema_version',1,'task_id','101','scope',jsonb_build_object('org_id','org-a','integration_id','max-a','campaign_id','campaign-a','channel_id','42','profile_ref','life-stories@v5','is_test',true,'image_mode','disabled'),'text',jsonb_build_object('revision',1,'sha256',encode(sha256(convert_to(jsonb_build_object('title','Title','parts',jsonb_build_array('One','Two','Three'))::text,'UTF8')),'hex')),'content',jsonb_build_object('title','Title','parts',jsonb_build_array('One','Two','Three')),'firstPart',E'Title\n\nOne','continuationText',E'Two\n────────────────────────\nThree')"
+          Q="SELECT postmill_create_editorial_draft_v1($REQ);"
+          printf 'BEGIN;\n%s\nSELECT pg_sleep(2);\nCOMMIT;\n' "$Q" | docker exec -i "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 > /tmp/edx-first.json &
+          FIRST=$!
+          docker exec "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 -c "$Q" > /tmp/edx-second.json &
+          SECOND=$!
+          wait "$FIRST"
+          wait "$SECOND"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a, b = [json.loads(next(s for s in Path(p).read_text().splitlines() if s.startswith("{"))) for p in ["/tmp/edx-first.json", "/tmp/edx-second.json"]]
+          assert sorted([a["created"], b["created"]]) == [False, True]
+          assert a["receipt"] == b["receipt"]
+          PY
+          test "$(docker exec "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM \"Post\" p JOIN \"EditorialDraftReceipt\" r ON r.\"postId\"=p.id WHERE p.\"organizationId\"='org-a' AND p.\"editorialTaskId\"='101'")" = 1
+          echo POSTMILL_EDITORIAL_DRAFT_CONCURRENCY_OK
