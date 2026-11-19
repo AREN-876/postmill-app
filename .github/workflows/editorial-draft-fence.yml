@@ -41,6 +41,8 @@ jobs:
             cat tools/db/editorial-fence-target-assertions.sql
             cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119150000_editorial_decision_outbox/migration.sql
             cat tools/db/editorial-fence-decision-assertions.sql
+            cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119160000_editorial_decision_result/migration.sql
+            cat tools/db/editorial-fence-result-assertions.sql
           } | docker exec -i "$C" psql -X -U postgres -v ON_ERROR_STOP=1
           # Two independent sessions, one org/task; second call waits for
           # the first transaction, then must return the same historical receipt.
@@ -81,3 +83,22 @@ jobs:
           PY
           test "$(docker exec "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM \"EditorialDecisionOutbox\" o JOIN \"Post\" p ON p.id=o.\"postId\" WHERE p.\"editorialTaskId\"='190'")" = 1
           echo POSTMILL_EDITORIAL_DECISION_CONCURRENCY_OK
+          # Duplicate result delivery from independent sessions: exactly one receipt.
+          Q="SELECT postmill_import_editorial_result_v1(r.request->'scope','193','test-channel',o.\"eventId\",o.\"payloadHash\",jsonb_build_object('status','accepted','reason',NULL,'state',a.snapshot||'{\"seq\":\"1\",\"text_status\":\"approved\",\"final_approved\":false}'::jsonb,'dispatch_authorized',false,'publishable',false,'newly_applied',false,'replay',true)) FROM \"EditorialDecisionOutbox\" o JOIN \"EditorialReviewAnchor\" a ON a.\"postId\"=o.\"postId\" JOIN \"EditorialDraftReceipt\" r ON r.\"postId\"=a.\"postId\" JOIN \"Post\" p ON p.id=o.\"postId\" WHERE p.\"editorialTaskId\"='193';"
+          printf 'BEGIN;\n%s\nSELECT pg_sleep(2);\nCOMMIT;\n' "$Q" | docker exec -i "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 > /tmp/edx-result-first.json &
+          FIRST=$!
+          docker exec "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 -c "$Q" > /tmp/edx-result-second.json &
+          SECOND=$!
+          wait "$FIRST"
+          wait "$SECOND"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a, b = [json.loads(next(s for s in Path(p).read_text().splitlines() if s.startswith("{"))) for p in ["/tmp/edx-result-first.json", "/tmp/edx-result-second.json"]]
+          assert sorted([a["newly_recorded"], b["newly_recorded"]]) == [False, True]
+          assert a["outcome"] == b["outcome"]
+          assert a["outcome_sha256"] == b["outcome_sha256"]
+          assert not a["dispatch_authorized"] and not b["publishable"]
+          PY
+          test "$(docker exec "$C" psql -XAtq -U postgres -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM \"EditorialDecisionResult\" x JOIN \"EditorialDecisionOutbox\" o ON o.\"eventId\"=x.\"eventId\" JOIN \"Post\" p ON p.id=o.\"postId\" WHERE p.\"editorialTaskId\"='193'")" = 1
+          echo POSTMILL_EDITORIAL_RESULT_CONCURRENCY_OK

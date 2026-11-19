@@ -107,7 +107,8 @@ BEGIN
   AND reply->'publishable'='false'::jsonb AND jsonb_typeof(reply->'replay')='boolean'
   AND jsonb_typeof(reply->'newly_applied')='boolean'
   AND ((reply->>'status'='accepted' AND reply->'reason'='null'::jsonb
-       AND (reply->>'newly_applied')::boolean=NOT (reply->>'replay')::boolean)
+       AND ((reply->'newly_applied'='true'::jsonb AND reply->'replay'='false'::jsonb)
+         OR (reply->'newly_applied'='false'::jsonb AND reply->'replay'='true'::jsonb)))
     OR (reply->>'status'='rejected' AND jsonb_typeof(reply->'reason')='string'
        AND length(reply->>'reason') BETWEEN 1 AND 100 AND reply->'newly_applied'='false'::jsonb))) IS NOT TRUE THEN
   RAISE EXCEPTION 'EDITORIAL_INVALID_RESULT' USING ERRCODE='22023'; END IF;
