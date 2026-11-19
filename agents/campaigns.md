@@ -140,3 +140,7 @@ Two unrelated "utm" codepaths — do not conflate:
 ## Editorial Exchange 06A (inactive)
 
 Managed drafts are distinct from native campaign approvals. See `docs/editorial-exchange.md` for the staged contract and temporary fail-closed boundary. `Post.editorialTaskId`/`editorialProfileRef` are nullable for existing posts. Migration `20261119120000_editorial_draft_fence` restricts managed rows to immutable DRAFT, reserves their stable group namespace, prohibits native approval and state changes, and `MaxOccurrences.active`, publication handler and `PostActivity.postSocial` refuse managed rows. Do not create or activate managed drafts until dedicated authenticated revision APIs, outbox, UI and final release guard are implemented and qualified. Do not bypass the guard via session flags or direct writes. Ordinary campaign workflows remain unchanged.
+
+### Editorial Exchange ingress (06B-1)
+
+The offline `prepareEditorialDraft` boundary accepts only an independently scoped, expiring machine credential digest and an exact test-only initial artifact. It is not yet a registered route. Ordinary API keys/OAuth/cookies cannot stand in for the Exchange credential. Never use a normalized/edited text as the same Editorial-013 digest; check native StoryGo UTF-16 limits including title. Preserve full managed-draft freeze until durable receipt, authoritative target checks, human decisions/outbox, and publication guards are separately implemented and qualified.
