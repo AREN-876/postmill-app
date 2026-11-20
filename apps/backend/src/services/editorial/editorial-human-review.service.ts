@@ -1,5 +1,4 @@
 import { ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/roles/roles.service';
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
