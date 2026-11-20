@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Header, HttpCode, Param, Post, Body, Req, UseGuards,
+  Controller, Get, Header, HttpCode, Param, Post, Body, Req, UseGuards, ForbiddenException,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -7,7 +7,6 @@ import type { Request } from 'express';
 import { GetOrgFromRequest } from '@postmill-ai/nestjs-libraries/user/org.from.request';
 import { GetUserFromRequest } from '@postmill-ai/nestjs-libraries/user/user.from.request';
 import type { Organization, User } from '@prisma/client';
-import { ForbiddenException } from '@nestjs/common';
 import { RequirePermission } from '@postmill-ai/backend/services/auth/rbac/require-permission.decorator';
 import { OrgRbacGuard } from '@postmill-ai/backend/services/auth/rbac/org-rbac.guard';
 import { EditorialHumanReviewService } from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
