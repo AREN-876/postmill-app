@@ -108,6 +108,17 @@ export class PostsRepository {
     return result.result;
   }
 
+  // Only read an existing unconfirmed event, after revalidating native
+  // scope, target and frozen DRAFT. Never poll all orgs or claim work here.
+  async readPendingEditorialDelivery(scope: EditorialScope, task: string, target: string) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_read_editorial_delivery_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text
+      ) AS result
+    `;
+    return result.result;
+  }
+
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);
     const unreadMap = new Map<string, number>();
