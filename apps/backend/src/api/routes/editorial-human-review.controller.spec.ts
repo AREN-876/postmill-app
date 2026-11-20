@@ -80,13 +80,15 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     vi.resetAllMocks();
     resolver.resolve.mockImplementation(async ({ jwt }: { jwt: string }) => {
       const orgId = jwt === 'other-org' ? 'org-b' : 'org-a';
-      return { ok: true, context: { org: { id: orgId }, user: { id: jwt === 'viewer' ? 'viewer' : 'editor' },
+      return { ok: true, context: { org: { id: orgId }, user: { id: jwt === 'viewer' ? 'viewer' : jwt === 'owner' ? 'owner' : 'editor' },
         impersonated: false, expiresAt: null } };
     });
     roles.getEffectivePermissions.mockImplementation(async (_org: string, user: string) =>
       user === 'viewer'
         ? { role: 'viewer', permissions: ['posts:read'] }
-        : { role: 'editor', permissions: ['posts:read', 'posts:update'] });
+        : user === 'owner'
+          ? { role: 'owner', permissions: ['posts:manage'] }
+          : { role: 'editor', permissions: ['posts:read', 'posts:update'] });
     posts.readEditorialHuman.mockResolvedValue({
       post_id: postId, task_id: '198', content: { title: 'title', parts: ['a','b','c'] },
       review: { status: 'idle', last_confirmed_state: { seq: '0' } },
@@ -120,6 +122,23 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'editorial.review.queued', resourceId: postId, userId: 'editor',
     }));
+  });
+  it('allows owner with posts:manage through session RBAC', async () => {
+    const session = 'auth=owner; csrf_token=' + csrf;
+    const r = await read({}, session);
+    expect(r.status).toBe(200);
+    const d = await decision(command, {}, session);
+    expect(d.status).toBe(200);
+    expect(posts.queueEditorialHuman).toHaveBeenCalledWith(
+      'org-a', postId, '198', 'test-channel', 'owner', command);
+  });
+  it('refuses a request without a cookie session before any database call', async () => {
+    const r = await read({}, '');
+    expect(r.status).toBe(403);
+    const d = await decision(command, {}, '');
+    expect(d.status).toBe(403);
+    expect(posts.readEditorialHuman).not.toHaveBeenCalled();
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
   });
   it('denies viewer mutation through real OrgRbacGuard', async () => {
     const d = await decision(command, {}, 'auth=viewer; csrf_token=' + csrf);
