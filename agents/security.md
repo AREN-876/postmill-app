@@ -338,9 +338,9 @@ It is NOT registered in AppModule or ApiModule. It has
 `OrgRbacGuard` plus route-specific `@RequirePermission('posts','read|update')`;
 the backend service independently checks session membership even for
 super-admin and refuses header auth, generic API keys or impersonation.
-`EDITORIAL_HUMAN_REVIEW_CONFIG` is null in ApiModule: no production task
-can read/queue until separately reviewed test-only enablement. Do not confuse
-the presence of registered routes with their activation. No source fields
+`EDITORIAL_HUMAN_REVIEW_CONFIG` is null in the isolated module: no
+production task can read or queue anything. Do not register or activate
+the module without a separate security decision. No source fields
 assert actor, org, target, content digest or image; SQL re-derives these
 under the advisory lock from the native immutable draft. The only accepted
 browser command fields are command_id, expected_seq, action, feedback. 06B-4A
