@@ -87,6 +87,27 @@ export class PostsRepository {
     return result.result;
   }
 
+  // Receipt identity must be bound by an authenticated Editorial bridge.
+  // These inactive methods do not authenticate a reply or expose a route.
+  async importEditorialDecisionResult(scope: EditorialScope, task: string, target: string, eventId: string, eventHash: string, reply: Prisma.InputJsonObject) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_import_editorial_result_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
+        ${eventId}::text, ${eventHash}::text, ${JSON.stringify(reply)}::jsonb
+      ) AS result
+    `;
+    return result.result;
+  }
+
+  async readEditorialReview(scope: EditorialScope, task: string, target: string) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_read_editorial_review_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text
+      ) AS result
+    `;
+    return result.result;
+  }
+
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);
     const unreadMap = new Map<string, number>();
