@@ -160,3 +160,7 @@ The immutable initial `EditorialReviewAnchor` requires exact Editorial-013 snaps
 ### Editorial decision results (06B-3B)
 
 `EditorialDecisionResult` records an immutable verified outcome for an exact outbox event. Only a future authenticated bridge may bind the actual Editorial response to event_id and payload SHA-256; SQL checks transition consistency, not remote identity. Last confirmed state is historical, not a live eligibility check. Accepted same-artifact result opens the next sequence; rejected or divergent response stays blocked. Never use replay flags or a remote final_approved value as a native approval or dispatch authorization. Routes, actor authorization, signed transport, revision installation and publication remain inactive/guarded; see docs/editorial-exchange.md.
+
+### Editorial signed transport (06B-3C, inactive)
+
+\`postmill_read_editorial_delivery_v1\` returns only the pending initial or subsequent same-artifact event after scoped draft/target checks. \`EditorialDeliveryService.attemptOnce\` sends it with signed fixed-origin HTTPS and \`reconcileOnce\` only looks up the immutable Editorial-013 receipt, never resends. Neither method is registered or scheduled; the future caller must derive authenticated human authority, scoped configuration and test target independently. The remote bridge in Editorial Engine requires separate deployment, TLS, restrictive DB access and secrets. A transport receipt is not native approval, dispatch permission or a license to publish.

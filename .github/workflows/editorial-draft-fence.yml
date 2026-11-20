@@ -43,6 +43,8 @@ jobs:
             cat tools/db/editorial-fence-decision-assertions.sql
             cat libraries/nestjs-libraries/src/database/prisma/migrations/20261119160000_editorial_decision_result/migration.sql
             cat tools/db/editorial-fence-result-assertions.sql
+            cat libraries/nestjs-libraries/src/database/prisma/migrations/20261120120000_editorial_delivery_read/migration.sql
+            cat tools/db/editorial-fence-transport-assertions.sql
           } | docker exec -i "$C" psql -X -U postgres -v ON_ERROR_STOP=1
           # Two independent sessions, one org/task; second call waits for
           # the first transaction, then must return the same historical receipt.
