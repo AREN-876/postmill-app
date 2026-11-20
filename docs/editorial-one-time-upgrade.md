@@ -42,9 +42,18 @@ delivery, production permissions, or the user's actual Editorial task #4.
   have clean CI and have been reviewed/merged in a known order. Pin the exact
   fork SHA and resulting digest; no floating `latest` tag. Avoid deploying an
   image simply because its source branch exists.
-- On an isolated full-schema clone, test **the same seven production migrations
-  applied over a 44-migration restored baseline**, not just a fresh empty DB.
-  Check locking/downtime and check for unknown production schema drift.
+- Run the dedicated isolated 44→51 rehearsal in
+  `.github/workflows/editorial-44-to-51-rehearsal.yml`: the real
+  `9f867ba77472b8574d60407112e2caebf5304eb4` 44-migration Prisma tree,
+  synthetic ordinary Post, PostgreSQL 17 `pg_dump -Fc`, full `pg_restore`,
+  then all seven target Prisma migrations, preservation of the ordinary Post,
+  creation of one new nonpublishable DRAFT, and post-upgrade Prisma drift check.
+  Require a **green CI result**, not merely the test's presence in the branch.
+  This matches the names/count of the 44-migration VPS ledger, but the
+  production image's source SHA and contents were not independently confirmed.
+  Before deployment, separately compare the actual production DB schema,
+  migration checksums and custom objects with this tested 44-migration baseline;
+  include lock/downtime estimates and exact migration provenance.
 - Design an authoritative, revocable, **test-only** organization/integration/
   campaign/channel mapping. Never relabel the existing enabled MAX target as
   synthetic merely to pass CI. The schema currently cannot prove test identity
