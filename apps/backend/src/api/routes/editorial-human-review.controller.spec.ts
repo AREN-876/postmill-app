@@ -70,7 +70,7 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   beforeAll(async () => {
     process.env.FRONTEND_URL ||= 'https://example.net';
     const mod = await Test.createTestingModule({ imports: [IsolatedHumanReviewModule] }).compile();
-    app = mod.createNestApplication({ logger: false });
+    app = mod.createNestApplication({ logger: ['error'] });
     app.use(cookieParser());
     await app.listen(0, '127.0.0.1');
     url = await app.getUrl();
