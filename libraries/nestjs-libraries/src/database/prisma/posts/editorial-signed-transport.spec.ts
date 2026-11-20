@@ -1,17 +1,16 @@
 import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  EDITORIAL_LOOKUP_PATH, EDITORIAL_SUBMIT_PATH,
-  EditorialTransportError, editorialWireConfig, editorialPending, signedEditorialRequest,
+  EDITORIAL_LOOKUP_PATH, EDITORIAL_SUBMIT_PATH, EDITORIAL_LOOPBACK_ORIGIN,
+  EditorialTransportError, editorialWireConfig, editorialPending,
+  editorialLoopbackFetch, signedEditorialRequest,
   type EditorialWireConfig,
 } from './editorial-signed-transport';
 import { EditorialDeliveryService } from './editorial-delivery.service';
 import { PostsRepository } from './posts.repository';
 import type { EditorialScope } from './editorial-ingress';
-import { safeFetch } from '../../../dtos/webhooks/safe.fetch';
 
 const cfg: EditorialWireConfig = {
-  origin: 'https://review-bridge.example.net',
   orgId: 'org-a', requestKeyHex: 'a'.repeat(64), responseKeyHex: 'b'.repeat(64),
 };
 const scope: EditorialScope = {
@@ -49,8 +48,9 @@ function mockedPeer(options?: {
 }) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     expect(init?.method).toBe('POST');
-    expect((init as RequestInit & { redirectPolicy?: string })?.redirectPolicy).toBe('error');
-    expect(url).toMatch(/^https:\/\/review-bridge\.example\.net\/internal\/editorial\/v1\/events\/(submit|lookup)$/);
+    expect(init?.redirect).toBe('error');
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:8794\/internal\/editorial\/v1\/events\/(submit|lookup)$/);
     const headers = init?.headers as Record<string, string>;
     const ts = headers['x-edx-timestamp'];
     const nonce = headers['x-edx-nonce'];
@@ -81,7 +81,7 @@ function mockedPeer(options?: {
         'x-edx-response-signature': 'sha256=' + (options?.wrongSignature ? '0'.repeat(64) : mac),
       },
     });
-  }) as typeof safeFetch;
+  }) as typeof editorialLoopbackFetch;
 }
 
 describe('06B-3C signed off-by-default editorial transport', () => {
@@ -120,24 +120,42 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     await expect(signedEditorialRequest(row, cfg, 'submit', mockedPeer(options),
       1795160000000, 'f'.repeat(32))).rejects.toBeInstanceOf(EditorialTransportError);
   });
-  it('refuses wrong key pair, private address, URL path, and cross-org data', () => {
+  it('pins the sole loopback peer and rejects any origin override and cross-org data', () => {
+    expect(editorialWireConfig(cfg).origin).toBe(EDITORIAL_LOOPBACK_ORIGIN);
     for (const config of [
       { ...cfg, responseKeyHex: cfg.requestKeyHex },
-      { ...cfg, origin: 'http://review-bridge.example.net' },
-      { ...cfg, origin: 'https://127.0.0.1' },
-      { ...cfg, origin: 'https://192.168.1.100' },
-      { ...cfg, origin: 'https://review-bridge.example.net.' },
-      { ...cfg, origin: 'https://review-bridge.example.net/elsewhere' },
-      { ...cfg, orgId: 'other' },
+      { ...cfg, origin: 'https://review-bridge.example.net' },
+      { ...cfg, origin: 'http://127.0.0.1:8794' },
+      { ...cfg, origin: 'http://127.0.0.2:8794' },
+      { ...cfg, origin: 'http://169.254.169.254:8794' },
+      { ...cfg, origin: 'http://localhost:8794' },
+      { ...cfg, origin: 'http://127.0.0.1:8794/path' },
     ]) {
-      if (config.orgId !== cfg.orgId) {
-        expect(() => editorialPending(row, config.orgId, '42')).toThrow();
-      } else {
-        expect(() => editorialWireConfig(config)).toThrow();
-      }
+      expect(() => editorialWireConfig(config)).toThrow(EditorialTransportError);
     }
-    expect(() => editorialPending({ ...row, event: { ...payload, binding: { ...payload.binding, is_test: false } } },
-      'org-a', '42')).toThrow();
+    expect(() => editorialPending(row, 'other', '42')).toThrow();
+    expect(() => editorialPending({
+      ...row, event: { ...payload, binding: { ...payload.binding, is_test: false } },
+    }, 'org-a', '42')).toThrow();
+  });
+  it('rejects arbitrary destinations, methods and redirectable requests at the fetch boundary', async () => {
+    for (const url of [
+      'https://review-bridge.example.net/internal/editorial/v1/events/submit',
+      'http://127.0.0.2:8794/internal/editorial/v1/events/submit',
+      'http://localhost:8794/internal/editorial/v1/events/submit',
+      'http://127.0.0.1:8795/internal/editorial/v1/events/submit',
+      'http://127.0.0.1:8794/internal/editorial/v1/events/submit?next=evil',
+      'http://127.0.0.1:8794/admin',
+    ]) {
+      await expect(editorialLoopbackFetch(url, { method: 'POST', redirect: 'error' }))
+        .rejects.toBeInstanceOf(EditorialTransportError);
+    }
+    await expect(editorialLoopbackFetch(EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_SUBMIT_PATH, {
+      method: 'GET', redirect: 'error',
+    })).rejects.toBeInstanceOf(EditorialTransportError);
+    await expect(editorialLoopbackFetch(EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH, {
+      method: 'POST', redirect: 'follow',
+    })).rejects.toBeInstanceOf(EditorialTransportError);
   });
   it('does not resend on an unknown result; separate lookup does not submit', async () => {
     const repo = {
