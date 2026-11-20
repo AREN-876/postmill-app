@@ -154,6 +154,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Editorial 06B-4A focused HTTP authorization regression
+        run: pnpm --dir apps/backend exec vitest run src/api/routes/editorial-human-review.controller.spec.ts
+
       - name: Run tests (Vitest)
         run: pnpm run test
 
