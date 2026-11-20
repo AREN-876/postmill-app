@@ -84,6 +84,20 @@ function mockedPeer(options?: {
 }
 
 describe('06B-3C signed off-by-default editorial transport', () => {
+  it('matches independent Python 014 known-answer vector byte-for-byte', () => {
+    const path = EDITORIAL_LOOKUP_PATH;
+    const ts = '1795160000', nonce = 'f'.repeat(32);
+    const raw = '{"schema_version":1,"org_id":"org-a","task_id":"42","event_id":"' +
+      eid + '","payload_sha256":"' + 'c'.repeat(64) + '"}';
+    const response = '{"schema_version":1,"event_id":"' + eid +
+      '","payload_sha256":"' + 'c'.repeat(64) + '","found":false,"outcome":null}';
+    const requestMac = hmac(cfg.requestKeyHex,
+      ['EDX1', 'REQ', path, ts, nonce, S(raw)].join('\n'));
+    const responseMac = hmac(cfg.responseKeyHex,
+      ['EDX1', 'RESP', path, ts, nonce, S(raw), S(response)].join('\n'));
+    expect(requestMac).toBe('e358bbd1b4acf84d32806b33912ae3a069611fc907311aaf37affdb2357ba527');
+    expect(responseMac).toBe('0c1935aa04433d0bd44d660a91b0fd1796a862d9ddd988325d28346469179cc4');
+  });
   it('authenticates one exact request and signed outcome without network in tests', async () => {
     const fetcher = mockedPeer();
     const result = await signedEditorialRequest(row, cfg, 'submit', fetcher,
