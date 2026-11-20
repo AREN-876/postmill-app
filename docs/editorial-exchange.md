@@ -69,3 +69,47 @@ Postmill's \`postmill_read_editorial_delivery_v1\` reads exactly one pending imm
 The fixed public HTTPS origin (no path/query, credentials or private IP) is supplied from trusted configuration, never from user text or task JSON. Every hop uses shared \`safeFetch\` DNS/IP protection. The wire has two different 256-bit random HMAC secrets, domain-separated request/response MAC, timestamp (±120 s), fresh nonce, exact 013 event id and PostgreSQL JSONB payload digest. The receiving bridge validates the digest using PostgreSQL itself. Origin must not redirect at the TLS proxy. The response MAC includes the original request SHA and nonce; Postmill accepts only 200, application/json, no-store, same URL, exact event/hash, bounded body and both permission flags false. Do not confuse authentication of the remote bridge with RBAC authentication of a human editor.
 
 The SQL 013 outcome and immutable receipt do not grant image cost, publication or scheduling authority. Future activation requires a dedicated least-privilege Editorial role and reviewed ACL/grants, loopback TLS proxy, secure configuration/secret rotation, actual end-to-end DB+HTTPS test, authorized Postmill human workflow, outbox lease/reconciliation design, authoritative live state validation, and production publication guards. No credential creation, deployment, migration apply, open API or paid call is done here. Synthetic tests and the PostgreSQL fixture are not evidence of the currently installed VPS configuration.
+
+
+## 06B-4A: dashboard human review (disabled by default)
+
+The **session** API is distinct from the private Editorial machine ingress and
+the signed 06B-3C remote bridge. New routes:
+`GET /editorial/review/:postId/:taskId` reads the current frozen native DRAFT,
+its three text parts and historical Editorial-013 confirmation. It does not
+assert that the remote state is currently synchronized.
+`POST /editorial/review/:postId/:taskId/decisions` accepts ONLY
+`{command_id,expected_seq,action,feedback}`. The `command_id` is a persistent
+client-generated UUID retry identity; `expected_seq` is the string seen on GET.
+Valid actions are `approve_text`, `request_text_changes`, `reject` and
+`request_image`; only text-change feedback may be nonempty.
+
+Both routes use ApiModule's **existing** `authenticatedController` registry,
+AuthMiddleware, CsrfMiddleware and OrgRbacGuard; GET requires `posts:read`,
+POST `posts:update`. Additionally, the controller rejects header/API credentials,
+impersonation and requests without the `auth` cookie; the service checks
+actual organization membership and permissions even for platform admins.
+The actor ID is the resolved server-side user. An operator must separately
+approve a non-null `EDITORIAL_HUMAN_REVIEW_CONFIG` limited to one test org
+and native MAX target. The production value is **null**, so a route registered
+in code returns disabled without DB access. No remote sender or AI worker is
+registered by this change.
+
+SQL functions `postmill_read_editorial_human_v1` and
+`postmill_queue_editorial_human_v1` derive the immutable scope and target from
+the Postmill receipt, lock the org/task, revalidate DRAFT/target, and delegate to
+existing 06B-3B review/queue functions. The browser cannot supply text/image
+hashes, organization, actor or live target. A queued decision returns
+`status=queued/unconfirmed`, never native Post approval, payment approval,
+a completed Editorial decision, schedule or publication. Invalid, stale,
+cross-tenant, changed-target and duplicate-command-conflict requests fail
+without publishing; exact retries reuse the historical event. A failed audit
+write does not requeue a paid or remote operation. The audit metadata contains
+event/task/command IDs and action only, no text, feedback, provider secrets
+or signed transport keys.
+
+The included PG17 fixture proves database scope/race/idempotency checks on
+synthetic data, and the HTTP tests cover actual cookie AuthMiddleware/CSRF,
+RBAC, extra body fields, viewer/cross-org rejection and unknown outcomes.
+These are **not** a live Postmill-Editorial integration test. Activation of
+any bridge, migrations or production deployment remains separately gated.
