@@ -95,7 +95,7 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
     const repository = Object.assign(Object.create(PostsRepository.prototype), {
       _post: prisma,
     }) as PostsRepository;
-    const module = await Test.createTestingModule({
+    const testingModule = await Test.createTestingModule({
       controllers: [EditorialExchangeController],
       providers: [
         EditorialExchangeService,
@@ -110,7 +110,7 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
         } },
       ],
     }).compile();
-    app = module.createNestApplication({ rawBody: true, logger: false });
+    app = testingModule.createNestApplication({ rawBody: true, logger: false });
     await app.listen(0, '127.0.0.1');
     url = (await app.getUrl()) + '/internal/editorial/v1/drafts';
   }, 30_000);
