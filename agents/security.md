@@ -331,8 +331,10 @@ The optional sender in \`posts/editorial-signed-transport.ts\` is restricted to 
 
 ### Dashboard Editorial review (06B-4A, default disabled)
 
-`EditorialHumanReviewController` is in `ApiModule.authenticatedController`
-so standard AuthMiddleware and CsrfMiddleware cover every GET/POST. It has
+`EditorialHumanReviewController` is in the isolated, **not imported**
+`EditorialHumanReviewModule.authenticatedController` registry, where standard
+AuthMiddleware and CsrfMiddleware cover every GET/POST upon reviewed activation.
+It is NOT registered in AppModule or ApiModule. It has
 `OrgRbacGuard` plus route-specific `@RequirePermission('posts','read|update')`;
 the backend service independently checks session membership even for
 super-admin and refuses header auth, generic API keys or impersonation.
