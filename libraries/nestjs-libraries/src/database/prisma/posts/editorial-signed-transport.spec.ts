@@ -49,6 +49,7 @@ function mockedPeer(options?: {
 }) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     expect(init?.method).toBe('POST');
+    expect((init as RequestInit & { redirectPolicy?: string })?.redirectPolicy).toBe('error');
     expect(url).toMatch(/^https:\/\/review-bridge\.example\.net\/internal\/editorial\/v1\/events\/(submit|lookup)$/);
     const headers = init?.headers as Record<string, string>;
     const ts = headers['x-edx-timestamp'];
@@ -124,6 +125,8 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       { ...cfg, responseKeyHex: cfg.requestKeyHex },
       { ...cfg, origin: 'http://review-bridge.example.net' },
       { ...cfg, origin: 'https://127.0.0.1' },
+      { ...cfg, origin: 'https://192.168.1.100' },
+      { ...cfg, origin: 'https://review-bridge.example.net.' },
       { ...cfg, origin: 'https://review-bridge.example.net/elsewhere' },
       { ...cfg, orgId: 'other' },
     ]) {

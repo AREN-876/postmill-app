@@ -102,6 +102,8 @@ export function webhookSignature(rawBody: string): string {
 type SafeFetchInit = RequestInit & {
   timeoutMs?: number;
   ipFamily?: SafeFetchIpFamily;
+  /** Reject ALL HTTP redirects before replaying credentials to another URL. */
+  redirectPolicy?: 'follow' | 'error';
 };
 
 export async function safeFetch(
@@ -139,6 +141,7 @@ export async function safeFetch(
     const {
       timeoutMs: _timeoutMs,
       ipFamily: _ipFamily,
+      redirectPolicy: _redirectPolicy,
       ...requestInit
     } = currentInit || {};
     try {
@@ -157,6 +160,11 @@ export async function safeFetch(
     }
 
     if (response.status >= 300 && response.status < 400) {
+      // Strict signed transports may not follow ANY 3xx, even same-origin:
+      // the signature is scoped to the exact URL, nonce and request bytes.
+      if (init?.redirectPolicy === 'error') {
+        throw new Error('Redirect rejected');
+      }
       const location = response.headers.get('location');
       if (!location) {
         throw new Error('Redirect without Location');

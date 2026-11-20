@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import { safeFetch } from '../../../dtos/webhooks/safe.fetch';
 
 export const EDITORIAL_SUBMIT_PATH = '/internal/editorial/v1/events/submit';
@@ -77,7 +78,8 @@ export function editorialWireConfig(config: EditorialWireConfig): {
   try { u = new URL(config.origin); } catch { throw new EditorialTransportError(); }
   // safeFetch independently verifies public IPs on every DNS lookup.
   if (u.protocol !== 'https:' || u.port || u.username || u.password || u.pathname !== '/' ||
-      u.search || u.hash || !u.hostname.includes('.') || !/^[a-z0-9.-]+$/.test(u.hostname) ||
+      u.search || u.hash || !u.hostname.includes('.') || isIP(u.hostname) !== 0 ||
+      u.hostname.endsWith('.') || !/^[a-z0-9.-]+$/.test(u.hostname) ||
       /\.\./.test(u.hostname) || u.hostname.startsWith('-') || u.hostname.endsWith('-')) {
     throw new EditorialTransportError();
   }
@@ -151,7 +153,7 @@ export async function signedEditorialRequest(
   let response: Response;
   try {
     response = await fetcher(url, {
-      method: 'POST', timeoutMs: 8_000,
+      method: 'POST', timeoutMs: 8_000, redirectPolicy: 'error',
       headers: {
         'content-type': 'application/json',
         'x-edx-timestamp': timestamp,
