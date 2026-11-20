@@ -15,7 +15,8 @@ import {
   EditorialHumanReviewService, EDITORIAL_HUMAN_REVIEW_CONFIG,
 } from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
 import { EditorialHumanReviewController } from './editorial-human-review.controller';
-import { authenticatedController } from '../api.module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const posts = {
   readEditorialHuman: vi.fn(),
@@ -100,7 +101,10 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   });
 
   it('is registered for existing session/CSRF middleware; no machine transport invocation', () => {
-    expect(authenticatedController).toContain(EditorialHumanReviewController);
+    const source = fs.readFileSync(path.resolve(__dirname, '../api.module.ts'), 'utf8');
+    expect(source).toContain('  EditorialHumanReviewController,');
+    expect(source).toContain('consumer.apply(AuthMiddleware).forRoutes(...authenticatedController)');
+    expect(source).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
   });
   it('permits current org editor to read verified text status and queue once', async () => {
     const r = await read();
