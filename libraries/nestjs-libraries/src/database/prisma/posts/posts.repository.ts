@@ -121,7 +121,7 @@ export class PostsRepository {
   }
 
   async queueEditorialHuman(orgId: string, postId: string, task: string,
-    target: string, actor: string, command: Prisma.InputJsonObject) {
+    target: string, actor: string, command: { command_id: string; expected_seq: string; action: string; feedback: string }) {
     const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
       SELECT public.postmill_queue_editorial_human_v1(
         ${orgId}::text, ${postId}::text, ${task}::text,
