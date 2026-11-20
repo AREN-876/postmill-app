@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Read-only VPS inventory for Editorial 06B. Never installs, migrates or deploys.
+
+This probes the *running* containers, not a target image's schema or its
+readiness to deploy. Does not verify credentials, Postmill route activation,
+MAX safety, backup integrity, or Editorial/PG end-to-end behavior.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+POSTMILL = "postmill-postmill-1"
+POSTGRES = "postmill-postgres-1"
+MIGRATIONS = (
+    "20261119120000_editorial_draft_fence",
+    "20261119130000_editorial_draft_receipt",
+    "20261119140000_editorial_exchange_target",
+    "20261119150000_editorial_decision_outbox",
+    "20261119160000_editorial_decision_result",
+    "20261120120000_editorial_delivery_read",
+    "20261120130000_editorial_human_review",
+)
+
+# Fixed SQL, fixed containers, no user-supplied SQL, credentials, or queries.
+# psql runs in a read-only transaction in the existing PostgreSQL container.
+EXPECTED = ",\n".join("('%s')" % name for name in MIGRATIONS)
+SQL = """
+BEGIN READ ONLY;
+SET LOCAL statement_timeout = '8s';
+WITH expected(name) AS (
+ VALUES %s
+), migrations AS (
+ SELECT e.name, CASE
+   WHEN m.migration_name IS NULL THEN 'NOT_APPLIED'
+   WHEN m.finished_at IS NOT NULL THEN 'APPLIED'
+   WHEN m.rolled_back_at IS NOT NULL THEN 'ROLLED_BACK'
+   ELSE 'INCOMPLETE'
+ END AS status
+ FROM expected e
+ LEFT JOIN LATERAL (
+   SELECT migration_name, finished_at, rolled_back_at
+   FROM public."_prisma_migrations"
+   WHERE migration_name = e.name
+   ORDER BY started_at DESC
+   LIMIT 1
+ ) m ON true
+)
+SELECT json_build_object(
+ 'database', current_database(),
+ 'postgres_version', current_setting('server_version'),
+ 'completed_migrations',
+   (SELECT count(*) FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL),
+ 'unfinished_migrations',
+   (SELECT count(*) FROM public."_prisma_migrations"
+    WHERE finished_at IS NULL AND rolled_back_at IS NULL),
+ 'editorial_migrations',
+   (SELECT json_object_agg(name,status ORDER BY name) FROM migrations),
+ 'managed_draft_column',
+   EXISTS (SELECT 1 FROM information_schema.columns
+           WHERE table_schema='public' AND table_name='Post'
+             AND column_name='editorialTaskId'),
+ 'editorial_receipts',
+   to_regclass('public."EditorialDraftReceipt"') IS NOT NULL,
+ 'enabled_max_integrations',
+   (SELECT count(*) FROM public."Integration"
+    WHERE "providerIdentifier"='max'
+      AND NOT disabled AND "deletedAt" IS NULL),
+ 'active_campaigns',
+   (SELECT count(*) FROM public."Campaign"
+    WHERE NOT archived AND "deletedAt" IS NULL)
+)::text;
+ROLLBACK;
+""" % EXPECTED
+
+DOCKER = ("docker", "--host=unix:///var/run/docker.sock")
+STATUS_FORMAT = "{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}"
+IMAGE_FORMAT = "{{.Config.Image}}"
+PSQL = (
+    *DOCKER, "exec", "-i", "-u", "postgres", POSTGRES, "sh", "-c",
+    'exec psql -X -w -U "$POSTGRES_USER" -d "$POSTGRES_DB" '
+    '-v ON_ERROR_STOP=1 -P pager=off -Atq',
+)
+
+
+class Refused(Exception):
+    """Fail without logging potentially sensitive Docker/psql diagnostics."""
+
+
+def invoke(args: tuple[str, ...], *, sql: str | None = None) -> str:
+    # Never inherit a remote Docker context or arbitrary client-config path.
+    env = os.environ.copy()
+    for name in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS",
+                 "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        env.pop(name, None)
+    try:
+        proc = subprocess.run(
+            list(args), input=sql, capture_output=True, text=True,
+            timeout=20, env=env, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refused("read-only probe failed (tool unavailable or timeout)") from exc
+    if proc.returncode:
+        # Do not echo Docker or SQL stderr: it can contain private configuration.
+        raise Refused("read-only Docker/PostgreSQL probe failed")
+    return proc.stdout.strip()
+
+
+def get_status(container: str) -> dict[str, str | bool]:
+    raw = invoke((*DOCKER, "inspect", "--format", STATUS_FORMAT, container))
+    fields = raw.split("|")
+    if len(fields) != 2 or fields[0] not in ("true", "false"):
+        raise Refused("unexpected Docker container status")
+    return {"running": fields[0] == "true", "health": fields[1]}
+
+
+def collect() -> dict[str, object]:
+    postmill = get_status(POSTMILL)
+    postgres = get_status(POSTGRES)
+    postmill["image"] = invoke((*DOCKER, "inspect", "--format", IMAGE_FORMAT, POSTMILL))
+    if not postmill["image"] or not postgres["running"]:
+        raise Refused("Postmill image or PostgreSQL container unavailable")
+    raw = invoke(PSQL, sql=SQL)
+    try:
+        db = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise Refused("unexpected PostgreSQL inventory response") from exc
+    if not isinstance(db, dict) or db.get("database") != "postmill-db-local":
+        raise Refused("unexpected database identity; refusing to assess")
+    migrations = db.get("editorial_migrations")
+    if not isinstance(migrations, dict) or set(migrations) != set(MIGRATIONS):
+        raise Refused("unexpected editorial migration inventory")
+    valid = {"APPLIED", "NOT_APPLIED", "INCOMPLETE", "ROLLED_BACK"}
+    if any(value not in valid for value in migrations.values()):
+        raise Refused("invalid editorial migration state")
+
+    # "Ready for test activation" is intentionally not inferred from SQL alone.
+    db["schema_installed"] = (
+        all(value == "APPLIED" for value in migrations.values())
+        and db.get("managed_draft_column") is True
+        and db.get("editorial_receipts") is True
+        and db.get("unfinished_migrations") == 0
+    )
+    return {
+        "mode": "read_only",
+        "postmill": postmill,
+        "postgres": postgres,
+        "inventory": db,
+        "runtime_module_activation": "NOT_VERIFIED",
+        "isolated_max_target_and_campaign": "NOT_VERIFIED",
+        "editorial_connection": "NOT_VERIFIED",
+        "backup_restore_test": "NOT_VERIFIED",
+        "approved_to_deploy": False,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", required=True,
+                        help="read-only inventory; no changes permitted")
+    args = parser.parse_args()
+    if not args.check:
+        return 2
+    try:
+        result = collect()
+    except Refused as exc:
+        print("EDITORIAL_READINESS_BLOCKED: " + str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    # No green-light exit status: successful inventory is NOT deployment approval.
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
