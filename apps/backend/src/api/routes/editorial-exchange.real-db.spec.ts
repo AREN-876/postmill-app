@@ -148,8 +148,8 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
     const current = await get.json();
     expect(current.native_verified).toBe(true);
     expect(current.receipt).toEqual(result.receipt);
-    expect(current.publishable).toBe(false);
-    expect(current.dispatch_authorized).toBe(false);
+    expect(current.receipt.publishable).toBe(false);
+    expect(current.receipt.dispatch_authorized).toBe(false);
 
     const rows = await prisma.$queryRaw<Array<{
       id: string; state: string; approvalStatus: string | null;
