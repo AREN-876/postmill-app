@@ -3,6 +3,7 @@ import cookieParser from 'cookie-parser';
 import { Global, MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthMiddleware } from '@postmill-ai/backend/services/auth/auth.middleware';
 import { CsrfMiddleware } from '@postmill-ai/backend/services/auth/csrf.middleware';
@@ -33,11 +34,18 @@ const command = {
   expected_seq: '0', action: 'approve_text', feedback: '',
 };
 
+// Vitest transpilation does not emit constructor design:paramtypes for the
+// production middleware; keep its actual use() logic, inject the fake resolver
+// explicitly in this isolated HTTP harness.
+class TestSessionAuthMiddleware extends AuthMiddleware {
+  constructor() { super(resolver as never); }
+}
 @Global()
 @Module({
   controllers: [EditorialHumanReviewController],
   providers: [
-    EditorialHumanReviewService, OrgRbacGuard,
+    EditorialHumanReviewService,
+    { provide: OrgRbacGuard, useValue: new OrgRbacGuard(new Reflector(), roles as never, audit as never) },
     { provide: PostsRepository, useValue: posts },
     { provide: RolesService, useValue: roles },
     { provide: AuditService, useValue: audit },
@@ -48,7 +56,7 @@ const command = {
 class IsolatedHumanReviewModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // Same two middleware as ApiModule.authenticatedController.
-    consumer.apply(AuthMiddleware).forRoutes(EditorialHumanReviewController);
+    consumer.apply(TestSessionAuthMiddleware).forRoutes(EditorialHumanReviewController);
     consumer.apply(CsrfMiddleware).forRoutes(EditorialHumanReviewController);
   }
 }
@@ -70,7 +78,7 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   beforeAll(async () => {
     process.env.FRONTEND_URL ||= 'https://example.net';
     const mod = await Test.createTestingModule({ imports: [IsolatedHumanReviewModule] }).compile();
-    app = mod.createNestApplication({ logger: ['error'] });
+    app = mod.createNestApplication({ logger: false });
     app.use(cookieParser());
     await app.listen(0, '127.0.0.1');
     url = await app.getUrl();
