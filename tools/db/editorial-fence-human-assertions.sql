@@ -80,4 +80,69 @@ BEGIN
   RAISE EXCEPTION 'queue wrote extra events';
  END IF;
 END $$;
+-- Terminal decisions, stale sequence and subtransaction rollback.
+DO $
+DECLARE p jsonb:=pg_temp.prepared_draft('199'); s jsonb:=p->'scope';
+ initial jsonb; st jsonb; pid text; result jsonb; event_id text; event jsonb;
+ cmd jsonb:=jsonb_build_object('command_id','33333333-3333-4333-8333-333333333333',
+  'expected_seq','0','action','reject','feedback','');
+BEGIN
+ initial:=postmill_exchange_create_v1(p,'test-channel');
+ pid:=initial->'receipt'->'binding'->>'post_id';
+ st:=pg_temp.initial_review(initial);
+ PERFORM postmill_anchor_editorial_review_v1(s,'199','test-channel',st);
+ BEGIN
+  PERFORM postmill_queue_editorial_human_v1('org-a',pid,'199','test-channel',
+   'editor-a',jsonb_set(cmd,'{expected_seq}','"1"'));
+  RAISE EXCEPTION 'stale human sequence allowed';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL;
+ END;
+ result:=postmill_queue_editorial_human_v1('org-a',pid,'199','test-channel','editor-a',cmd);
+ event_id:=result->>'event_id';
+ SELECT payload INTO event FROM "EditorialDecisionOutbox" WHERE "eventId"=event_id;
+ st:=postmill_editorial_next_state_v1(st,event);
+ IF st IS NULL OR st->'rejected' IS DISTINCT FROM 'true'::jsonb THEN
+  RAISE EXCEPTION 'expected terminal reject transition not computed';
+ END IF;
+ PERFORM postmill_import_editorial_result_v1(s,'199','test-channel',event_id,
+   (SELECT "payloadHash" FROM "EditorialDecisionOutbox" WHERE "eventId"=event_id),
+   jsonb_build_object('status','accepted','reason',NULL,'state',st,
+    'dispatch_authorized',false,'publishable',false,'newly_applied',false,'replay',true));
+ IF (postmill_queue_editorial_human_v1('org-a',pid,'199','test-channel',
+   'editor-a',cmd))->>'event_id'<>event_id THEN
+  RAISE EXCEPTION 'terminal decision idempotent replay changed event';
+ END IF;
+ BEGIN
+  PERFORM postmill_queue_editorial_human_v1('org-a',pid,'199','test-channel','editor-a',
+   jsonb_build_object('command_id','44444444-4444-4444-8444-444444444444',
+     'expected_seq','1','action','approve_text','feedback',''));
+  RAISE EXCEPTION 'terminal rejection recovery incorrectly allowed';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL;
+ END;
+ IF (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)<>1 THEN
+  RAISE EXCEPTION 'terminal rejection emitted a second decision';
+ END IF;
+END $;
+DO $
+DECLARE p jsonb:=pg_temp.prepared_draft('200'); s jsonb:=p->'scope';
+ initial jsonb; pid text;
+ cmd jsonb:=jsonb_build_object('command_id','55555555-5555-4555-8555-555555555555',
+  'expected_seq','0','action','approve_text','feedback','');
+BEGIN
+ initial:=postmill_exchange_create_v1(p,'test-channel');
+ pid:=initial->'receipt'->'binding'->>'post_id';
+ PERFORM postmill_anchor_editorial_review_v1(s,'200','test-channel',pg_temp.initial_review(initial));
+ BEGIN
+  PERFORM postmill_queue_editorial_human_v1('org-a',pid,'200','test-channel','editor-a',cmd);
+  RAISE EXCEPTION 'forced rollback of same transaction';
+ EXCEPTION WHEN raise_exception THEN NULL;
+ END;
+ IF EXISTS(SELECT 1 FROM "EditorialDecisionOutbox" WHERE "postId"=pid) THEN
+  RAISE EXCEPTION 'human queue survived transaction rollback';
+ END IF;
+ IF (postmill_queue_editorial_human_v1('org-a',pid,'200','test-channel',
+   'editor-a',cmd))->'newly_queued' IS DISTINCT FROM 'true'::jsonb THEN
+  RAISE EXCEPTION 'fresh queue after rollback failed';
+ END IF;
+END $;
 SELECT 'POSTMILL_EDITORIAL_HUMAN_REVIEW_OK';
