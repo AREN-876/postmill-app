@@ -89,10 +89,6 @@ import {
   AdminProvidersController,
 } from '@postmill-ai/backend/api/routes/providers.controller';
 import { AdminOrgsController } from '@postmill-ai/backend/api/routes/admin.orgs.controller';
-import { EditorialHumanReviewController } from '@postmill-ai/backend/api/routes/editorial-human-review.controller';
-import {
-  EDITORIAL_HUMAN_REVIEW_CONFIG, EditorialHumanReviewService,
-} from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
 import { InngestModule } from '@postmill-ai/nestjs-libraries/inngest/inngest.module';
 import { ReplicateStudioModule } from '@postmill-ai/nestjs-libraries/media/replicate-studio/replicate-studio.module';
 import { ReplicateStudioController } from './routes/replicate-studio.controller';
@@ -128,7 +124,6 @@ export const authenticatedController = [
   SocialCommentsController,
   CampaignsController,
   PostsController,
-  EditorialHumanReviewController,
   MediaController,
   FilesController,
   BillingController,
@@ -214,9 +209,6 @@ export const authenticatedController = [
     AuthGuard,
     PoliciesGuard,
     OrgRbacGuard,
-    EditorialHumanReviewService,
-    // Deliberately disabled: no target, no org allowlist and no remote dispatch.
-    { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useValue: null },
     PermissionsService,
     CodesService,
     IntegrationManager,
