@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Header, Param, Post, Body, Req, UseGuards,
+  Controller, Get, Header, HttpCode, Param, Post, Body, Req, UseGuards,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -48,6 +48,7 @@ export class EditorialHumanReviewController {
   }
 
   @Post(':postId/:taskId/decisions')
+  @HttpCode(200)
   @Header('Cache-Control', 'no-store')
   @RequirePermission('posts', 'update')
   queue(
