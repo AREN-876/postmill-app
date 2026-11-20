@@ -1,9 +1,12 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { isIP } from 'node:net';
-import { safeFetch } from '../../../dtos/webhooks/safe.fetch';
+import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici';
 
 export const EDITORIAL_SUBMIT_PATH = '/internal/editorial/v1/events/submit';
 export const EDITORIAL_LOOKUP_PATH = '/internal/editorial/v1/events/lookup';
+// Fixed numeric loopback only. No DNS, configurable URL, public origin or TLS
+// proxy. Receiver MUST share the Postmill container's network namespace;
+// 127.0.0.1 otherwise fails closed (never point this at a host/public port).
+export const EDITORIAL_LOOPBACK_ORIGIN = 'http://127.0.0.1:8794';
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ORG = /^[A-Za-z0-9_.:-]{1,200}$/;
@@ -22,8 +25,6 @@ type ReplyOutcome = {
 };
 
 export type EditorialWireConfig = {
-  /** Pin a specific public HTTPS origin; never use a task/user-supplied URL. */
-  origin: string;
   requestKeyHex: string;
   responseKeyHex: string;
   orgId: string;
@@ -66,29 +67,36 @@ function sha(s: string): string {
 function mac(key: Buffer, message: string): Buffer {
   return createHmac('sha256', key).update(message, 'ascii').digest();
 }
+/** No network destinations are read from config, user input or task JSON. */
 export function editorialWireConfig(config: EditorialWireConfig): {
-  origin: string; requestKey: Buffer; responseKey: Buffer; orgId: string;
+  origin: typeof EDITORIAL_LOOPBACK_ORIGIN;
+  requestKey: Buffer; responseKey: Buffer; orgId: string;
 } {
   if (!config || !SHA.test(config.requestKeyHex) ||
       !SHA.test(config.responseKeyHex) || config.requestKeyHex === config.responseKeyHex ||
-      !ORG.test(config.orgId) || typeof config.origin !== 'string') {
-    throw new EditorialTransportError();
-  }
-  let u: URL;
-  try { u = new URL(config.origin); } catch { throw new EditorialTransportError(); }
-  // safeFetch independently verifies public IPs on every DNS lookup.
-  if (u.protocol !== 'https:' || u.port || u.username || u.password || u.pathname !== '/' ||
-      u.search || u.hash || !u.hostname.includes('.') || isIP(u.hostname) !== 0 ||
-      u.hostname.endsWith('.') || !/^[a-z0-9.-]+$/.test(u.hostname) ||
-      /\.\./.test(u.hostname) || u.hostname.startsWith('-') || u.hostname.endsWith('-')) {
+      !ORG.test(config.orgId) || Object.hasOwn(config, 'origin')) {
     throw new EditorialTransportError();
   }
   return {
-    origin: u.origin, orgId: config.orgId,
+    origin: EDITORIAL_LOOPBACK_ORIGIN, orgId: config.orgId,
     requestKey: Buffer.from(config.requestKeyHex, 'hex'),
     responseKey: Buffer.from(config.responseKeyHex, 'hex'),
   };
 }
+
+/** Dedicated internal transport. Never relax shared safeFetch SSRF policy.
+ * Only these two literal loopback URLs can reach undici. No redirects.
+ * No callers outside this signed Editorial path should use this adapter.
+ */
+export async function editorialLoopbackFetch(url: string, init?: RequestInit): Promise<Response> {
+  if ((url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_SUBMIT_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH) ||
+      init?.method !== 'POST' || init.redirect !== 'error') {
+    throw new EditorialTransportError();
+  }
+  return await undiciFetch(url, init as UndiciRequestInit) as unknown as Response;
+}
+
 export function editorialPending(row: unknown, orgId: string, taskId: string): EditorialPending {
   if (!exact(row, ['schema_version', 'org_id', 'task_id', 'event_id',
     'payload_sha256', 'event', 'dispatch_authorized', 'publishable']) ||
@@ -128,7 +136,7 @@ function responseMessage(path: string, timestamp: string, nonce: string,
 export async function signedEditorialRequest(
   pending: EditorialPending, config: EditorialWireConfig,
   operation: 'submit' | 'lookup',
-  fetcher: typeof safeFetch = safeFetch,
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
   nowMs: number = Date.now(),
   nonce: string = randomBytes(16).toString('hex'),
 ): Promise<EditorialWireResponse> {
@@ -153,7 +161,7 @@ export async function signedEditorialRequest(
   let response: Response;
   try {
     response = await fetcher(url, {
-      method: 'POST', timeoutMs: 8_000, redirectPolicy: 'error',
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8_000),
       headers: {
         'content-type': 'application/json',
         'x-edx-timestamp': timestamp,
@@ -214,7 +222,7 @@ export async function signedEditorialRequest(
     checkedOutcome(parsed.outcome);
     return parsed as EditorialWireResponse;
   } catch {
-    // Transport expiry, timeout, bad/unsigned response, DNS or DB error:
+    // Transport expiry, timeout, bad/unsigned response or DB error:
     // UNKNOWN, never implicit retry, never "rejected", never approval.
     throw new EditorialTransportError();
   }
