@@ -16,7 +16,7 @@ import {
 } from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
 import { EditorialHumanReviewController } from './editorial-human-review.controller';
 import fs from 'node:fs';
-import path from 'node:path';
+import nodePath from 'node:path';
 
 const posts = {
   readEditorialHuman: vi.fn(),
@@ -101,7 +101,7 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   });
 
   it('is registered for existing session/CSRF middleware; no machine transport invocation', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../api.module.ts'), 'utf8');
+    const source = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
     expect(source).toContain('  EditorialHumanReviewController,');
     expect(source).toContain('consumer.apply(AuthMiddleware).forRoutes(...authenticatedController)');
     expect(source).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
