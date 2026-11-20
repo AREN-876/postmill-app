@@ -66,9 +66,9 @@ Paired receiver: AREN-876/max-editorial-engine issue #45 / draft PR #46; see its
 
 Postmill's \`postmill_read_editorial_delivery_v1\` reads exactly one pending immutable \`EditorialDecisionOutbox\` record only after current native DRAFT/target verification. It never claims/deletes/times out a decision or changes native approvals. \`EditorialDeliveryService\` is not registered anywhere: no Inngest job, cron, route or automatic invocation. A separately authorized operator flow can explicitly call \`attemptOnce\` (single POST) or \`reconcileOnce\` (read-only lookup) with trusted scope/target and approved service configuration. **Neither has implicit retry**. Any timeout, unsigned/wrong event reply, network failure, 5xx or ambiguous result stays pending. A signed lookup returning found=false means UNKNOWN, not rejected. The SQL import function from 06B-3B remains the final state-transition gate.
 
-The fixed public HTTPS origin (no path/query, credentials or private IP) is supplied from trusted configuration, never from user text or task JSON. Every hop uses shared \`safeFetch\` DNS/IP protection. The wire has two different 256-bit random HMAC secrets, domain-separated request/response MAC, timestamp (±120 s), fresh nonce, exact 013 event id and PostgreSQL JSONB payload digest. The receiving bridge validates the digest using PostgreSQL itself. Origin must not redirect at the TLS proxy. The response MAC includes the original request SHA and nonce; Postmill accepts only 200, application/json, no-store, same URL, exact event/hash, bounded body and both permission flags false. Do not confuse authentication of the remote bridge with RBAC authentication of a human editor.
+**06B-local revision (single VPS only):** The original public HTTPS/DNS proxy design is superseded before activation. The sender now pins the literal `http://127.0.0.1:8794` and rejects all configurable origins. Only two exact POST paths can be requested; a dedicated loopback-only fetch never relaxes the global `safeFetch` SSRF policy, and redirects are forbidden. The receiver stays bound to `127.0.0.1:8794`. These processes must share the **Postmill container network namespace**, for example via a separately approved sidecar with Docker Compose `network_mode: service:postmill`, not merely run on the same host or Docker bridge. No port mapping, host/public listener, external reverse proxy or DNS is needed; absent matching namespace, delivery fails closed. HMAC retains independent 256-bit request/response keys, bounded timestamps, CSPRNG nonce, exact event ID, canonical PostgreSQL JSONB digest and signed bounded response. Human RBAC remains distinct.
 
-The SQL 013 outcome and immutable receipt do not grant image cost, publication or scheduling authority. Future activation requires a dedicated least-privilege Editorial role and reviewed ACL/grants, loopback TLS proxy, secure configuration/secret rotation, actual end-to-end DB+HTTPS test, authorized Postmill human workflow, outbox lease/reconciliation design, authoritative live state validation, and production publication guards. No credential creation, deployment, migration apply, open API or paid call is done here. Synthetic tests and the PostgreSQL fixture are not evidence of the currently installed VPS configuration.
+The SQL 013 outcome and immutable receipt do not grant image cost, publication or scheduling authority. Future activation requires verified Editorial-014B least-privilege role/ACL, a sidecar sharing Postmill's network namespace, secure configuration/secret rotation, an actual end-to-end loopback+PostgreSQL test, authorized Postmill human workflow, outbox reconciliation, authoritative live state validation, and production publication guards. No credential creation, deployment, migration apply, open API or paid call is done here. Synthetic tests and the PostgreSQL fixture are not evidence of the currently installed VPS configuration.
 
 
 ## 06B-4A: dashboard human review (disabled by default)
@@ -115,3 +115,27 @@ synthetic data, and the HTTP tests cover actual cookie AuthMiddleware/CSRF,
 RBAC, extra body fields, viewer/cross-org rejection and unknown outcomes.
 These are **not** a live Postmill-Editorial integration test. Activation of
 any bridge, migrations or production deployment remains separately gated.
+
+## 06B-local: shared-network-namespace deployment contract (inactive)
+
+This is **not** a general private-network URL allowlist. The sender is hardcoded
+to `http://127.0.0.1:8794`; changing `SSRF_ALLOWED_PRIVATE_CIDRS`, weakening
+`safeFetch`, using a Docker service name/private IP, or routing through the
+public nginx reverse proxy is prohibited.
+
+The separately approved receiver should be a small non-privileged sidecar,
+isolated from Postmill's filesystem and credentials and sharing **network only**
+(e.g. Docker Compose `network_mode: service:postmill`, with no `ports` and
+no host networking). It must retain the restricted Editorial database login,
+single disposable test org, checked `edx_bridge` functions, independent HMAC
+keys stored outside git/logs, bounded requests and loopback bind. Do not
+install Python inside Postmill's image or change the general SSRF filter.
+
+This reduces network components, but **does not complete activation**:
+machine delivery and human review remain unregistered, runtime config null,
+no sidecar/credentials/automatic sender are installed by this PR. No VPS,
+PostgreSQL, MAX or paid AI calls in CI. Before any runtime installation the
+operator must separately approve a test-only deployment and real loopback
+HTTP + PostgreSQL + Postmill end-to-end idempotency tests (lost response,
+cross-org denial, wrong MAC, stale target). Unknown outcome remains queued
+and unconfirmed; no implicit paid retry or publication.
