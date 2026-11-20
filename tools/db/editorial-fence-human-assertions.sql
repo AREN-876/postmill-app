@@ -81,7 +81,7 @@ BEGIN
  END IF;
 END $$;
 -- Terminal decisions, stale sequence and subtransaction rollback.
-DO $
+DO $$
 DECLARE p jsonb:=pg_temp.prepared_draft('199'); s jsonb:=p->'scope';
  initial jsonb; st jsonb; pid text; result jsonb; event_id text; event jsonb;
  cmd jsonb:=jsonb_build_object('command_id','33333333-3333-4333-8333-333333333333',
@@ -122,8 +122,8 @@ BEGIN
  IF (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)<>1 THEN
   RAISE EXCEPTION 'terminal rejection emitted a second decision';
  END IF;
-END $;
-DO $
+END $$;
+DO $$
 DECLARE p jsonb:=pg_temp.prepared_draft('200'); s jsonb:=p->'scope';
  initial jsonb; pid text;
  cmd jsonb:=jsonb_build_object('command_id','55555555-5555-4555-8555-555555555555',
@@ -144,5 +144,5 @@ BEGIN
    'editor-a',cmd))->'newly_queued' IS DISTINCT FROM 'true'::jsonb THEN
   RAISE EXCEPTION 'fresh queue after rollback failed';
  END IF;
-END $;
+END $$;
 SELECT 'POSTMILL_EDITORIAL_HUMAN_REVIEW_OK';
