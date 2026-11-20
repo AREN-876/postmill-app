@@ -11,9 +11,9 @@ import { RequirePermission } from '@postmill-ai/backend/services/auth/rbac/requi
 import { OrgRbacGuard } from '@postmill-ai/backend/services/auth/rbac/org-rbac.guard';
 import { EditorialHumanReviewService } from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
 
-// Must remain in ApiModule.authenticatedController, where existing
-// AuthMiddleware and CsrfMiddleware run. Body fields cannot assert actor,
-// organization, target, text, image or entitlement.
+// Registered only by the dormant EditorialHumanReviewModule, which applies
+// the standard AuthMiddleware and CsrfMiddleware to these same routes.
+// Body fields cannot assert actor, organization, target, text or image.
 function sessionOnly(req: Request) {
   if (typeof req.cookies?.auth !== 'string' || !req.cookies.auth ||
       req.headers.auth !== undefined || req.headers.authorization !== undefined ||
