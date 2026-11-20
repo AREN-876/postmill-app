@@ -41,6 +41,7 @@ import { OrgVpnSettingsController } from '../org-vpn-settings.controller';
 import { CommsSettingsController } from '../comms-settings.controller';
 import { OrganizationsController } from '../organizations.controller';
 import { PostsController } from '../posts.controller';
+import { EditorialHumanReviewController } from '../editorial-human-review.controller';
 import { ProvidersController } from '../providers.controller';
 import { RagController } from '../rag.controller';
 import { ReplicateStudioController } from '../replicate-studio.controller';
@@ -173,6 +174,7 @@ const ORG_RESOURCE_CONTROLLERS: Array<{ name: string; ctor: any }> = [
   { name: 'CommsSettingsController', ctor: CommsSettingsController },
   { name: 'OrganizationsController', ctor: OrganizationsController },
   { name: 'PostsController', ctor: PostsController },
+  { name: 'EditorialHumanReviewController', ctor: EditorialHumanReviewController },
   { name: 'ProvidersController', ctor: ProvidersController },
   { name: 'RagController', ctor: RagController },
   { name: 'ReplicateStudioController', ctor: ReplicateStudioController },
