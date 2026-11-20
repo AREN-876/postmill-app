@@ -84,9 +84,11 @@ client-generated UUID retry identity; `expected_seq` is the string seen on GET.
 Valid actions are `approve_text`, `request_text_changes`, `reject` and
 `request_image`; only text-change feedback may be nonempty.
 
-Both routes use ApiModule's **existing** `authenticatedController` registry,
-AuthMiddleware, CsrfMiddleware and OrgRbacGuard; GET requires `posts:read`,
-POST `posts:update`. Additionally, the controller rejects header/API credentials,
+Both routes are declared ONLY in the isolated, unimported
+`EditorialHumanReviewModule`, with its own `authenticatedController` list
+bound to the standard AuthMiddleware, CsrfMiddleware and OrgRbacGuard.
+They are **not registered in ApiModule/AppModule**, even disabled.
+On explicit future activation GET requires `posts:read`, POST `posts:update`. Additionally, the controller rejects header/API credentials,
 impersonation and requests without the `auth` cookie; the service checks
 actual organization membership and permissions even for platform admins.
 The actor ID is the resolved server-side user. An operator must separately
