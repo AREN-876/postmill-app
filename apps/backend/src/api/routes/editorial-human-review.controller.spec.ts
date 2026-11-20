@@ -114,10 +114,15 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   });
 
   it('is registered for existing session/CSRF middleware; no machine transport invocation', () => {
-    const source = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
-    expect(source).toContain('  EditorialHumanReviewController,');
+    const source = fs.readFileSync(nodePath.resolve(__dirname, '../editorial-human-review.module.ts'), 'utf8');
+    const runtime = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
+    const app = fs.readFileSync(nodePath.resolve(__dirname, '../../app.module.ts'), 'utf8');
+    expect(source).toContain('export const authenticatedController = [EditorialHumanReviewController]');
     expect(source).toContain('consumer.apply(AuthMiddleware).forRoutes(...authenticatedController)');
     expect(source).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
+    expect(runtime).not.toContain('EditorialHumanReviewController');
+    expect(runtime).not.toContain('EditorialHumanReviewModule');
+    expect(app).not.toContain('EditorialHumanReviewModule');
   });
   it('permits current org editor to read verified text status and queue once', async () => {
     const r = await read();
