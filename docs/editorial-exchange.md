@@ -93,8 +93,8 @@ impersonation and requests without the `auth` cookie; the service checks
 actual organization membership and permissions even for platform admins.
 The actor ID is the resolved server-side user. An operator must separately
 approve a non-null `EDITORIAL_HUMAN_REVIEW_CONFIG` limited to one test org
-and native MAX target. The production value is **null**, so a route registered
-in code returns disabled without DB access. No remote sender or AI worker is
+and native MAX target. The production value is **null**, and the module is not imported,
+so no production route is registered at all. No remote sender or AI worker is
 registered by this change.
 
 SQL functions `postmill_read_editorial_human_v1` and
