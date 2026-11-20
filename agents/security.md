@@ -327,3 +327,21 @@ The RBAC coverage test explicitly classifies the unregistered `EditorialExchange
 ### Inactive signed Editorial bridge transport (06B-3C)
 
 The optional sender in \`posts/editorial-signed-transport.ts\` is restricted to one operator-configured public HTTPS origin and fixed private paths; the configured origin cannot be user-supplied. It relies on \`safeFetch\` for per-hop SSRF/DNS protection. Request and response HMAC-SHA256 use independent 256-bit secrets and the exact body hashes with timestamp/nonce. No ordinary API key/session token doubles as bridge authentication. A signed receipt proves only the configured remote signer answered the exact request; it does **not** authorize the originating human action. Caller must separately verify session, org RBAC, CSRF, and current native binding. A timeout, missing event lookup, stale/different signed receipt or unexpected redirect is UNKNOWN and never an automatic resend. No Inngest scheduling, route registration, runtime key provisioning, internal-network bypass or deployment as part of this change. See docs/editorial-exchange.md.
+
+
+### Dashboard Editorial review (06B-4A, default disabled)
+
+`EditorialHumanReviewController` is in `ApiModule.authenticatedController`
+so standard AuthMiddleware and CsrfMiddleware cover every GET/POST. It has
+`OrgRbacGuard` plus route-specific `@RequirePermission('posts','read|update')`;
+the backend service independently checks session membership even for
+super-admin and refuses header auth, generic API keys or impersonation.
+`EDITORIAL_HUMAN_REVIEW_CONFIG` is null in ApiModule: no production task
+can read/queue until separately reviewed test-only enablement. Do not confuse
+the presence of registered routes with their activation. No source fields
+assert actor, org, target, content digest or image; SQL re-derives these
+under the advisory lock from the native immutable draft. The only accepted
+browser command fields are command_id, expected_seq, action, feedback. 06B-4A
+does not call the 06B-3C delivery service, authorize paid work or grant
+publication. Before enabling, review cookie CSRF coverage, RBAC bypass
+possibilities, target allowlist and actual deployed PostgreSQL migrations.
