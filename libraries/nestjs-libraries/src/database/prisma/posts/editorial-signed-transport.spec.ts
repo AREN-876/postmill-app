@@ -1,0 +1,170 @@
+import { createHash, createHmac } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  EDITORIAL_LOOKUP_PATH, EDITORIAL_SUBMIT_PATH,
+  EditorialTransportError, editorialWireConfig, editorialPending, signedEditorialRequest,
+  type EditorialWireConfig,
+} from './editorial-signed-transport';
+import { EditorialDeliveryService } from './editorial-delivery.service';
+import { PostsRepository } from './posts.repository';
+import type { EditorialScope } from './editorial-ingress';
+import { safeFetch } from '../../../dtos/webhooks/safe.fetch';
+
+const cfg: EditorialWireConfig = {
+  origin: 'https://review-bridge.example.net',
+  orgId: 'org-a', requestKeyHex: 'a'.repeat(64), responseKeyHex: 'b'.repeat(64),
+};
+const scope: EditorialScope = {
+  org_id: 'org-a', integration_id: 'max-a', campaign_id: 'campaign-a',
+  channel_id: '42', profile_ref: 'life-stories@v5',
+  is_test: true, image_mode: 'disabled',
+};
+const eid = '12345678-1234-4234-8234-123456789abc';
+const payload = {
+  schema_version: 1, event_id: eid, producer: 'postmill', actor_id: 'editor-a',
+  occurred_at: '2026-11-20T00:00:00Z',
+  binding: { task_id: '42', org_id: 'org-a', is_test: true, post_id: 'draft-a' },
+  expected_seq: '0', action: 'approve_text',
+  text: { revision: 1, sha256: 'f'.repeat(64) }, image: null,
+  feedback: '', request_id: null, revision_content: null,
+};
+const row = {
+  schema_version: 1, org_id: 'org-a', task_id: '42', event_id: eid,
+  payload_sha256: 'c'.repeat(64), event: payload,
+  dispatch_authorized: false as const, publishable: false as const,
+};
+const outcome = {
+  status: 'accepted', reason: null,
+  state: { seq: '1', binding: payload.binding, text: payload.text },
+  dispatch_authorized: false, publishable: false,
+  newly_applied: true, replay: false,
+};
+const S = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+const hmac = (key: string, msg: string) =>
+  createHmac('sha256', Buffer.from(key, 'hex')).update(msg, 'ascii').digest('hex');
+
+function mockedPeer(options?: {
+  wrongSignature?: boolean; wrongHash?: boolean; badOutcome?: boolean;
+  lookupMissing?: boolean; errorStatus?: number; large?: boolean;
+}) {
+  return vi.fn(async (url: string, init?: RequestInit) => {
+    expect(init?.method).toBe('POST');
+    expect(url).toMatch(/^https:\/\/review-bridge\.example\.net\/internal\/editorial\/v1\/events\/(submit|lookup)$/);
+    const headers = init?.headers as Record<string, string>;
+    const ts = headers['x-edx-timestamp'];
+    const nonce = headers['x-edx-nonce'];
+    const raw = init?.body as string;
+    const path = new URL(url).pathname;
+    const reqMac = hmac(cfg.requestKeyHex, ['EDX1', 'REQ', path, ts, nonce, S(raw)].join('\n'));
+    expect(headers['x-edx-signature']).toBe('sha256=' + reqMac);
+    const parsed = JSON.parse(raw);
+    if (path === EDITORIAL_SUBMIT_PATH) {
+      expect(parsed.event).toEqual(payload);
+    } else {
+      expect(path).toBe(EDITORIAL_LOOKUP_PATH);
+      expect(Object.hasOwn(parsed, 'event')).toBe(false);
+    }
+    const obj = path === EDITORIAL_SUBMIT_PATH
+      ? { schema_version: 1, event_id: eid,
+        payload_sha256: options?.wrongHash ? 'd'.repeat(64) : row.payload_sha256,
+        outcome: options?.badOutcome ? { ...outcome, publishable: true } : outcome }
+      : { schema_version: 1, event_id: eid, payload_sha256: row.payload_sha256,
+        found: !options?.lookupMissing, outcome: options?.lookupMissing ? null : { ...outcome, newly_applied: false, replay: true } };
+    const body = options?.large ? 'x'.repeat(32769) : JSON.stringify(obj);
+    const mac = hmac(cfg.responseKeyHex,
+      ['EDX1', 'RESP', path, ts, nonce, S(raw), S(body)].join('\n'));
+    return new Response(body, {
+      status: options?.errorStatus ?? 200,
+      headers: {
+        'content-type': 'application/json', 'cache-control': 'no-store',
+        'x-edx-response-signature': 'sha256=' + (options?.wrongSignature ? '0'.repeat(64) : mac),
+      },
+    });
+  }) as typeof safeFetch;
+}
+
+describe('06B-3C signed off-by-default editorial transport', () => {
+  it('authenticates one exact request and signed outcome without network in tests', async () => {
+    const fetcher = mockedPeer();
+    const result = await signedEditorialRequest(row, cfg, 'submit', fetcher,
+      1795160000000, 'f'.repeat(32));
+    expect(result.event_id).toBe(eid);
+    expect(result.outcome).toEqual(outcome);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('reads a missing event as unknown, never rejection', async () => {
+    const result = await signedEditorialRequest(row, cfg, 'lookup', mockedPeer({ lookupMissing: true }),
+      1795160000000, 'f'.repeat(32));
+    expect(result.found).toBe(false);
+    expect(result.outcome).toBeNull();
+  });
+  it.each([
+    { wrongSignature: true }, { wrongHash: true }, { badOutcome: true },
+    { errorStatus: 503 }, { large: true },
+  ])('rejects unauthentic, unsafe or ambiguous result as unknown: %j', async (options) => {
+    await expect(signedEditorialRequest(row, cfg, 'submit', mockedPeer(options),
+      1795160000000, 'f'.repeat(32))).rejects.toBeInstanceOf(EditorialTransportError);
+  });
+  it('refuses wrong key pair, private address, URL path, and cross-org data', () => {
+    for (const config of [
+      { ...cfg, responseKeyHex: cfg.requestKeyHex },
+      { ...cfg, origin: 'http://review-bridge.example.net' },
+      { ...cfg, origin: 'https://127.0.0.1' },
+      { ...cfg, origin: 'https://review-bridge.example.net/elsewhere' },
+      { ...cfg, orgId: 'other' },
+    ]) {
+      if (config.orgId !== cfg.orgId) {
+        expect(() => editorialPending(row, config.orgId, '42')).toThrow();
+      } else {
+        expect(() => editorialWireConfig(config)).toThrow();
+      }
+    }
+    expect(() => editorialPending({ ...row, event: { ...payload, binding: { ...payload.binding, is_test: false } } },
+      'org-a', '42')).toThrow();
+  });
+  it('does not resend on an unknown result; separate lookup does not submit', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const failingPeer = mockedPeer({ wrongSignature: true });
+    await expect(svc.attemptOnce(scope, '42', 'test-channel', cfg, failingPeer))
+      .rejects.toBeInstanceOf(EditorialTransportError);
+    expect(failingPeer).toHaveBeenCalledTimes(1);
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+    const missingPeer = mockedPeer({ lookupMissing: true });
+    expect((await svc.reconcileOnce(scope, '42', 'test-channel', cfg, missingPeer)).status).toBe('unknown');
+    expect(missingPeer).toHaveBeenCalledTimes(1);
+    expect((missingPeer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+  });
+  it('imports only authenticated signed outcome and preserves exact event/hash', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const a = await svc.attemptOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    expect(a.status).toBe('recorded');
+    expect(repo.importEditorialDecisionResult).toHaveBeenCalledWith(
+      scope, '42', 'test-channel', eid, row.payload_sha256, outcome,
+    );
+    const b = await svc.reconcileOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    expect(b.status).toBe('recorded');
+    expect(repo.importEditorialDecisionResult).toHaveBeenCalledTimes(2);
+  });
+  it('short circuits no-pending and rejects cross-tenant without database access', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(null),
+      importEditorialDecisionResult: vi.fn(),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    await expect(svc.attemptOnce({ ...scope, org_id: 'other' }, '42',
+      'test-channel', cfg, mockedPeer())).rejects.toThrow();
+    expect(repo.readPendingEditorialDelivery).not.toHaveBeenCalled();
+    const result = await svc.attemptOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    expect(result.status).toBe('no_pending');
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+  });
+});
