@@ -563,6 +563,32 @@ model EditorialDraftReceipt {
   targetSnapshot Json?
   createdAt DateTime @default(now())
   post      Post     @relation(fields: [postId], references: [id], onDelete: Restrict)
+  reviewAnchor EditorialReviewAnchor?
+}
+
+// Immutable initial authoritative Editorial-013 snapshot, not an approval.
+model EditorialReviewAnchor {
+  postId    String   @id
+  snapshot  Json
+  snapshotHash String
+  createdAt DateTime @default(now())
+  draft     EditorialDraftReceipt @relation(fields: [postId], references: [postId], onDelete: Restrict)
+  decisions EditorialDecisionOutbox[]
+}
+
+// Append-only decision envelope; delivery receipts are a later separate ledger.
+model EditorialDecisionOutbox {
+  eventId     String   @id
+  postId      String
+  commandId   String
+  expectedSeq String
+  payload     Json
+  payloadHash String
+  createdAt   DateTime @default(now())
+  anchor      EditorialReviewAnchor @relation(fields: [postId], references: [postId], onDelete: Restrict)
+
+  @@unique([postId, commandId])
+  @@unique([postId, expectedSeq])
 }
 
 model SocialComment {

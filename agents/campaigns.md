@@ -152,3 +152,7 @@ A managed draft and immutable `EditorialDraftReceipt` must be created together b
 ### Editorial Exchange private transport (06B-2B)
 
 The unregistered EditorialExchangeModule contains scoped machine-only create/read handlers with null config by default. Do not register in the public/cookie routes or expose it through the proxy until the activation gates in docs/editorial-exchange.md pass. Native draft reconciliation compares the captured immutable actual MAX target and exact story content; missing evidence or drift fails closed. GET is historical receipt + current check, not review acknowledgement, final approval or dispatch authority.
+
+### Editorial initial decision outbox (06B-3A)
+
+The immutable initial `EditorialReviewAnchor` requires exact Editorial-013 snapshot equality with the locked managed draft. It is not remote authentication: only a future verified bridge may use the parameterized anchor method. `EditorialDecisionOutbox` stores one immutable initial human command/event and its canonical hash in the committing transaction; retry returns the same event. A different command is blocked until authoritative receipt reconciliation is implemented. Never expose a raw actor/remote snapshot to callers or treat an unconfirmed event as review acceptance, paid dispatch, approval, or schedule authorization. No runtime registration; native freeze remains unchanged. See docs/editorial-exchange.md for supported initial actions, limits and next gates.
