@@ -77,7 +77,10 @@ const decision = (value: unknown = command, extra: Record<string, string> = {}, 
 describe('06B-4A isolated cookie-only human review HTTP', () => {
   beforeAll(async () => {
     process.env.FRONTEND_URL ||= 'https://example.net';
-    const mod = await Test.createTestingModule({ imports: [IsolatedHumanReviewModule] }).compile();
+    const mod = await Test.createTestingModule({ imports: [IsolatedHumanReviewModule] })
+      .overrideGuard(OrgRbacGuard)
+      .useValue(new OrgRbacGuard(new Reflector(), roles as never, audit as never))
+      .compile();
     app = mod.createNestApplication({ logger: ['error'] });
     app.use(cookieParser());
     await app.listen(0, '127.0.0.1');
