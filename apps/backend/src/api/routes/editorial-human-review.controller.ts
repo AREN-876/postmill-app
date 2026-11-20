@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Header, HttpCode, Param, Post, Body, Req, UseGuards, ForbiddenException,
+  Controller, Get, Header, HttpCode, Inject, Param, Post, Body, Req, UseGuards, ForbiddenException,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -30,7 +30,7 @@ function sessionOnly(req: Request) {
 @UseGuards(OrgRbacGuard)
 @Throttle({ default: { limit: 20, ttl: 60000 } })
 export class EditorialHumanReviewController {
-  constructor(private readonly review: EditorialHumanReviewService) {}
+  constructor(@Inject(EditorialHumanReviewService) private readonly review: EditorialHumanReviewService) {}
 
   @Get(':postId/:taskId')
   @Header('Cache-Control', 'no-store')
