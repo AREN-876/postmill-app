@@ -2,10 +2,9 @@ import { Inject, Injectable } from '@nestjs/common';
 import { PostsRepository } from './posts.repository';
 import { type EditorialScope } from './editorial-ingress';
 import {
-  editorialPending, editorialWireConfig, EditorialTransportError,
+  editorialPending, editorialWireConfig, editorialLoopbackFetch, EditorialTransportError,
   signedEditorialRequest, type EditorialWireConfig,
 } from './editorial-signed-transport';
-import { safeFetch } from '../../../dtos/webhooks/safe.fetch';
 
 // Not registered by any Nest module or Inngest job. No timed polling,
 // automatic resend or provider/AI dispatch; activation is a separate gate.
@@ -16,7 +15,7 @@ export class EditorialDeliveryService {
   constructor(@Inject(PostsRepository) private readonly posts: PostsRepository) {}
 
   async attemptOnce(scope: EditorialScope, task: string, target: string,
-    config: EditorialWireConfig, fetcher: typeof safeFetch = safeFetch) {
+    config: EditorialWireConfig, fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
     const peer = editorialWireConfig(config);
     if (scope.org_id !== peer.orgId || scope.is_test !== true) {
       throw new EditorialTransportError();
