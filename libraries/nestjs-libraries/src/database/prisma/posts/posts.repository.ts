@@ -108,6 +108,29 @@ export class PostsRepository {
     return result.result;
   }
 
+  // Human dashboard endpoints: source org/user is the authenticated cookie
+  // session, while SQL derives scope and original target from the immutable
+  // receipt and verifies the current frozen DRAFT inside the same transaction.
+  async readEditorialHuman(orgId: string, postId: string, task: string, target: string) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_read_editorial_human_v1(
+        ${orgId}::text, ${postId}::text, ${task}::text, ${target}::text
+      ) AS result
+    `;
+    return row.result;
+  }
+
+  async queueEditorialHuman(orgId: string, postId: string, task: string,
+    target: string, actor: string, command: Prisma.InputJsonObject) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_queue_editorial_human_v1(
+        ${orgId}::text, ${postId}::text, ${task}::text,
+        ${target}::text, ${actor}::text, ${JSON.stringify(command)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
   // Only read an existing unconfirmed event, after revalidating native
   // scope, target and frozen DRAFT. Never poll all orgs or claim work here.
   async readPendingEditorialDelivery(scope: EditorialScope, task: string, target: string) {
