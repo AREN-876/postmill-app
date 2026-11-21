@@ -87,6 +87,24 @@ SELECT json_build_object(
    (SELECT count(*) FROM public."Integration"
     WHERE "providerIdentifier"='max'
       AND NOT disabled AND "deletedAt" IS NULL),
+ -- Read-only exact test-channel inventory, independent of editable name.
+ -- Do not expose tokens, provider credentials or post content.
+ 'editorial_test_target',
+   (SELECT json_build_object(
+     'match_count', count(*),
+     'single_enabled',
+       count(*)=1 AND bool_and(
+         i."providerIdentifier"='max' AND NOT i.disabled
+         AND i."deletedAt" IS NULL AND NOT i."refreshNeeded"
+         AND NOT i."inBetweenSteps"),
+     'identities', coalesce(json_agg(json_build_object(
+       'organization_id',i."organizationId",
+       'integration_id',i.id,
+       'provider',i."providerIdentifier",
+       'posting_times_utc_minutes',i."postingTimes"
+     )), '[]'::json))
+    FROM public."Integration" i
+    WHERE i."internalId"='max:-73052031470103'),
  'active_campaigns',
    (SELECT count(*) FROM public."Campaign"
     WHERE NOT archived AND "deletedAt" IS NULL)
@@ -203,6 +221,25 @@ def collect() -> dict[str, object]:
     # A matching _prisma_migrations ledger is necessary, not proof that live
     # tables/objects are identical to the checked-in Prisma schema.
     baseline = verify_applied_checksums(db)
+
+    # An exact native MAX target mapping is evidence, NOT deployment approval.
+    # Its organization/integration IDs must still be checked against trusted
+    # setup before setting any server-side runtime flags.
+    target = db.get("editorial_test_target")
+    if (not isinstance(target, dict)
+        or not isinstance(target.get("match_count"), int)
+        or not isinstance(target.get("single_enabled"), bool)
+        or not isinstance(target.get("identities"), list)
+        or len(target["identities"]) != target["match_count"]
+        or any(not isinstance(v, dict)
+               or not isinstance(v.get("organization_id"), str)
+               or not isinstance(v.get("integration_id"), str)
+               or v.get("provider") not in ("max",)
+               for v in target["identities"])):
+        raise Refused("malformed read-only exact MAX target inventory")
+    db["editorial_test_target_identified"] = (
+        target["match_count"] == 1 and target["single_enabled"]
+    )
 
     # "Ready for test activation" is intentionally not inferred from SQL alone.
     db["schema_installed"] = (

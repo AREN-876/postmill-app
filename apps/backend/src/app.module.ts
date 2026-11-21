@@ -33,6 +33,8 @@ import { CollaborationModule } from '@postmill-ai/backend/services/collaboration
 import { ProvidersModule } from '@postmill-ai/nestjs-libraries/providers/providers.module';
 import { ProvidersBootstrap } from './providers.bootstrap';
 import { ProviderExceptionFilter } from './api/filters/provider-exception.filter';
+import { EditorialHumanReviewModule } from './api/editorial-human-review.module';
+import { editorialSessionRoutesEnabled } from './api/editorial-session-runtime';
 import { SentryReportFilter } from './api/filters/sentry-report.filter';
 
 // Module-level feature flags are read at bootstrap time. Defaults keep all
@@ -42,12 +44,19 @@ const scheduleModule = featureFlags.isEnabled('cron')
   ? [ScheduleModule.forRoot()]
   : [];
 
+// Default OFF even when the binary contains Editorial code. The machine
+// bridge stays off; only test-org browser session routes may be registered.
+const editorialSessionModules = editorialSessionRoutesEnabled(process.env)
+  ? [EditorialHumanReviewModule]
+  : [];
+
 @Global()
 @Module({
   imports: [
     FeatureFlagsModule,
     SentryModule.forRoot(),
     ...scheduleModule,
+    ...editorialSessionModules,
     DatabaseModule,
     ApiModule,
     PublicApiModule,
