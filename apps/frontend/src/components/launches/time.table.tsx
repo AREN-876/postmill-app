@@ -18,6 +18,7 @@ import { useToaster } from '@postmill-ai/react/toaster/toaster';
 import { useT } from '@postmill-ai/react/translation/get.transation.service.client';
 import { newDayjs } from '@postmill-ai/frontend/components/layout/set.timezone';
 import clsx from 'clsx';
+import { moscowToPostingMinute, postingMinuteToMoscowLabel, postingMinuteToMoscowMinute } from './max-moscow-slots';
 import {
   TrashIcon,
   PlusIcon,
@@ -44,6 +45,7 @@ export const TimeTable: FC<{
     integration: { time },
     mutate,
   } = props;
+  const isMax = props.integration.identifier === 'max';
   const [currentTimes, setCurrentTimes] = useState([...time]);
   const [hour, setHour] = useState(0);
   const [minute, setMinute] = useState(0);
@@ -90,36 +92,35 @@ export const TimeTable: FC<{
   );
 
   const addHour = useCallback(() => {
-    const calculateMinutes =
-      newDayjs()
-        .utc()
-        .startOf('day')
-        .add(hour, 'hours')
-        .add(minute, 'minutes')
-        .diff(newDayjs().utc().startOf('day'), 'minutes') -
-      dayjs.tz().utcOffset();
-    setCurrentTimes((prev) => [
-      ...prev,
-      {
-        time: calculateMinutes,
-      },
-    ]);
-  }, [hour, minute]);
+    const calculateMinutes = isMax
+      ? moscowToPostingMinute(hour, minute)
+      : newDayjs()
+          .utc()
+          .startOf('day')
+          .add(hour, 'hours')
+          .add(minute, 'minutes')
+          .diff(newDayjs().utc().startOf('day'), 'minutes') -
+        dayjs.tz().utcOffset();
+    // The same wall-clock slot must not be listed twice for one channel.
+    setCurrentTimes((prev) =>
+      prev.some((entry) => entry.time === calculateMinutes)
+        ? prev
+        : [...prev, { time: calculateMinutes }]
+    );
+  }, [hour, minute, isMax]);
 
   const times = useMemo(() => {
     return sortBy(
       currentTimes.map(({ time }) => ({
         value: time,
-        formatted: dayjs
-          .utc()
-          .startOf('day')
-          .add(time, 'minutes')
-          .local()
-          .format('HH:mm'),
+        formatted: isMax
+          ? postingMinuteToMoscowLabel(time)
+          : dayjs.utc().startOf('day').add(time, 'minutes').local().format('HH:mm'),
+        localMinute: isMax ? postingMinuteToMoscowMinute(time) : time,
       })),
-      (p) => p.value
+      (p) => p.localMinute
     );
-  }, [currentTimes]);
+  }, [currentTimes, isMax]);
 
   const save = useCallback(async () => {
     const res = await fetch(`/integrations/${props.integration.id}/time`, {
@@ -147,6 +148,11 @@ export const TimeTable: FC<{
           <DelayIcon size={18} className="text-btnPrimaryAccent" />
           {t('add_time_slot', 'Add Time Slot')}
         </div>
+        {isMax && (
+          <p className="text-[13px] text-newTextColor/60 mb-[12px]">
+            {t('max_moscow_time', 'Московское время (UTC+03:00)')}
+          </p>
+        )}
 
         <div className="flex gap-[12px] items-end">
           <div className="flex-1">
