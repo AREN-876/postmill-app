@@ -13,9 +13,9 @@ CREATE TABLE "EditorialRelease" (
   "actorId" TEXT NOT NULL,
   "confirmedSeq" TEXT NOT NULL,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "EditorialRelease_source_fkey" FOREIGN KEY ("sourcePostId")
+  CONSTRAINT "EditorialRelease_sourcePostId_fkey" FOREIGN KEY ("sourcePostId")
     REFERENCES "Post"(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  CONSTRAINT "EditorialRelease_publication_fkey" FOREIGN KEY ("publicationPostId")
+  CONSTRAINT "EditorialRelease_publicationPostId_fkey" FOREIGN KEY ("publicationPostId")
     REFERENCES "Post"(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT "EditorialRelease_command_check" CHECK (
     "commandId" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
