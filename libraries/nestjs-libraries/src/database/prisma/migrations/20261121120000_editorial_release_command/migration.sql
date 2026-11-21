@@ -129,8 +129,9 @@ BEGIN
   -- second publication or another dispatch even after a lost HTTP response.
   IF prior."commandId" IS DISTINCT FROM cmd
     OR prior.mode IS DISTINCT FROM action
-    OR (action='queue' AND to_char(prior."publishAt", 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-         IS DISTINCT FROM regexp_replace(requested_at, '[.]000Z
+    OR (action='queue' AND
+        to_char(prior."publishAt",'YYYY-MM-DD"T"HH24:MI:SS"Z"') IS DISTINCT FROM
+        regexp_replace(requested_at,'[.]000Z$','Z')) THEN
    RAISE EXCEPTION 'EDITORIAL_RELEASE_ALREADY_EXISTS' USING ERRCODE='55000';
   END IF;
   RETURN jsonb_build_object('created',false,'source_post_id',pid,
