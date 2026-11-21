@@ -199,6 +199,18 @@ jobs:
             --to-schema-datamodel libraries/nestjs-libraries/src/database/prisma/schema.prisma \
             --exit-code
 
+      - name: Editorial 07 dormant Nest HTTP against full disposable Prisma database
+        env:
+          EDX_REAL_DB_CI: '1'
+          DATABASE_URL: postgresql://postmill-local:postmill-local-pwd@localhost:5432/postmill-db-local
+        run: pnpm --dir apps/backend exec vitest run src/api/routes/editorial-exchange.real-db.spec.ts
+
+      - name: Editorial 07 real 51-migration backup and isolated restore drill
+        env:
+          EDX_BACKUP_CI: '1'
+          PG_CI_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash tools/deploy/test_editorial_backup_restore.sh
+
       - name: Destructive schema guard (vs origin/main)
         # The guard blocks DROP/rename/NOT-NULL-without-default by default. When a branch
         # carries reviewed, expand/contract-planned destructive changes, set the repository

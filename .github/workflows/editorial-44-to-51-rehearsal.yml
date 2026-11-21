@@ -1,0 +1,43 @@
+name: Editorial upgrade 44 to 51 isolated PostgreSQL 17
+on:
+  pull_request:
+    paths:
+      - 'tools/deploy/test_editorial_44_to_51_upgrade.sh'
+      - '.github/workflows/editorial-44-to-51-rehearsal.yml'
+      - 'libraries/nestjs-libraries/src/database/prisma/migrations/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/schema.prisma'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline-rehearsal:
+    name: 44 migrations, PostgreSQL backup/restore, 51 migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postmill-local
+          POSTGRES_PASSWORD: postmill-local-pwd
+          POSTGRES_DB: postmill-db-local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postmill-local"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.19.0'
+      - name: Rehearse the exact historical 44-to-51 Prisma migration on a restored clone
+        env:
+          EDX_44_51_CI: '1'
+          PG_CI_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash tools/deploy/test_editorial_44_to_51_upgrade.sh
