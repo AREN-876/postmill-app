@@ -96,6 +96,13 @@ vi.mock('./comment.thread', () => ({
   CommentThread: () => <div data-testid="comment-thread">CommentThread</div>,
 }));
 
+// Never execute real editorial HTTP in this view test.
+vi.mock('@postmill-ai/frontend/components/editorial/editorial-review-session', () => ({
+  EditorialReviewSession: ({ postId, taskId }: { postId: string; taskId: string }) => (
+    <div data-testid="editorial-review-entry">{postId}:{taskId}</div>
+  ),
+}));
+
 import useSWR from 'swr';
 import { PostDetailModal } from './post.detail.modal';
 
@@ -183,8 +190,54 @@ function stubData({
 
 describe('PostDetailModal', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
     mockFetchFn.mockResolvedValue({ ok: true });
+  });
+
+  it('keeps the editorial review entirely unmounted on the default build', () => {
+    const draft = basePostData({
+      posts: [{
+        ...basePostData().posts[0],
+        id: 'a'.repeat(32), state: 'DRAFT', editorialTaskId: '804',
+        integration: { id: 'ci-max', providerIdentifier: 'max', internalId: 'max:-73052031470103' },
+      }],
+    });
+    stubData({ postData: draft, analyticsData: baseAnalyticsData() });
+    render(<PostDetailModal postId="post-1" />);
+    expect(screen.queryByTestId('editorial-review-entry')).toBeNull();
+    expect(mockFetchFn).not.toHaveBeenCalledWith(expect.stringContaining('/editorial/'));
+  });
+
+  it('shows review ONLY for the exactly opted-in test MAX draft', () => {
+    vi.stubEnv('NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED', 'true');
+    vi.stubEnv('NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET', 'max:-73052031470103');
+    const draft = basePostData({
+      posts: [{
+        ...basePostData().posts[0],
+        id: 'a'.repeat(32), state: 'DRAFT', editorialTaskId: '804',
+        integration: { id: 'ci-max', providerIdentifier: 'max', internalId: 'max:-73052031470103' },
+      }],
+    });
+    stubData({ postData: draft, analyticsData: baseAnalyticsData() });
+    render(<PostDetailModal postId="post-1" />);
+    expect(screen.getByTestId('editorial-review-entry').textContent)
+      .toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:804');
+  });
+
+  it('does not show an opted-in review panel for a different MAX channel', () => {
+    vi.stubEnv('NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED', 'true');
+    vi.stubEnv('NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET', 'max:-73052031470103');
+    const draft = basePostData({
+      posts: [{
+        ...basePostData().posts[0],
+        id: 'a'.repeat(32), state: 'DRAFT', editorialTaskId: '804',
+        integration: { id: 'other-max', providerIdentifier: 'max', internalId: 'max:-99' },
+      }],
+    });
+    stubData({ postData: draft, analyticsData: baseAnalyticsData() });
+    render(<PostDetailModal postId="post-1" />);
+    expect(screen.queryByTestId('editorial-review-entry')).toBeNull();
   });
 
   it('shows a skeleton mirroring the modal layout when post data is loading', () => {
