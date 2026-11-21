@@ -239,8 +239,9 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
     // guard are used. The synthetic resolver only supplies test identities;
     // it is NOT a replacement for production JWT validation.
     const roles = {
-      getEffectivePermissions: vi.fn(async (orgId: string, userId: string) => {
-        if (orgId !== org) return null;
+      getEffectivePermissions: vi.fn(async (_orgId: string, userId: string) => {
+        // Foreign-org editor can have own-org rights; target allowlist
+        // must still refuse the Postmill editorial endpoint.
         return userId === 'ci-viewer'
           ? { permissions: ['posts:read'] }
           : { permissions: ['posts:read', 'posts:update'] };
