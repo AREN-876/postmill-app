@@ -29,6 +29,10 @@ export function EditorialReviewSession({
   const [error, setError] = useState(false);
   const [reading, setReading] = useState(false);
   const requestId = useRef(0);
+  // A lost POST response must not be converted into a fresh POST by reloading
+  // the same panel after a read failure. Keep the lock in the session owner.
+  const attemptedRef = useRef<{ identity: string; seq: string } | null>(null);
+  const [attempted, setAttempted] = useState<{ identity: string; seq: string } | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!enabled) throw new Error('editorial_review_disabled');
@@ -38,6 +42,13 @@ export function EditorialReviewSession({
     try {
       const snapshot = await client.read(postId, taskId);
       if (current === requestId.current) {
+        const seq = snapshot.review?.last_confirmed_state?.seq;
+        if (snapshot.review?.status === 'idle' &&
+            attemptedRef.current?.identity === identity &&
+            seq !== attemptedRef.current.seq && typeof seq === 'string') {
+          attemptedRef.current = null;
+          setAttempted(null);
+        }
         setLoaded({ identity, snapshot });
       }
     } catch {
@@ -60,9 +71,17 @@ export function EditorialReviewSession({
   }, [enabled, refresh]);
 
   const queue = useCallback(async (command: EditorialHumanCommand) => {
-    if (!enabled) throw new Error('editorial_review_disabled');
+    if (!enabled || (attemptedRef.current?.identity === identity &&
+        attemptedRef.current.seq === command.expected_seq)) {
+      throw new Error('editorial_decision_outcome_unknown');
+    }
+    // The guard persists even if a pending read temporarily unmounts the panel.
+    // It clears only after a different, authoritative confirmed sequence.
+    const lock = { identity, seq: command.expected_seq };
+    attemptedRef.current = lock;
+    setAttempted(lock);
     return client.queue(postId, taskId, command);
-  }, [client, enabled, postId, taskId]);
+  }, [client, enabled, identity, postId, taskId]);
 
   if (!enabled) return <p>Редакторский обмен отключён.</p>;
   if (error) {
@@ -83,6 +102,8 @@ export function EditorialReviewSession({
       snapshot={loaded.snapshot}
       onCommand={queue}
       onRefresh={refresh}
+      mutationsBlocked={attempted?.identity === identity &&
+        attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
     />
   );
 }
