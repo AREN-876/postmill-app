@@ -287,7 +287,7 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
     const moduleRef = await Test.createTestingModule({
       imports: [IsolatedEditorModule],
     }).compile();
-    const reviewApp = moduleRef.createNestApplication({ logger: false });
+    const reviewApp = moduleRef.createNestApplication({ logger: ['error'] });
     reviewApp.use(cookieParser());
     await reviewApp.listen(0, '127.0.0.1');
     const route = (await reviewApp.getUrl()) + '/editorial/review/' + postId + '/' + task;
