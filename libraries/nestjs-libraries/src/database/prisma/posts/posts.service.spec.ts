@@ -1564,4 +1564,23 @@ describe('Editorial 09A: channel-specific free-slot search', () => {
       getPostsCountsByDates.mock.calls[0][2], 'days'
     )).toBe(1);
   });
+
+  it('previews one whole story in Moscow local time and an explicit UTC instant', async () => {
+    const service = Object.create(PostsService.prototype) as PostsService;
+    (service as any)._integrationService = {
+      findFreeDateTime: vi.fn().mockResolvedValue([300, 600, 1020]),
+    };
+    (service as any)._postRepository = {
+      getPostsCountsByDates: vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([300, 600, 1020]),
+    };
+    const preview = await service.previewEditorialStorySlot('org-A', 'max-channel-A');
+    expect(preview.integrationId).toBe('max-channel-A');
+    expect(preview.timezone).toBe('Europe/Moscow');
+    expect(preview.localTime.endsWith('08:00')).toBe(true);
+    expect(preview.publishAt.endsWith('T05:00:00.000Z')).toBe(true);
+    expect(Date.parse(preview.publishAt)).toBeGreaterThan(Date.now());
+    // Preview performs no writes and does not invoke a Postmill publisher.
+  });
 });
