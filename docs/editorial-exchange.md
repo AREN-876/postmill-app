@@ -33,6 +33,15 @@ the image reference, container health, completed/unfinished migrations, the
 seven Editorial migration states, and counts of enabled MAX integrations and
 active campaigns. It does not report IDs, credentials, or editorial content.
 
+The same `--check` now compares the live Postmill `_prisma_migrations`
+ledger (44 or 51 completed rows) against the exact SHA-256 of each
+`migration.sql` in the **local full 51-file fork checkout**. A missing source
+tree, changed migration checksum, missing/extra migration, incomplete or
+rolled-back entry is a hard refusal; only counts/status are printed, not raw
+ledger checksums, PostgreSQL errors or secrets. This is read-only and does
+not execute the migration SQL. Correct checksums prove migration-file provenance
+only, not live schema equivalence, data integrity, or deployment authorization.
+
 A successful `--check` invocation means **only that the inventory succeeded**.
 `schema_installed` is a necessary DB condition, not runtime readiness.
 The tool deliberately leaves module activation, test-org/target mapping,
