@@ -1542,3 +1542,26 @@ describe('MAX unified auto-mode ingestion (manual editor and n8n API)', () => {
     expect(mapped.posts[0].value[0].image).toEqual([]);
   });
 });
+
+describe('Editorial 09A: channel-specific free-slot search', () => {
+  it('passes the chosen channel ID through each slot lookup without reserving or publishing', async () => {
+    const findFreeDateTime = vi.fn().mockResolvedValue([300, 600, 1020]);
+    const getPostsCountsByDates = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([300, 600, 1020]);
+    const service = Object.create(PostsService.prototype) as PostsService;
+    (service as any)._integrationService = { findFreeDateTime };
+    (service as any)._postRepository = { getPostsCountsByDates };
+    await service.findFreeDateTime('org-A', 'max-channel-A');
+    expect(findFreeDateTime).toHaveBeenCalledWith('org-A', 'max-channel-A');
+    expect(getPostsCountsByDates).toHaveBeenCalledTimes(2);
+    for (const args of getPostsCountsByDates.mock.calls) {
+      expect(args[0]).toBe('org-A');
+      expect(args[1]).toEqual([300, 600, 1020]);
+      expect(args[3]).toBe('max-channel-A');
+    }
+    expect(getPostsCountsByDates.mock.calls[1][2].diff(
+      getPostsCountsByDates.mock.calls[0][2], 'days'
+    )).toBe(1);
+  });
+});
