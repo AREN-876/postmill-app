@@ -95,7 +95,7 @@ BEGIN
   AND command->>'action' IN ('publish_now','queue')
   AND ((command->>'action'='publish_now' AND command->'publish_at'='null'::jsonb)
     OR (command->>'action'='queue' AND jsonb_typeof(command->'publish_at')='string'
-     AND command->>'publish_at' ~ '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00(\\.000)?Z$'))
+     AND command->>'publish_at' ~ '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00([.]000)?Z$'))
  ) IS NOT TRUE THEN
   RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID' USING ERRCODE='22023';
  END IF;
@@ -114,8 +114,123 @@ BEGIN
   -- second publication or another dispatch even after a lost HTTP response.
   IF prior."commandId" IS DISTINCT FROM cmd
     OR prior.mode IS DISTINCT FROM action
-    OR (action='queue' AND to_char(prior."publishAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-         IS DISTINCT FROM replace(requested_at, 'Z', '.000Z')) THEN
+    OR (action='queue' AND to_char(prior."publishAt", 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+         IS DISTINCT FROM regexp_replace(requested_at, '[.]000Z
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_ALREADY_EXISTS' USING ERRCODE='55000';
+  END IF;
+  RETURN jsonb_build_object('created',false,'source_post_id',pid,
+   'publication_post_id',prior."publicationPostId",'mode',prior.mode,
+   'publish_at',to_char(prior."publishAt",'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+   'status','already_recorded','publishable',false);
+ END IF;
+
+ review:=v->'review'; confirmed:=review->'last_confirmed_state';
+ receipt:=v->'receipt';
+ IF (v->'review_acknowledged'='true'::jsonb
+  AND review->>'status'='idle'
+  AND confirmed->'binding'=receipt->'binding'
+  AND confirmed->'text'=receipt->'text'
+  AND confirmed->>'text_status'='approved'
+  AND confirmed->'final_approved'='true'::jsonb
+  AND confirmed->'rejected'='false'::jsonb
+  AND confirmed->>'image_mode'='disabled'
+  AND confirmed->'image'='null'::jsonb
+  AND confirmed->'dispatch_authorized'='false'::jsonb
+  AND confirmed->'publishable'='false'::jsonb
+  AND confirmed->>'seq' ~ '^[1-9][0-9]{0,18}$'
+  AND EXISTS(
+   SELECT 1 FROM public."EditorialDecisionOutbox" o
+   JOIN public."EditorialDecisionResult" r ON r."eventId"=o."eventId"
+   WHERE o."postId"=pid AND o."eventId"=review->>'latest_event_id'
+    AND o.payload->>'action'='approve_text'
+    AND r.outcome->>'status'='accepted'
+    AND r.outcome->'state'=confirmed
+  )) IS NOT TRUE THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_NOT_APPROVED' USING ERRCODE='55000';
+ END IF;
+
+ SELECT * INTO src FROM public."Post" WHERE id=pid AND "organizationId"=org FOR SHARE;
+ IF NOT FOUND OR src.state<>'DRAFT' OR src."editorialTaskId" IS DISTINCT FROM task THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_SOURCE_CHANGED' USING ERRCODE='55000';
+ END IF;
+ SELECT * INTO i FROM public."Integration" WHERE id=src."integrationId"
+  AND "organizationId"=org AND "internalId"=target AND "providerIdentifier"='max'
+  AND NOT disabled AND NOT "refreshNeeded" AND NOT "inBetweenSteps"
+  AND "deletedAt" IS NULL FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'EDITORIAL_RELEASE_TARGET_CHANGED' USING ERRCODE='55000'; END IF;
+ current_target:=postmill_check_editorial_target_v1(
+  (SELECT r.request->'scope' FROM public."EditorialDraftReceipt" r WHERE r."postId"=pid),target);
+ IF current_target IS DISTINCT FROM
+   (SELECT r."targetSnapshot" FROM public."EditorialDraftReceipt" r WHERE r."postId"=pid) THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_TARGET_CHANGED' USING ERRCODE='55000';
+ END IF;
+
+ PERFORM pg_advisory_xact_lock(hashtextextended(
+   jsonb_build_array('editorial-release-channel',org,i.id)::text,0));
+ IF action='publish_now' THEN
+  timeutc:=(created_at AT TIME ZONE 'UTC')::timestamp(3);
+ ELSE
+  -- Explicit operator-chosen preview time must still be a future, configured
+  -- UTC slot on this exact channel; preview alone is not reservation.
+  BEGIN
+   at_instant:=requested_at::timestamptz;
+  EXCEPTION WHEN OTHERS THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_TIME' USING ERRCODE='22023';
+  END;
+  timeutc:=(at_instant AT TIME ZONE 'UTC')::timestamp(3);
+  IF at_instant <= clock_timestamp() + interval '10 seconds'
+    OR timeutc > (clock_timestamp() AT TIME ZONE 'UTC') + interval '366 days' THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_TIME' USING ERRCODE='22023';
+  END IF;
+  BEGIN
+    times:=i."postingTimes"::jsonb;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_GRID' USING ERRCODE='22023';
+  END;
+  utc_minute:=extract(hour from timeutc)::int*60+extract(minute from timeutc)::int;
+  IF (jsonb_typeof(times)='array' AND EXISTS(
+     SELECT 1 FROM jsonb_array_elements(times) x
+     WHERE x->>'time'=utc_minute::text
+  )) IS NOT TRUE THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_NOT_IN_GRID' USING ERRCODE='22023';
+  END IF;
+  IF EXISTS(SELECT 1 FROM public."Post" p WHERE p."organizationId"=org
+   AND p."integrationId"=i.id AND p."publishDate"=timeutc
+   AND p."deletedAt" IS NULL AND p.state IN ('QUEUE','PUBLISHING')) THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_SLOT_OCCUPIED' USING ERRCODE='55000';
+  END IF;
+ END IF;
+
+ pubid:=replace(gen_random_uuid()::text,'-','');
+ INSERT INTO public."Post"(
+   id,"organizationId","integrationId","campaignId","group",state,
+   "publishDate",content,settings,image,"creationMethod","updatedAt",
+   "approvalStatus","approvedById","approvedAt","maxScheduleRevision","maxTarget"
+ ) VALUES(
+   pubid,org,i.id,src."campaignId",'edx-release-'||pubid,'QUEUE',
+   timeutc,src.content,src.settings,src.image,'API',now(),
+   'approved',actor,now(),1,
+   jsonb_build_object(
+    'integrationId',i.id,'internalId',i."internalId",
+    'providerConfigId',i."providerConfigId",
+    'version',coalesce(i."providerVersion",'v1'),
+    'tokenHash',current_target->>'tokenHash')
+ );
+ INSERT INTO public."EditorialRelease"(
+   "sourcePostId","publicationPostId","commandId",mode,
+   "publishAt","actorId","confirmedSeq"
+ ) VALUES(pid,pubid,cmd,action,timeutc,actor,confirmed->>'seq');
+ RETURN jsonb_build_object('created',true,'source_post_id',pid,
+  'publication_post_id',pubid,'mode',action,
+  'publish_at',to_char(timeutc,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  'status','queued_for_native_dispatch','publishable',false,
+  'provider_version',coalesce(i."providerVersion",'v1'));
+END $fn$;
+
+REVOKE ALL ON FUNCTION postmill_release_editorial_story_v1(
+ text,text,text,text,text,jsonb) FROM PUBLIC;
+COMMIT;
+, 'Z')) THEN
    RAISE EXCEPTION 'EDITORIAL_RELEASE_ALREADY_EXISTS' USING ERRCODE='55000';
   END IF;
   RETURN jsonb_build_object('created',false,'source_post_id',pid,
