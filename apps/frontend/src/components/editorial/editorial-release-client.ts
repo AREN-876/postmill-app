@@ -74,10 +74,11 @@ export function editorialReleaseClient(fetcher: Fetcher) {
       }
       if (x.status === 'available') {
         const slot = x.next_slot;
-        if (x.ready !== true || !record(slot) ||
-            typeof slot.publishAt !== 'string' || !Number.isFinite(Date.parse(slot.publishAt)) ||
-            typeof slot.localTime !== 'string' || slot.timezone !== 'Europe/Moscow' ||
-            typeof slot.integrationId !== 'string' || !slot.integrationId) {
+        if (x.ready !== true || (slot !== null && slot !== undefined &&
+            (!record(slot) || typeof slot.publishAt !== 'string' ||
+             !Number.isFinite(Date.parse(slot.publishAt)) ||
+             typeof slot.localTime !== 'string' || slot.timezone !== 'Europe/Moscow' ||
+             typeof slot.integrationId !== 'string' || !slot.integrationId))) {
           throw new Error('editorial_release_preview_untrusted');
         }
       }
