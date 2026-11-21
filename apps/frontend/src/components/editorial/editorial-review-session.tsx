@@ -1,0 +1,88 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFetch } from '@postmill-ai/helpers/utils/custom.fetch';
+import { editorialReviewClient } from './editorial-review-client';
+import {
+  EditorialReviewPanel,
+  type EditorialReviewSnapshot,
+  type EditorialHumanCommand,
+} from './editorial-review-panel';
+
+// Deliberately NOT mounted in any Postmill route or composer.
+// Enablement is only a UI integration switch, NOT a security boundary.
+// Production server-side org/target config and routes remain disabled.
+export function EditorialReviewSession({
+  postId, taskId, enabled,
+}: {
+  postId: string;
+  taskId: string;
+  enabled: boolean;
+}) {
+  const fetcher = useFetch();
+  const client = useMemo(() => editorialReviewClient(fetcher), [fetcher]);
+  const identity = postId + ':' + taskId;
+  const [loaded, setLoaded] = useState<{
+    identity: string;
+    snapshot: EditorialReviewSnapshot;
+  } | null>(null);
+  const [error, setError] = useState(false);
+  const [reading, setReading] = useState(false);
+  const requestId = useRef(0);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!enabled) throw new Error('editorial_review_disabled');
+    const current = ++requestId.current;
+    setReading(true);
+    setError(false);
+    try {
+      const snapshot = await client.read(postId, taskId);
+      if (current === requestId.current) {
+        setLoaded({ identity, snapshot });
+      }
+    } catch {
+      if (current === requestId.current) {
+        // Do not keep exposing a potentially stale artifact after failed read.
+        setLoaded(null);
+        setError(true);
+      }
+      throw new Error('editorial_review_read_unavailable');
+    } finally {
+      if (current === requestId.current) setReading(false);
+    }
+  }, [client, enabled, identity, postId, taskId]);
+
+  useEffect(() => {
+    if (enabled) void refresh().catch(() => undefined);
+    return () => {
+      requestId.current++;
+    };
+  }, [enabled, refresh]);
+
+  const queue = useCallback(async (command: EditorialHumanCommand) => {
+    if (!enabled) throw new Error('editorial_review_disabled');
+    return client.queue(postId, taskId, command);
+  }, [client, enabled, postId, taskId]);
+
+  if (!enabled) return <p>Редакторский обмен отключён.</p>;
+  if (error) {
+    return (
+      <section aria-label="Редакторская проверка">
+        <p role="alert">Не удалось подтвердить актуальное состояние черновика. Решения недоступны.</p>
+        <button type="button" disabled={reading} onClick={() => void refresh().catch(() => undefined)}>
+          Проверить статус (только чтение)
+        </button>
+      </section>
+    );
+  }
+  if (!loaded || loaded.identity !== identity) {
+    return <p role="status">Загрузка редакторского черновика…</p>;
+  }
+  return (
+    <EditorialReviewPanel
+      snapshot={loaded.snapshot}
+      onCommand={queue}
+      onRefresh={refresh}
+    />
+  );
+}
