@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFetch } from '@postmill-ai/helpers/utils/custom.fetch';
 import { editorialReviewClient } from './editorial-review-client';
+import { EditorialReleaseControls } from './editorial-release-controls';
 import {
   EditorialReviewPanel,
   type EditorialReviewSnapshot,
@@ -33,6 +34,7 @@ export function EditorialReviewSession({
   // the same panel after a read failure. Keep the lock in the session owner.
   const attemptedRef = useRef<{ identity: string; seq: string } | null>(null);
   const [attempted, setAttempted] = useState<{ identity: string; seq: string } | null>(null);
+  const [releaseAttempted, setReleaseAttempted] = useState<string | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!enabled) throw new Error('editorial_review_disabled');
@@ -98,12 +100,22 @@ export function EditorialReviewSession({
     return <p role="status">Загрузка редакторского черновика…</p>;
   }
   return (
-    <EditorialReviewPanel
-      snapshot={loaded.snapshot}
-      onCommand={queue}
-      onRefresh={refresh}
-      mutationsBlocked={attempted?.identity === identity &&
-        attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
-    />
+    <>
+      <EditorialReviewPanel
+        snapshot={loaded.snapshot}
+        onCommand={queue}
+        onRefresh={refresh}
+        mutationsBlocked={attempted?.identity === identity &&
+          attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
+      />
+      <EditorialReleaseControls
+        postId={postId}
+        taskId={taskId}
+        snapshot={loaded.snapshot}
+        fetcher={fetcher}
+        mutationsBlocked={releaseAttempted === identity}
+        onReleaseAttempt={() => setReleaseAttempted(identity)}
+      />
+    </>
   );
 }
