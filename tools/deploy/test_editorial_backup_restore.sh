@@ -1,39 +1,55 @@
 #!/usr/bin/env bash
-# Editorial 07 — DRILL ONLY. Discarded GitHub Actions PostgreSQL service.
-# No VPS, no live credentials, no Docker volumes, no external network.
+# Editorial 07: CI-only full-schema PostgreSQL 17 dump/restore drill.
+# Only the disposable PostgreSQL GitHub Actions service container is targeted.
 set -Eeuo pipefail
-if [[ "${GITHUB_ACTIONS:-}" != "true" || "${EDX_BACKUP_CI:-}" != "1" ]]; then
-  echo 'REFUSED: this PostgreSQL restore drill runs only in explicit isolated CI' >&2
+
+if [[ "${GITHUB_ACTIONS:-}" != "true" || "${EDX_BACKUP_CI:-}" != "1" ||
+      ! "${PG_CI_CONTAINER:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo 'REFUSED: requires isolated, explicit GitHub Actions PG17 service' >&2
   exit 2
 fi
-
-# Never trust caller-supplied connection environment in this CI-only script.
-export PGHOST=127.0.0.1 PGPORT=5432 PGUSER=postmill-local PGPASSWORD=postmill-local-pwd
-export PGSSLMODE=disable PGCONNECT_TIMEOUT=4
+C="$PG_CI_CONTAINER"
+if [[ "$(docker inspect "$C" --format '{{.Config.Image}}')" != 'postgres:17-alpine' ]]; then
+  echo 'REFUSED: unexpected PostgreSQL service image' >&2
+  exit 2
+fi
 SOURCE=postmill-db-local
 RESTORE=postmill-editorial-restore-ci
-BACKUP=$(mktemp)
-trap 'rm -f "$BACKUP"' EXIT
+DBUSER=postmill-local
+BACKUP=/tmp/editorial-ci-full-prisma.dump
 
-# Fail before a local CREATE DATABASE if the fixed source is unexpected.
-[[ "$(psql -X -w -v ON_ERROR_STOP=1 -Atq -d "$SOURCE" -c 'SELECT current_database()')" == "$SOURCE" ]]
-[[ "$(psql -X -w -v ON_ERROR_STOP=1 -Atq -d "$SOURCE" -c   'SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')" == "51" ]]
-[[ "$(psql -X -w -v ON_ERROR_STOP=1 -Atq -d "$SOURCE" -c   'SELECT COUNT(*) FROM "EditorialDraftReceipt"')" == "1" ]]
+sql() {
+  docker exec -i "$C" psql -X -w -U "$DBUSER" \
+    -v ON_ERROR_STOP=1 -Atq -d "$1"
+}
+[[ "$(sql "$SOURCE" <<'SQL'
+SELECT current_database();
+SQL
+)" == "$SOURCE" ]]
+[[ "$(sql "$SOURCE" <<'SQL'
+SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
+SQL
+)" == '51' ]]
+[[ "$(sql "$SOURCE" <<'SQL'
+SELECT COUNT(*) FROM "EditorialDraftReceipt";
+SQL
+)" == '1' ]]
+[[ "$(sql postgres <<'SQL'
+SELECT count(*) FROM pg_database WHERE datname='postmill-editorial-restore-ci';
+SQL
+)" == '0' ]] || {
+  echo 'REFUSED: restore target already exists' >&2; exit 2;
+}
 
-pg_dump --format=custom --no-owner --no-privileges --file="$BACKUP" --dbname="$SOURCE"
-[[ -s "$BACKUP" ]]
-pg_restore --list "$BACKUP" >/dev/null
+# Dump and restore using the PG17 server image, not the runner's client tools.
+docker exec "$C" pg_dump -U "$DBUSER" -Fc --no-owner --no-acl \
+  -f "$BACKUP" "$SOURCE"
+docker exec "$C" pg_restore --list "$BACKUP" >/dev/null
+docker exec "$C" createdb -U "$DBUSER" "$RESTORE"
+docker exec "$C" pg_restore -U "$DBUSER" --exit-on-error \
+  --no-owner --no-acl -d "$RESTORE" "$BACKUP"
 
-# Never drop an existing database, even one with the expected test name.
-if psql -X -w -v ON_ERROR_STOP=1 -Atq -d postgres -c     "SELECT 1 FROM pg_database WHERE datname='$RESTORE'" | grep -q '1'; then
-  echo 'REFUSED: restore target exists' >&2
-  exit 2
-fi
-createdb "$RESTORE"
-pg_restore --exit-on-error --no-owner --no-privileges --dbname="$RESTORE" "$BACKUP"
-
-# Check actual restored SQL structures AND persistent synthetic DRAFT ledger.
-psql -X -w -v ON_ERROR_STOP=1 -Atq -d "$RESTORE" <<'SQL'
+sql "$RESTORE" <<'SQL'
 DO $ci$
 DECLARE migrations integer; draft_count integer; invalid integer;
 BEGIN
