@@ -23,6 +23,8 @@ import { Providers } from '@postmill-ai/frontend/components/composer/providers/s
 import { getProviderSettingsMeta } from '@postmill-ai/frontend/components/composer/providers/high.order.provider';
 import { useLaunchStore } from '@postmill-ai/frontend/components/composer/store';
 import { CommentThread } from './comment.thread';
+import { EditorialReviewSession } from '@postmill-ai/frontend/components/editorial/editorial-review-session';
+import { canShowEditorialReviewInPostDetail } from './editorial-entry.guard';
 
 interface PostDetailModalProps {
   postId: string;
@@ -961,6 +963,25 @@ export const PostDetailModal: FC<PostDetailModalProps> = ({
             );
           }}
         />
+      )}
+
+      {/* Human editorial review is deliberately UNMOUNTED by default. This
+          UI gate is not security: the backend must still enforce cookie,
+          CSRF, RBAC and the exact test-org/target allowlist. */}
+      {canShowEditorialReviewInPostDetail(
+        activePost,
+        integration,
+        process.env.NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED,
+        process.env.NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET
+      ) && (
+        <section className="border border-newTableBorder rounded-[8px] p-[16px]">
+          <EditorialReviewSession
+            key={`${activePost.id}:${activePost.editorialTaskId}`}
+            postId={activePost.id}
+            taskId={activePost.editorialTaskId}
+            enabled
+          />
+        </section>
       )}
 
       {/* Preview + analytics */}
