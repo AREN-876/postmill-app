@@ -46,6 +46,8 @@ describe('Editorial 11 — closed-by-default test-org runtime activation', () =>
   });
 
   it('release flag is a second positive gate and cannot widen org/target', () => {
+    expect(editorialReleaseConfig({ ...valid, EDITORIAL_TEST_RELEASE_ENABLED: 'false' })).toBeNull();
+    expect(editorialReleaseConfig({ ...valid, EDITORIAL_TEST_RELEASE_ENABLED: 'TRUE' })).toBeNull();
     expect(editorialReleaseConfig(released)).toEqual(editorialSessionConfig(valid));
     expect(editorialReleaseConfig({
       ...released, EDITORIAL_TEST_MAX_TARGET: 'max:-different',
