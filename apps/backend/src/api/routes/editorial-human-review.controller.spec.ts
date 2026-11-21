@@ -117,7 +117,11 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     const source = fs.readFileSync(nodePath.resolve(__dirname, '../editorial-human-review.module.ts'), 'utf8');
     const runtime = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
     const app = fs.readFileSync(nodePath.resolve(__dirname, '../../app.module.ts'), 'utf8');
-    expect(source).toContain('export const authenticatedController = [EditorialHumanReviewController]');
+    expect(source).toContain('export const authenticatedController = [EditorialHumanReviewController, EditorialReleaseController]');
+    expect(source).toContain('EDITORIAL_RELEASE_CONFIG, useValue: null');
+    expect(runtime).not.toContain('EditorialReleaseModule');
+    expect(runtime).not.toContain('EditorialReleaseController');
+    expect(app).not.toContain('EditorialReleaseController');
     expect(source).toContain('consumer.apply(AuthMiddleware).forRoutes(...authenticatedController)');
     expect(source).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
     expect(runtime).not.toContain('EditorialHumanReviewController');
