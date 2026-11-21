@@ -360,4 +360,166 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
       await reviewApp.close();
     }
   });
+
+  it('09B: releases signed-approved three-part stories through one native Post per explicit command', async () => {
+    // This is the same isolated full Prisma database and synthetic target
+    // created in beforeAll. No Nest producer or MAX integration is called.
+    async function importApproved(taskId: string, sourceId: string) {
+      const [event] = await prisma.$queryRaw<Array<{
+        eventId: string; payloadHash: string; payload: Record<string, unknown>;
+        snapshot: Record<string, unknown>;
+      }>>`
+        SELECT o."eventId",o."payloadHash",o.payload,a.snapshot
+        FROM "EditorialDecisionOutbox" o
+        JOIN "EditorialReviewAnchor" a ON a."postId"=o."postId"
+        WHERE o."postId"=${sourceId}
+        ORDER BY o."createdAt" DESC LIMIT 1`;
+      expect(event).toBeTruthy();
+      const [next] = await prisma.$queryRaw<Array<{ state: Record<string, unknown> }>>`
+        SELECT postmill_editorial_next_state_v1(
+          ${JSON.stringify(event.snapshot)}::jsonb,
+          ${JSON.stringify(event.payload)}::jsonb
+        ) AS state`;
+      expect(next.state).toMatchObject({ text_status: 'approved', final_approved: true });
+      const reply = {
+        status: 'accepted', reason: null, state: next.state,
+        dispatch_authorized: false, publishable: false,
+        newly_applied: true, replay: false,
+      };
+      const [result] = await prisma.$queryRaw<Array<{ value: Record<string, unknown> }>>`
+        SELECT postmill_import_editorial_result_v1(
+          ${JSON.stringify(scope)}::jsonb, ${taskId}::text, ${target}::text,
+          ${event.eventId}::text, ${event.payloadHash}::text,
+          ${JSON.stringify(reply)}::jsonb
+        ) AS value`;
+      expect(result.value).toMatchObject({
+        newly_recorded: true, dispatch_authorized: false, publishable: false,
+      });
+    }
+
+    const current = await (await post()).json();
+    const sourceId = current.receipt.binding.post_id as string;
+    // Earlier 08 test created this specific approve_text outbox, without a
+    // confirmed remote result; approval alone must not release anything.
+    const forbidden = {
+      command_id: '33333333-3333-4333-8333-333333333333',
+      action: 'publish_now', publish_at: null,
+    };
+    await expect(prisma.$queryRaw`
+      SELECT postmill_release_editorial_story_v1(
+        ${org}::text,${sourceId}::text,${task}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify(forbidden)}::jsonb)`
+    ).rejects.toThrow();
+    await importApproved(task, sourceId);
+
+    const [released] = await prisma.$queryRaw<Array<{ value: Record<string, unknown> }>>`
+      SELECT postmill_release_editorial_story_v1(
+        ${org}::text,${sourceId}::text,${task}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify(forbidden)}::jsonb) AS value`;
+    expect(released.value).toMatchObject({
+      created: true, source_post_id: sourceId, mode: 'publish_now',
+      status: 'queued_for_native_dispatch', publishable: false,
+    });
+    const publicationId = released.value.publication_post_id as string;
+    expect(publicationId).toMatch(/^[0-9a-f]{32}$/);
+    const [duplicate] = await prisma.$queryRaw<Array<{ value: Record<string, unknown> }>>`
+      SELECT postmill_release_editorial_story_v1(
+        ${org}::text,${sourceId}::text,${task}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify(forbidden)}::jsonb) AS value`;
+    expect(duplicate.value).toMatchObject({
+      created: false, publication_post_id: publicationId,
+    });
+    await expect(prisma.$queryRaw`
+      SELECT postmill_release_editorial_story_v1(
+        ${org}::text,${sourceId}::text,${task}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify({ ...forbidden,
+          command_id: '44444444-4444-4444-8444-444444444444' })}::jsonb)`
+    ).rejects.toThrow();
+
+    const rows = await prisma.$queryRaw<Array<{
+      id: string; state: string; content: string; settings: string;
+      maxTarget: Record<string, unknown>;
+      editorialTaskId: string | null; approvalStatus: string;
+    }>>`SELECT id,state,content,settings,"maxTarget","editorialTaskId","approvalStatus"
+       FROM "Post" WHERE id IN (${sourceId},${publicationId}) ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    const source = rows.find(r => r.id === sourceId)!;
+    const publishedCopy = rows.find(r => r.id === publicationId)!;
+    expect(source.state).toBe('DRAFT');
+    expect(source.editorialTaskId).toBe(task);
+    expect(publishedCopy).toMatchObject({
+      state: 'QUEUE', editorialTaskId: null, content: source.content,
+      settings: source.settings, approvalStatus: 'approved',
+    });
+    expect(publishedCopy.maxTarget).toMatchObject({
+      integrationId: integration, internalId: target,
+    });
+    expect(JSON.parse(publishedCopy.settings).continuationText).toContain('─');
+    await expect(prisma.$executeRaw`UPDATE "Post" SET content='forged'
+      WHERE id=${publicationId}`).rejects.toThrow();
+    await expect(prisma.$executeRaw`UPDATE "Post" SET state='QUEUE'
+      WHERE id=${sourceId}`).rejects.toThrow();
+    await expect(prisma.$queryRaw`SELECT postmill_queue_editorial_human_v1(
+      ${org}::text,${sourceId}::text,${task}::text,${target}::text,
+      'ci-editor'::text,${JSON.stringify({
+        command_id: '55555555-5555-4555-8555-555555555555',
+        expected_seq: '1', action: 'reject', feedback: '',
+      })}::jsonb)`).rejects.toThrow();
+
+    // Second independent story on the same fake MAX channel uses exactly ONE
+    // 08:00 Europe/Moscow slot, encoded as 05:00 UTC.
+    const nextTask = '805';
+    const secondDraft = await post(JSON.stringify({ ...body, task_id: nextTask }));
+    expect(secondDraft.status).toBe(200);
+    const next = await secondDraft.json();
+    const nextId = next.receipt.binding.post_id as string;
+    const nextInitial = {
+      binding: next.receipt.binding, seq: '0', image_mode: 'disabled',
+      text_status: 'pending', text_request_id: null, text: next.receipt.text,
+      image: null, image_compatible: false, image_intent: null,
+      rejected: false, final_approved: false,
+      dispatch_authorized: false, publishable: false,
+    };
+    await prisma.$queryRaw`
+      SELECT postmill_anchor_editorial_review_v1(
+        ${JSON.stringify(scope)}::jsonb,${nextTask}::text,${target}::text,
+        ${JSON.stringify(nextInitial)}::jsonb)`;
+    await prisma.$queryRaw`
+      SELECT postmill_queue_editorial_human_v1(
+        ${org}::text,${nextId}::text,${nextTask}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify({
+          command_id: '66666666-6666-4666-8666-666666666666',
+          expected_seq: '0', action: 'approve_text', feedback: '',
+        })}::jsonb)`;
+    await importApproved(nextTask, nextId);
+    await prisma.$executeRaw`
+      UPDATE "Integration" SET "postingTimes"='[{"time":300},{"time":600},{"time":1020}]'
+      WHERE id=${integration}`;
+
+    const scheduled = new Date();
+    scheduled.setUTCDate(scheduled.getUTCDate() + 2);
+    scheduled.setUTCHours(5, 0, 0, 0);
+    const queueCommand = {
+      command_id: '77777777-7777-4777-8777-777777777777',
+      action: 'queue', publish_at: scheduled.toISOString(),
+    };
+    const [scheduledRelease] = await prisma.$queryRaw<Array<{ value: Record<string, unknown> }>>`
+      SELECT postmill_release_editorial_story_v1(
+        ${org}::text,${nextId}::text,${nextTask}::text,${target}::text,
+        'ci-editor'::text,${JSON.stringify(queueCommand)}::jsonb) AS value`;
+    expect(scheduledRelease.value).toMatchObject({
+      created: true, mode: 'queue', publish_at: scheduled.toISOString(),
+    });
+    const queuedId = scheduledRelease.value.publication_post_id as string;
+    const [scheduledPost] = await prisma.$queryRaw<Array<{
+      state: string; publishDate: Date; settings: string;
+    }>>`SELECT state,"publishDate",settings FROM "Post" WHERE id=${queuedId}`;
+    expect(scheduledPost.state).toBe('QUEUE');
+    expect(scheduledPost.publishDate.toISOString()).toBe(scheduled.toISOString());
+    expect(JSON.parse(scheduledPost.settings).mode).toBe('story');
+    const [total] = await prisma.$queryRaw<Array<{ total: bigint }>>`
+      SELECT count(*) AS total FROM "EditorialRelease"
+      WHERE "sourcePostId" IN (${sourceId},${nextId})`;
+    expect(total.total).toBe(2n);
+  });
 });

@@ -131,6 +131,45 @@ export class PostsRepository {
     return row.result;
   }
 
+  // One explicit release command turns a frozen three-part editorial DRAFT
+  // into ONE ordinary, native MAX publishing Post with an immutable association.
+  // The SQL function is the authoritative idempotency/revision/target fence;
+  // no direct state update of the managed editorial DRAFT is permitted.
+  async releaseEditorialStory(
+    orgId: string, postId: string, task: string, target: string,
+    actor: string, command: {
+      command_id: string;
+      action: 'publish_now' | 'queue';
+      publish_at: string | null;
+    },
+  ) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_release_editorial_story_v1(
+        ${orgId}::text, ${postId}::text, ${task}::text,
+        ${target}::text, ${actor}::text, ${JSON.stringify(command)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
+  async readEditorialRelease(orgId: string, sourcePostId: string) {
+    const row = await this._post.model.post.findFirst({
+      where: { id: sourcePostId, organizationId: orgId, editorialTaskId: { not: null } },
+      select: {
+        editorialReleaseSource: {
+          select: {
+            publicationPostId: true,
+            commandId: true,
+            mode: true,
+            publishAt: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    return row?.editorialReleaseSource ?? null;
+  }
+
   // Only read an existing unconfirmed event, after revalidating native
   // scope, target and frozen DRAFT. Never poll all orgs or claim work here.
   async readPendingEditorialDelivery(scope: EditorialScope, task: string, target: string) {

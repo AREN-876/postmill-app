@@ -15,6 +15,9 @@ export type EditorialReviewSnapshot = {
     last_confirmed_state?: {
       seq: string;
       image_mode?: string;
+      text_status?: string;
+      final_approved?: boolean;
+      rejected?: boolean;
     } | null;
   } | null;
   remote_current_verified: boolean;
@@ -67,7 +70,8 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
   const idle = snapshot.review?.status === 'idle';
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
-    idle && !busy && blockedAtSeq === null && !mutationsBlocked;
+    idle && snapshot.review?.last_confirmed_state?.final_approved !== true &&
+    !busy && blockedAtSeq === null && !mutationsBlocked;
   const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
 
   // Only a new, confirmed server revision can unlock commands. A refresh at

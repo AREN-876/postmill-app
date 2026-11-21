@@ -522,6 +522,8 @@ model Post {
   editorialTaskId            String?
   editorialProfileRef        String?
   editorialDraftReceipt      EditorialDraftReceipt?
+  editorialReleaseSource     EditorialRelease?         @relation("EditorialReleaseSource")
+  editorialReleasePublication EditorialRelease?        @relation("EditorialReleasePublication")
   approvalStatus             String?                   // campaign draft approval: pending|approved|rejected
   approvedById               String?
   approvedAt                 DateTime?
@@ -554,6 +556,21 @@ model Post {
   @@index([approvedById])
   @@index([createdById])
   @@index([brandId])
+}
+
+// One explicit post-approval release. The original managed DRAFT remains
+// immutable; its single publication Post is handled by the native MAX worker.
+model EditorialRelease {
+  sourcePostId      String   @id
+  publicationPostId String   @unique
+  commandId         String
+  mode              String
+  publishAt         DateTime
+  actorId           String
+  confirmedSeq      String
+  createdAt         DateTime @default(now())
+  source            Post     @relation("EditorialReleaseSource", fields: [sourcePostId], references: [id], onDelete: Restrict)
+  publication       Post     @relation("EditorialReleasePublication", fields: [publicationPostId], references: [id], onDelete: Restrict)
 }
 
 // Immutable initial admission receipt; not current review or publication authority.
