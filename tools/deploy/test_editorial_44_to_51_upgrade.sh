@@ -51,19 +51,19 @@ SQL
 
 # Representative pre-existing ordinary records, not a simulated managed draft.
 sql "$DB_OLD" <<'SQL'
-INSERT INTO "Organization"(id,name)
- VALUES('edx-ci-org-44','Temporary migration source');
+INSERT INTO "Organization"(id,name,"updatedAt")
+ VALUES('edx-ci-org-44','Temporary migration source',now());
 INSERT INTO "Integration"(id,"organizationId","internalId",name,
   "providerIdentifier",type,token)
  VALUES('edx-ci-max-44','edx-ci-org-44','edx-ci-target-44',
         'Offline fake MAX','max','max','NO_REAL_MAX_TOKEN');
-INSERT INTO "Campaign"(id,"organizationId",name)
- VALUES('edx-ci-campaign-44','edx-ci-org-44','Offline campaign');
+INSERT INTO "Campaign"(id,"organizationId",name,"updatedAt")
+ VALUES('edx-ci-campaign-44','edx-ci-org-44','Offline campaign',now());
 INSERT INTO "Post"(id,"organizationId","integrationId","group","state",
-  "publishDate",content,"campaignId","approvalStatus")
+  "publishDate",content,"campaignId","approvalStatus","updatedAt")
  VALUES('edx-ci-original-post-44','edx-ci-org-44','edx-ci-max-44',
         'edx-ci-ordinary-group','DRAFT',now(),'Preserve this 44-migration draft',
-        'edx-ci-campaign-44','pending');
+        'edx-ci-campaign-44','pending',now());
 SQL
 [[ "$(sql "$DB_OLD" <<'SQL'
 SELECT count(*) FROM "Post" WHERE id='edx-ci-original-post-44' AND state='DRAFT';
