@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """Read-only VPS inventory for Editorial 06B. Never installs, migrates or deploys.
 
-This probes the *running* containers, not a target image's schema or its
-readiness to deploy. Does not verify credentials, Postmill route activation,
+This probes the *running* containers and compares the live migration
+ledger against the reviewed local 51-migration checkout. It does not establish
+schema/data identity or readiness to deploy. Does not verify credentials, Postmill route activation,
 MAX safety, backup integrity, or Editorial/PG end-to-end behavior.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+from pathlib import Path
 import os
 import subprocess
 import sys
 
 POSTMILL = "postmill-postmill-1"
 POSTGRES = "postmill-postgres-1"
+# Local source is required to validate the checksums in _prisma_migrations.
+# It must be the full reviewed fork checkout (51 migration.sql files).
+MIGRATION_ROOT = Path(__file__).resolve().parents[2] / (
+    "libraries/nestjs-libraries/src/database/prisma/migrations"
+)
+BASELINE_LAST = "20261114090000_max_target_binding"
 MIGRATIONS = (
     "20261119120000_editorial_draft_fence",
     "20261119130000_editorial_draft_receipt",
@@ -52,6 +61,14 @@ WITH expected(name) AS (
 SELECT json_build_object(
  'database', current_database(),
  'postgres_version', current_setting('server_version'),
+ 'prisma_ledger',
+   (SELECT COALESCE(json_agg(json_build_object(
+       'name', migration_name,
+       'checksum', checksum,
+       'finished', finished_at IS NOT NULL,
+       'rolled_back', rolled_back_at IS NOT NULL
+   ) ORDER BY started_at), '[]'::json)
+   FROM public."_prisma_migrations"),
  'completed_migrations',
    (SELECT count(*) FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL),
  'unfinished_migrations',
@@ -117,6 +134,51 @@ def get_status(container: str) -> dict[str, str | bool]:
     return {"running": fields[0] == "true", "health": fields[1]}
 
 
+def verify_applied_checksums(db: dict[str, object]) -> dict[str, object]:
+    """Compare *actual* Prisma checksums with reviewed migration.sql bytes.
+
+    This validates migration-file provenance, not full live DB schema/data.
+    Any mismatch or unknown migration blocks a claimed baseline match.
+    Only sanitized status/counts leave this function; no DB credentials or SQL.
+    """
+    try:
+        files = sorted(MIGRATION_ROOT.glob("*/migration.sql"))
+        if len(files) != 51 or files[43].parent.name != BASELINE_LAST:
+            raise Refused("local migration checkout is not the reviewed 51-file tree")
+        expected = {
+            p.parent.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in files
+        }
+    except OSError as exc:
+        raise Refused("unable to read reviewed local migration files") from exc
+    rows = db.pop("prisma_ledger", None)
+    if not isinstance(rows, list) or len(rows) not in (44, 51):
+        raise Refused("unexpected Prisma migration ledger size")
+    names = [r.get("name") for r in rows if isinstance(r, dict)]
+    if len(names) != len(rows) or len(set(names)) != len(names):
+        raise Refused("duplicate or malformed Prisma ledger names")
+    local_names = set(list(expected)[:44] if len(rows) == 44 else expected)
+    if set(names) != local_names:
+        raise Refused("installed Prisma migrations do not match the local baseline")
+    mismatched = []
+    for row in rows:
+        if row.get("finished") is not True or row.get("rolled_back") is not False:
+            raise Refused("Prisma migration is not successfully completed")
+        if row.get("checksum") != expected[row["name"]]:
+            mismatched.append(row["name"])
+    if mismatched:
+        raise Refused("Prisma migration checksum mismatch: " + ", ".join(mismatched[:4]))
+    if db.get("completed_migrations") != len(rows):
+        raise Refused("Prisma completed count and ledger disagree")
+    return {
+        "status": "MATCHED",
+        "applied_count": len(rows),
+        "source_file_count": len(files),
+        "scope": "migration_names_and_sha256_only",
+        "live_schema_or_data_verified": False,
+    }
+
+
 def collect() -> dict[str, object]:
     postmill = get_status(POSTMILL)
     postgres = get_status(POSTGRES)
@@ -137,6 +199,10 @@ def collect() -> dict[str, object]:
     if any(value not in valid for value in migrations.values()):
         raise Refused("invalid editorial migration state")
 
+    # A matching _prisma_migrations ledger is necessary, not proof that live
+    # tables/objects are identical to the checked-in Prisma schema.
+    baseline = verify_applied_checksums(db)
+
     # "Ready for test activation" is intentionally not inferred from SQL alone.
     db["schema_installed"] = (
         all(value == "APPLIED" for value in migrations.values())
@@ -149,6 +215,7 @@ def collect() -> dict[str, object]:
         "postmill": postmill,
         "postgres": postgres,
         "inventory": db,
+        "prisma_migration_checksum_audit": baseline,
         "runtime_module_activation": "NOT_VERIFIED",
         "isolated_max_target_and_campaign": "NOT_VERIFIED",
         "editorial_connection": "NOT_VERIFIED",
