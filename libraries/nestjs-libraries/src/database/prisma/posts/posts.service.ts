@@ -2017,7 +2017,10 @@ export class PostsService {
     return this.findFreeDateTimeRecursive(
       orgId,
       findTimes,
-      dayjs.utc().startOf('day')
+      dayjs.utc().startOf('day'),
+      0,
+      365,
+      integrationId
     );
   }
 
@@ -2035,7 +2038,8 @@ export class PostsService {
     times: number[],
     date: dayjs.Dayjs,
     depth = 0,
-    maxDepth = 365
+    maxDepth = 365,
+    integrationId?: string
   ): Promise<string> {
     if (!times.length) {
       throw new BadRequestException(
@@ -2052,7 +2056,8 @@ export class PostsService {
     const list = await this._postRepository.getPostsCountsByDates(
       orgId,
       times,
-      date
+      date,
+      integrationId
     );
 
     if (!list.length) {
@@ -2061,7 +2066,8 @@ export class PostsService {
         times,
         date.add(1, 'day'),
         depth + 1,
-        maxDepth
+        maxDepth,
+        integrationId
       );
     }
 
