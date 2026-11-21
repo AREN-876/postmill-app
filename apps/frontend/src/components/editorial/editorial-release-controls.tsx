@@ -59,7 +59,7 @@ export function EditorialReleaseControls({
     !failedRead && !reading && !sending && !mutationsBlocked;
 
   async function submit() {
-    if (!choice || !canSubmit || !preview?.next_slot) return;
+    if (!choice || !canSubmit || (choice === 'queue' && !preview?.next_slot)) return;
     const action = choice;
     const publishAt = action === 'queue' ? preview.next_slot.publishAt : null;
     setChoice(null);
@@ -94,16 +94,20 @@ export function EditorialReleaseControls({
       {preview?.status === 'not_finally_approved' && (
         <p role="status">Окончательное одобрение ещё не подтверждено.</p>
       )}
-      {preview?.status === 'available' && preview.next_slot && (
+      {preview?.status === 'available' && (
         <>
-          <p>Ближайший свободный слот для всей истории: <strong>{preview.next_slot.localTime} МСК</strong>.</p>
+          {preview.next_slot
+            ? <p>Ближайший свободный слот для всей истории: <strong>{preview.next_slot.localTime} МСК</strong>.</p>
+            : <p>Слоты очереди не настроены или заняты. Публикация сейчас остаётся доступной.</p>}
           <div className="flex gap-2 flex-wrap">
             <button type="button" disabled={!canSubmit} onClick={() => setChoice('publish_now')}>
               Опубликовать сейчас
             </button>
-            <button type="button" disabled={!canSubmit} onClick={() => setChoice('queue')}>
-              Добавить в очередь
-            </button>
+            {preview.next_slot && (
+              <button type="button" disabled={!canSubmit} onClick={() => setChoice('queue')}>
+                Добавить в очередь
+              </button>
+            )}
           </div>
         </>
       )}
