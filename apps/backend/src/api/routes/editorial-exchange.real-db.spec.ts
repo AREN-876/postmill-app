@@ -8,10 +8,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
+import { Reflector } from '@nestjs/core';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { EditorialExchangeService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-exchange.service';
+import { EditorialHumanReviewController } from './editorial-human-review.controller';
+import {
+  EditorialHumanReviewService, EDITORIAL_HUMAN_REVIEW_CONFIG,
+} from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
+import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/roles/roles.service';
+import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
+import { OrgRbacGuard } from '@postmill-ai/backend/services/auth/rbac/org-rbac.guard';
+import { AuthMiddleware } from '@postmill-ai/backend/services/auth/auth.middleware';
+import { CsrfMiddleware } from '@postmill-ai/backend/services/auth/csrf.middleware';
 import {
   EditorialExchangeController, EDITORIAL_EXCHANGE_CONFIG,
 } from './editorial-exchange.controller';
@@ -192,5 +204,156 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
       SELECT count(*) AS total FROM "Post"
       WHERE "organizationId"=${org} AND "editorialTaskId"=${task}`;
     expect(n.total).toBe(1n);
+  });
+
+  it('operates a human cookie/CSRF review against the real isolated DRAFT and SQL', async () => {
+    // Reuse the full-51-migration disposable CI database and the exact
+    // synthetic org/MAX target from this test, never a real MAX integration.
+    const draftResponse = await post();
+    expect(draftResponse.status).toBe(200);
+    const draft = await draftResponse.json();
+    const postId: string = draft.receipt.binding.post_id;
+    expect(postId).toMatch(/^[0-9a-f]{32}$/);
+
+    // The separate Editorial engine owns the initial state. Here we insert
+    // its exact initial shape ONLY in the isolated test DB; production
+    // requires the actual signed and identity-verified remote state.
+    const initial = {
+      binding: draft.receipt.binding,
+      seq: '0', image_mode: 'disabled',
+      text_status: 'pending', text_request_id: null,
+      text: draft.receipt.text, image: null, image_compatible: false,
+      image_intent: null, rejected: false, final_approved: false,
+      dispatch_authorized: false, publishable: false,
+    };
+    const [anchor] = await prisma.$queryRaw<Array<{ value: Record<string, unknown> }>>`
+      SELECT postmill_anchor_editorial_review_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
+        ${JSON.stringify(initial)}::jsonb
+      ) AS value`;
+    expect(anchor.value).toMatchObject({
+      created: true, dispatch_authorized: false, publishable: false,
+    });
+
+    // In this one runner-only Nest module, the real middleware and RBAC
+    // guard are used. The synthetic resolver only supplies test identities;
+    // it is NOT a replacement for production JWT validation.
+    const roles = {
+      getEffectivePermissions: vi.fn(async (orgId: string, userId: string) => {
+        if (orgId !== org) return null;
+        return userId === 'ci-viewer'
+          ? { permissions: ['posts:read'] }
+          : { permissions: ['posts:read', 'posts:update'] };
+      }),
+    };
+    const audit = { record: vi.fn(async () => undefined) };
+    const resolver = {
+      resolve: vi.fn(async ({ jwt }: { jwt: string }) => ({
+        ok: true,
+        context: {
+          org: { id: jwt === 'foreign' ? 'ci-foreign-org' : org },
+          user: { id: jwt === 'viewer' ? 'ci-viewer' : 'ci-editor' },
+          impersonated: false, expiresAt: null,
+        },
+      })),
+    };
+    const repository = Object.assign(Object.create(PostsRepository.prototype), {
+      _post: prisma,
+    }) as PostsRepository;
+    class TestCookieAuth extends AuthMiddleware {
+      constructor() { super(resolver as never); }
+    }
+    @Module({
+      controllers: [EditorialHumanReviewController],
+      providers: [
+        EditorialHumanReviewService,
+        { provide: PostsRepository, useValue: repository },
+        { provide: RolesService, useValue: roles },
+        { provide: AuditService, useValue: audit },
+        { provide: OrgRbacGuard, useValue: new OrgRbacGuard(new Reflector(), roles as never, audit as never) },
+        { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useValue: {
+          enabled: true, testOrgId: org, targetInternalId: target,
+        } },
+      ],
+    })
+    class IsolatedEditorModule implements NestModule {
+      configure(consumer: MiddlewareConsumer) {
+        consumer.apply(TestCookieAuth).forRoutes(EditorialHumanReviewController);
+        consumer.apply(CsrfMiddleware).forRoutes(EditorialHumanReviewController);
+      }
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [IsolatedEditorModule],
+    }).compile();
+    const reviewApp = moduleRef.createNestApplication({ logger: false });
+    reviewApp.use(cookieParser());
+    await reviewApp.listen(0, '127.0.0.1');
+    const route = (await reviewApp.getUrl()) + '/editorial/review/' + postId + '/' + task;
+    const editorCookie = 'auth=editor; csrf_token=ci-test-csrf';
+    const requestDecision = (payload: unknown, cookie = editorCookie,
+      csrf = 'ci-test-csrf') => fetch(route + '/decisions', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrf },
+      body: JSON.stringify(payload),
+    });
+    const command = {
+      command_id: '11111111-1111-4111-8111-111111111111',
+      expected_seq: '0', action: 'approve_text', feedback: '',
+    };
+
+    try {
+      const readResponse = await fetch(route, { headers: { cookie: editorCookie } });
+      expect(readResponse.status).toBe(200);
+      const snapshot = await readResponse.json();
+      expect(snapshot).toMatchObject({
+        post_id: postId, task_id: task, content,
+        review_acknowledged: true,
+        review: { status: 'idle', last_confirmed_state: { seq: '0' } },
+        dispatch_authorized: false, publishable: false,
+      });
+      expect((await fetch(route, { headers: { cookie: 'auth=viewer' } })).status).toBe(200);
+      expect((await requestDecision(command, 'auth=viewer; csrf_token=ci-test-csrf')).status).toBe(403);
+      expect((await requestDecision(command, editorCookie, '')).status).toBe(403);
+      expect((await fetch(route, { headers: { cookie: 'auth=foreign' } })).status).toBe(404);
+      expect((await requestDecision({ ...command, actor_id: 'spoofed' })).status).toBe(400);
+      expect((await requestDecision(command, 'csrf_token=ci-test-csrf')).status).toBe(403);
+
+      const queuedResponse = await requestDecision(command);
+      expect(queuedResponse.status).toBe(200);
+      const queued = await queuedResponse.json();
+      expect(queued).toMatchObject({
+        status: 'queued/unconfirmed', newly_queued: true,
+        publishable: false, dispatch_authorized: false,
+      });
+      expect(queued.event_id).toMatch(/^[0-9a-f-]{36}$/);
+      const after = await (await fetch(route, { headers: { cookie: editorCookie } })).json();
+      expect(after.review.status).toBe('pending');
+      expect(after.review.last_confirmed_state.seq).toBe('0');
+
+      // A second distinct command cannot jump over the pending delivery.
+      const duplicate = await requestDecision({
+        ...command, command_id: '22222222-2222-4222-8222-222222222222',
+      });
+      expect(duplicate.status).toBe(409);
+      const [state] = await prisma.$queryRaw<Array<{
+        state: string; approval: string | null;
+        outbox: bigint; receipts: bigint;
+      }>>`
+        SELECT p.state,p."approvalStatus" AS approval,
+          (SELECT count(*) FROM "EditorialDecisionOutbox" o WHERE o."postId"=p.id) AS outbox,
+          (SELECT count(*) FROM "EditorialDecisionResult" r
+            JOIN "EditorialDecisionOutbox" o ON o."eventId"=r."eventId"
+            WHERE o."postId"=p.id) AS receipts
+        FROM "Post" p WHERE p.id=${postId}`;
+      expect(state).toEqual({
+        state: 'DRAFT', approval: 'pending', outbox: 1n, receipts: 0n,
+      });
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'editorial.review.queued', resourceId: postId, userId: 'ci-editor',
+      }));
+    } finally {
+      await reviewApp.close();
+    }
   });
 });
