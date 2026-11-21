@@ -157,6 +157,17 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       method: 'POST', redirect: 'follow',
     })).rejects.toBeInstanceOf(EditorialTransportError);
   });
+  it('default reconciliation adapter is defined and does not touch the network without a pending event', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(null),
+      importEditorialDecisionResult: vi.fn(),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    await expect(svc.reconcileOnce(scope, '42', 'test-channel', cfg))
+      .resolves.toEqual({ status: 'no_pending' });
+    expect(repo.readPendingEditorialDelivery).toHaveBeenCalledTimes(1);
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+  });
   it('does not resend on an unknown result; separate lookup does not submit', async () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),

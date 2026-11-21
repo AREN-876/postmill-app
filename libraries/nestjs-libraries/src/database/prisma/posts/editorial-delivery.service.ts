@@ -35,7 +35,7 @@ export class EditorialDeliveryService {
   }
 
   async reconcileOnce(scope: EditorialScope, task: string, target: string,
-    config: EditorialWireConfig, fetcher: typeof safeFetch = safeFetch) {
+    config: EditorialWireConfig, fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
     const peer = editorialWireConfig(config);
     if (scope.org_id !== peer.orgId || scope.is_test !== true) {
       throw new EditorialTransportError();

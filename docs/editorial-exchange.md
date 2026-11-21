@@ -21,6 +21,46 @@ Existing native campaign draft approval is a single approvalStatus (pending/appr
 ## Testing / deployment
 Focused PostgreSQL 17 CI uses the exact migration against a disposable minimal pre-migration schema fixture; it does not prove whole Prisma schema drift or installed-version compatibility. Full Test CI covers prisma migrate deploy, migration drift, normal regressions; run before merge. No changes to existing migrations, releases, image tags, StoryGo Gateway, config or runtime. Before any eventual deployment coordinate explicit migration/backups and qualify actual installed version, all routes, CSRF/RBAC, transport, cleanup and release guards. Do not deploy 06A independently to production.
 
+## 06C: one-command read-only VPS readiness inventory (not activation)
+
+The working VPS can legitimately have fewer migrations than `main`. Before any
+deploy, use `python3 tools/deploy/editorial-readiness --check` from an approved
+checkout of this fork **on the VPS**. It requires local Docker CLI access and
+uses fixed `docker inspect` plus `docker exec` with `BEGIN READ ONLY`; it
+never pulls an image, alters a file/role, migrates, creates a draft, exposes
+Postmill secrets, or contacts MAX. Output is a bounded inventory containing
+the image reference, container health, completed/unfinished migrations, the
+seven Editorial migration states, and counts of enabled MAX integrations and
+active campaigns. It does not report IDs, credentials, or editorial content.
+
+The same `--check` now compares the live Postmill `_prisma_migrations`
+ledger (44 or 51 completed rows) against the exact SHA-256 of each
+`migration.sql` in the **local full 51-file fork checkout**. A missing source
+tree, changed migration checksum, missing/extra migration, incomplete or
+rolled-back entry is a hard refusal; only counts/status are printed, not raw
+ledger checksums, PostgreSQL errors or secrets. This is read-only and does
+not execute the migration SQL. Correct checksums prove migration-file provenance
+only, not live schema equivalence, data integrity, or deployment authorization.
+
+A successful `--check` invocation means **only that the inventory succeeded**.
+`schema_installed` is a necessary DB condition, not runtime readiness.
+The tool deliberately leaves module activation, test-org/target mapping,
+Editorial-014B role/HTTP/DB connectivity, backup restore, publication fences
+and deployment permission as NOT_VERIFIED/false. There is **no `--apply`**,
+no migration runner and no silent operational change.
+
+Current 2026-11-20 VPS evidence: image created November 16, 44 committed
+Prisma migrations, last `20261114090000_max_target_binding`, all seven
+Editorial migrations NOT_APPLIED, no `Post.editorialTaskId` or
+`EditorialDraftReceipt`, no active Campaign, and the Editorial task #4's
+channel alias `test:terra-v2` is not an Integration ID/internalId in the
+installed Postmill database. The one enabled MAX integration is not
+authorized as a test target. An image replacement is **not** a DB migration,
+and `postmill-update` intentionally refuses schema drift without reviewed
+fingerprint. Only after a separate backup+isolated restore and a reviewed
+test-only cross-service exercise may a unified one-time deployment be
+approved. Do not bypass the guard or create a synthetic target in production.
+
 ## 06B-1: offline initial-draft admission (no route)
 
 The existing PublicAuthMiddleware stamps generic API keys and OAuth as integrators; they are not dedicated Exchange capabilities. Do not provision or reuse them for Exchange. `prepareEditorialDraft` implements a deliberately separate, unregistered and test-only admission boundary. Trusted server configuration (not the request) must supply one exact org/integration/campaign/Editorial-channel/profile/image-mode scope, `is_test: true`, SHA-256 digest of a CSPRNG `edx_v1_<64 lowercase hex>` secret, and expiry (UTC milliseconds). Header is exactly `Authorization: Bearer edx_v1_…`. Missing/expired config fails closed. The future transport must apply this boundary on every machine request, without native auth fallback, logging the credential, or enabling this through a generic key. Credential provisioning, rotation/revocation, HTTPS/internal transport and rate limiting are not implemented here; configure no live key yet.
