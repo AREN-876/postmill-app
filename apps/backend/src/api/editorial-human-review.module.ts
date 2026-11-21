@@ -8,22 +8,22 @@ import {
 import { EditorialHumanReviewController } from './routes/editorial-human-review.controller';
 import { EditorialReleaseController } from './routes/editorial-release.controller';
 import { EditorialReleaseService, EDITORIAL_RELEASE_CONFIG } from '@postmill-ai/backend/services/editorial/editorial-release.service';
+import { editorialReleaseConfig, editorialSessionConfig } from './editorial-session-runtime';
 
 // This is the future human-session controller registry. Keep SessionAuth/CSRF
 // bound to the same controller list; no equivalent public-API registration.
 export const authenticatedController = [EditorialHumanReviewController, EditorialReleaseController];
 
-// Deliberately NOT imported by AppModule or ApiModule. Even the disabled HTTP
-// endpoint must not be registered in production until a separate reviewed
-// security/activation decision. The credential/target gate also stays null.
+// Registered by AppModule ONLY on a full, exact test-org/target opt-in.
+// Machine receiver is never registered here; release remains independently off.
 @Module({
   controllers: [...authenticatedController],
   providers: [
     EditorialHumanReviewService,
     EditorialReleaseService,
     OrgRbacGuard,
-    { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useValue: null },
-    { provide: EDITORIAL_RELEASE_CONFIG, useValue: null },
+    { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useFactory: () => editorialSessionConfig(process.env) },
+    { provide: EDITORIAL_RELEASE_CONFIG, useFactory: () => editorialReleaseConfig(process.env) },
   ],
 })
 export class EditorialHumanReviewModule implements NestModule {

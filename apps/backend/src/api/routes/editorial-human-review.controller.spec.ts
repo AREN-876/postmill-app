@@ -113,12 +113,13 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     audit.record.mockResolvedValue(undefined);
   });
 
-  it('is registered for existing session/CSRF middleware; no machine transport invocation', () => {
+  it('has the existing cookie/CSRF middleware and fail-closed test-only runtime import', () => {
     const source = fs.readFileSync(nodePath.resolve(__dirname, '../editorial-human-review.module.ts'), 'utf8');
     const runtime = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
     const app = fs.readFileSync(nodePath.resolve(__dirname, '../../app.module.ts'), 'utf8');
     expect(source).toContain('export const authenticatedController = [EditorialHumanReviewController, EditorialReleaseController]');
-    expect(source).toContain('EDITORIAL_RELEASE_CONFIG, useValue: null');
+    expect(source).toContain('editorialReleaseConfig(process.env)');
+    expect(source).toContain('editorialSessionConfig(process.env)');
     expect(runtime).not.toContain('EditorialReleaseModule');
     expect(runtime).not.toContain('EditorialReleaseController');
     expect(app).not.toContain('EditorialReleaseController');
@@ -126,7 +127,9 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect(source).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
     expect(runtime).not.toContain('EditorialHumanReviewController');
     expect(runtime).not.toContain('EditorialHumanReviewModule');
-    expect(app).not.toContain('EditorialHumanReviewModule');
+    expect(app).toContain('editorialSessionRoutesEnabled(process.env)');
+    expect(app).toContain('? [EditorialHumanReviewModule]');
+    expect(app).not.toContain('EditorialExchangeModule');
   });
   it('permits current org editor to read verified text status and queue once', async () => {
     const r = await read();

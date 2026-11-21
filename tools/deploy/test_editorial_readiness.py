@@ -34,6 +34,15 @@ def fake_inventory(status="NOT_APPLIED", **changes):
         "managed_draft_column": status == "APPLIED",
         "editorial_receipts": status == "APPLIED",
         "enabled_max_integrations": 1,
+        "editorial_test_target": {
+            "match_count": 1, "single_enabled": True,
+            "identities": [{
+                "organization_id": "org-test",
+                "integration_id": "int-test",
+                "provider": "max",
+                "posting_times_utc_minutes": '[{"time":300},{"time":600},{"time":1020}]',
+            }],
+        },
         "active_campaigns": 0,
     }
     row.update(changes)
@@ -74,6 +83,8 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(result["inventory"]["completed_migrations"], 44)
         self.assertFalse(result["inventory"]["schema_installed"])
         self.assertEqual(result["inventory"]["active_campaigns"], 0)
+        self.assertTrue(result["inventory"]["editorial_test_target_identified"])
+        self.assertEqual(result["inventory"]["editorial_test_target"]["identities"][0]["integration_id"], "int-test")
         self.assertFalse(result["approved_to_deploy"])
         self.assertEqual(result["prisma_migration_checksum_audit"]["status"], "MATCHED")
         self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 44)
@@ -86,6 +97,34 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(result["runtime_module_activation"], "NOT_VERIFIED")
         self.assertEqual(result["editorial_connection"], "NOT_VERIFIED")
         self.assertFalse(result["approved_to_deploy"])
+
+    def test_missing_or_duplicate_test_channel_never_becomes_verified(self):
+        missing = fake_inventory(editorial_test_target={
+            "match_count": 0, "single_enabled": False, "identities": []
+        })
+        result = self.run_inventory(missing)
+        self.assertFalse(result["inventory"]["editorial_test_target_identified"])
+        self.assertFalse(result["approved_to_deploy"])
+
+        duplicate = fake_inventory(editorial_test_target={
+            "match_count": 2, "single_enabled": False,
+            "identities": [
+                {"organization_id": "org-a", "integration_id": "int-a", "provider": "max"},
+                {"organization_id": "org-b", "integration_id": "int-b", "provider": "max"},
+            ],
+        })
+        self.assertFalse(
+            self.run_inventory(duplicate)["inventory"]["editorial_test_target_identified"]
+        )
+
+    def test_malformed_target_inventory_fails_closed(self):
+        wrong = fake_inventory(editorial_test_target={
+            "match_count": 1, "single_enabled": True, "identities": [{
+                "organization_id": "org", "integration_id": "int", "provider": "telegram"
+            }],
+        })
+        with self.assertRaisesRegex(readiness.Refused, "malformed read-only exact MAX target"):
+            self.run_inventory(wrong)
 
     def test_unfinished_migration_blocks_schema_ready(self):
         row = fake_inventory("APPLIED", unfinished_migrations=1)
