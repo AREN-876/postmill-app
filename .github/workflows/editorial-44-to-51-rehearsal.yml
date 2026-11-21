@@ -1,4 +1,4 @@
-name: Editorial upgrade 44 to 51 isolated PostgreSQL 17
+name: Editorial upgrade 44 to 52 isolated PostgreSQL 17
 on:
   pull_request:
     paths:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   baseline-rehearsal:
-    name: 44 migrations, PostgreSQL backup/restore, 51 migrations
+    name: 44 migrations, PostgreSQL backup/restore, 52 migrations
     runs-on: ubuntu-latest
     timeout-minutes: 18
     services:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24.19.0'
-      - name: Rehearse the exact historical 44-to-51 Prisma migration on a restored clone
+      - name: Rehearse historical 44-to-52 Prisma migration on a restored clone
         env:
           EDX_44_51_CI: '1'
           PG_CI_CONTAINER: ${{ job.services.postgres.id }}
