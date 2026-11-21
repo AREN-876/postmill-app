@@ -2024,6 +2024,32 @@ export class PostsService {
     );
   }
 
+  /**
+   * Read-only preview for ONE whole three-part MAX story. The native Post
+   * stores all three parts, so one publishing slot is sufficient.
+   *
+   * Do not use this as a reservation or permission to publish: release must
+   * later recheck rights, latest approval, target and atomic slot ownership.
+   */
+  async previewEditorialStorySlot(orgId: string, integrationId: string) {
+    if (!integrationId) {
+      throw new BadRequestException('Channel is required');
+    }
+    const utcSlot = await this.findFreeDateTime(orgId, integrationId);
+    // Legacy slot search returns an unzoned UTC clock string. Convert it to
+    // an explicit UTC instant, not the VPS/browser's local timezone.
+    const instant = dayjs.utc(utcSlot);
+    if (!instant.isValid() || !instant.isAfter(dayjs.utc())) {
+      throw new BadRequestException('No future posting slot available');
+    }
+    return {
+      integrationId,
+      publishAt: instant.toISOString(),
+      localTime: instant.tz('Europe/Moscow').format('YYYY-MM-DD HH:mm'),
+      timezone: 'Europe/Moscow' as const,
+    };
+  }
+
   async createPopularPosts(post: {
     category: string;
     topic: string;
