@@ -33,6 +33,21 @@ END $fn$;
 CREATE TRIGGER "EditorialRelease_immutable_v1" BEFORE UPDATE OR DELETE ON "EditorialRelease"
  FOR EACH ROW EXECUTE FUNCTION postmill_editorial_release_immutable_v1();
 
+-- Approval is frozen at release: no subsequent editorial command may
+-- revise the original artifact after it has been copied for native delivery.
+CREATE FUNCTION postmill_editorial_release_stop_decision_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog,public,pg_temp AS $fn$
+BEGIN
+ IF EXISTS (SELECT 1 FROM public."EditorialRelease" r
+            WHERE r."sourcePostId"=NEW."postId") THEN
+  RAISE EXCEPTION 'EDITORIAL_ALREADY_RELEASED' USING ERRCODE='55000';
+ END IF;
+ RETURN NEW;
+END $fn$;
+CREATE TRIGGER "EditorialDecisionOutbox_stop_after_release_v1"
+ BEFORE INSERT ON "EditorialDecisionOutbox" FOR EACH ROW
+ EXECUTE FUNCTION postmill_editorial_release_stop_decision_v1();
+
 -- The published copy may undergo only existing native worker bookkeeping.
 -- Content, settings (all three parts), target, schedule and approval are frozen.
 -- Legacy edit/reschedule/delete routes cannot mutate an authorized artifact.
