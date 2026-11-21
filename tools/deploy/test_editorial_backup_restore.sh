@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Editorial 07: CI-only full-schema PostgreSQL 17 dump/restore drill.
+# Editorial 07/09B: CI-only full-schema PostgreSQL 17 dump/restore drill.
 # Only the disposable PostgreSQL GitHub Actions service container is targeted.
 set -Eeuo pipefail
 
@@ -29,7 +29,7 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
 SQL
-)" == '51' ]]
+)" == '52' ]]
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "EditorialDraftReceipt";
 SQL
@@ -60,9 +60,11 @@ BEGIN
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>51 OR draft_count<>1 OR invalid<>0
+  IF migrations<>52 OR draft_count<>1 OR invalid<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
+    OR to_regclass('public."EditorialRelease"') IS NULL
+    OR to_regprocedure('postmill_release_editorial_story_v1(text,text,text,text,text,jsonb)') IS NULL
     OR to_regprocedure('postmill_read_editorial_delivery_v1(jsonb,text,text)') IS NULL
   THEN
     RAISE EXCEPTION 'EDITORIAL_CI_RESTORE_CONTRACT_FAILED';
