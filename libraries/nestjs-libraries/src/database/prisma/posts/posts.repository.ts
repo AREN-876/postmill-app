@@ -1154,12 +1154,20 @@ export class PostsRepository {
   async getPostsCountsByDates(
     orgId: string,
     times: number[],
-    date: dayjs.Dayjs
+    date: dayjs.Dayjs,
+    integrationId?: string
   ) {
     const dates = await this._post.model.post.findMany({
       where: {
         deletedAt: null,
         organizationId: orgId,
+        // A MAX story occupies exactly one slot on its own channel. Never
+        // block other channels just because they use the same wall-clock slot.
+        // Preserve legacy organization-wide behavior when no channel is given.
+        ...(integrationId ? {
+          integrationId,
+          state: { in: [State.QUEUE, State.PUBLISHING] },
+        } : {}),
         publishDate: {
           in: times.map((time) => {
             return date.clone().add(time, 'minutes').toDate();
