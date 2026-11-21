@@ -359,4 +359,40 @@ describe('1.1 / 1.3 / 1.4 — dashboard repository queries', () => {
       expect(posts.map((p: any) => p.thumb)).toEqual([null, null, null, null]);
     });
   });
+
+  describe('free posting grid per channel', () => {
+    it('only counts active queued/publishing posts of the selected integration', async () => {
+      const date = dayjs.utc('2099-04-01T00:00:00Z');
+      const findMany = vi.fn().mockResolvedValue([
+        { publishDate: date.add(300, 'minute').toDate() },
+      ]);
+      const repository = Object.create(PostsRepository.prototype) as PostsRepository;
+      (repository as any)._post = { model: { post: { findMany } } };
+
+      const free = await repository.getPostsCountsByDates(
+        'org-1', [300, 600, 1020], date, 'channel-A',
+      );
+      expect(free).toEqual([600, 1020]);
+      expect(findMany).toHaveBeenCalledWith({
+        where: {
+          deletedAt: null,
+          organizationId: 'org-1',
+          integrationId: 'channel-A',
+          state: { in: ['QUEUE', 'PUBLISHING'] },
+          publishDate: { in: [300, 600, 1020].map(n => date.add(n, 'minute').toDate()) },
+        },
+        select: { publishDate: true },
+      });
+    });
+
+    it('retains historical organization-wide behavior when no channel was selected', async () => {
+      const date = dayjs.utc('2099-04-01T00:00:00Z');
+      const findMany = vi.fn().mockResolvedValue([]);
+      const repository = Object.create(PostsRepository.prototype) as PostsRepository;
+      (repository as any)._post = { model: { post: { findMany } } };
+      expect(await repository.getPostsCountsByDates('org-1', [300], date)).toEqual([300]);
+      expect(findMany.mock.calls[0][0].where).not.toHaveProperty('integrationId');
+      expect(findMany.mock.calls[0][0].where).not.toHaveProperty('state');
+    });
+  });
 });
