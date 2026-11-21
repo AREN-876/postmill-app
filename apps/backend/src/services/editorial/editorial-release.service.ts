@@ -127,7 +127,14 @@ export class EditorialReleaseService {
     if (!ready) return { ready: false, status: 'not_finally_approved' };
     const integrationId = view.receipt?.binding?.integration_id;
     if (!integrationId) throw new HttpException('editorial_release_binding_unknown', 503);
-    const slot = await this.postService.previewEditorialStorySlot(orgId, integrationId);
+    // Publish-now remains available without a configured grid. Only the
+    // optional queue preview depends on free slots.
+    let slot: Awaited<ReturnType<PostsService['previewEditorialStorySlot']>> | null = null;
+    try {
+      slot = await this.postService.previewEditorialStorySlot(orgId, integrationId);
+    } catch {
+      slot = null;
+    }
     return { ready: true, status: 'available', next_slot: slot };
   }
 
