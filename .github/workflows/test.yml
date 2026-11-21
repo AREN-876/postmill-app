@@ -18,6 +18,8 @@ jobs:
           persist-credentials: false
       - name: Offline read-only Editorial readiness diagnostics
         run: python3 tools/deploy/test_editorial_readiness.py
+      - name: Offline local-loopback and Docker network namespace safety tests
+        run: python3 tools/deploy/test_editorial_loopback_preflight.py
 
   lint:
     runs-on: ubuntu-latest
