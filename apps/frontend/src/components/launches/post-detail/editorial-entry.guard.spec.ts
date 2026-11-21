@@ -19,8 +19,8 @@ describe('Editorial 10: dormant review entry in existing Postmill details', () =
   });
 
   it('matches the immutable MAX target, not the editable channel name', () => {
-    expect(visible(post, { ...channel, name: 'renamed' }, 'true', target))
-      .toBe(true);
+    const renamedChannel = { ...channel, name: 'renamed' };
+    expect(visible(post, renamedChannel, 'true', target)).toBe(true);
     expect(visible(post, { ...channel, internalId: 'max:-999' }, 'true', target))
       .toBe(false);
     expect(visible(post, { ...channel, providerIdentifier: 'telegram' }, 'true', target))
