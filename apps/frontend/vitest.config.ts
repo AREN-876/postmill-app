@@ -28,6 +28,7 @@ export default defineConfig({
       },
     },
     include: [
+      'src/components/editorial/**/*.spec.{ts,tsx}',
       'src/components/analytics/**/*.spec.{ts,tsx}',
       'src/components/files/**/*.spec.{ts,tsx}',
       'src/components/errors/**/*.spec.{ts,tsx}',
