@@ -196,6 +196,7 @@ jobs:
       - name: Editorial 07 real 51-migration backup and isolated restore drill
         env:
           EDX_BACKUP_CI: '1'
+          PG_CI_CONTAINER: ${{ job.services.postgres.id }}
         run: bash tools/deploy/test_editorial_backup_restore.sh
 
       - name: Destructive schema guard (vs origin/main)
