@@ -271,7 +271,8 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
         { provide: PostsRepository, useValue: repository },
         { provide: RolesService, useValue: roles },
         { provide: AuditService, useValue: audit },
-        { provide: OrgRbacGuard, useValue: new OrgRbacGuard(new Reflector(), roles as never, audit as never) },
+        // The guard is an enhancer attached by @UseGuards. Override that
+        // enhancer in the isolated TestingModule, not just a provider token.
         { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useValue: {
           enabled: true, testOrgId: org, targetInternalId: target,
         } },
@@ -286,7 +287,9 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
 
     const moduleRef = await Test.createTestingModule({
       imports: [IsolatedEditorModule],
-    }).compile();
+    }).overrideGuard(OrgRbacGuard).useValue(
+      new OrgRbacGuard(new Reflector(), roles as never, audit as never),
+    ).compile();
     const reviewApp = moduleRef.createNestApplication({ logger: ['error'] });
     reviewApp.use(cookieParser());
     await reviewApp.listen(0, '127.0.0.1');
