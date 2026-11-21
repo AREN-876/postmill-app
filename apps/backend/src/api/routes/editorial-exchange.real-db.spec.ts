@@ -64,7 +64,7 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
 
     // Real foreign keys/constraints, not the simplified SQL fixtures.
     await prisma.$executeRaw`
-      INSERT INTO "Organization"(id,name) VALUES (${org},'Synthetic Editorial CI')`;
+      INSERT INTO "Organization"(id,name,"updatedAt") VALUES (${org},'Synthetic Editorial CI',now())`;
     await prisma.$executeRaw`
       INSERT INTO "Integration"(
         id,"organizationId","internalId",name,"providerIdentifier",type,token
@@ -73,8 +73,8 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
         'Synthetic MAX; never send','max','max','synthetic-not-usable'
       )`;
     await prisma.$executeRaw`
-      INSERT INTO "Campaign"(id,"organizationId",name)
-      VALUES (${campaign},${org},'Synthetic CI only')`;
+      INSERT INTO "Campaign"(id,"organizationId",name,"updatedAt")
+      VALUES (${campaign},${org},'Synthetic CI only',now())`;
 
     // Hash is derived from PostgreSQL jsonb itself: no JS reimplementation
     // of its serialization/canonicalization is trusted by the test.
