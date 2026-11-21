@@ -33,7 +33,17 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "EditorialDraftReceipt";
 SQL
-)" == '1' ]]
+)" == '2' ]] || {
+  echo 'FAIL: isolated integration test must leave two managed editorial drafts' >&2
+  exit 1
+}
+[[ "$(sql "$SOURCE" <<'SQL'
+SELECT COUNT(*) FROM "EditorialRelease";
+SQL
+)" == '2' ]] || {
+  echo 'FAIL: isolated integration test must leave two one-post story releases' >&2
+  exit 1
+}
 [[ "$(sql postgres <<'SQL'
 SELECT count(*) FROM pg_database WHERE datname='postmill-editorial-restore-ci';
 SQL
@@ -51,16 +61,27 @@ docker exec "$C" pg_restore -U "$DBUSER" --exit-on-error \
 
 sql "$RESTORE" <<'SQL'
 DO $ci$
-DECLARE migrations integer; draft_count integer; invalid integer;
+DECLARE migrations integer; draft_count integer; release_count integer;
+  invalid integer; invalid_releases integer;
 BEGIN
   SELECT count(*) INTO migrations FROM "_prisma_migrations"
    WHERE finished_at IS NOT NULL;
   SELECT count(*) INTO draft_count FROM "EditorialDraftReceipt";
+  SELECT count(*) INTO release_count FROM "EditorialRelease";
+  SELECT count(*) INTO invalid_releases FROM "EditorialRelease" r
+   JOIN "Post" source ON source.id=r."sourcePostId"
+   JOIN "Post" publication ON publication.id=r."publicationPostId"
+   WHERE source.state<>'DRAFT' OR publication.state<>'QUEUE'
+      OR publication."editorialTaskId" IS NOT NULL
+      OR source."integrationId" IS DISTINCT FROM publication."integrationId"
+      OR source.content IS DISTINCT FROM publication.content
+      OR source.settings IS DISTINCT FROM publication.settings;
   SELECT count(*) INTO invalid FROM "Post" p
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>52 OR draft_count<>1 OR invalid<>0
+  IF migrations<>52 OR draft_count<>2 OR release_count<>2
+    OR invalid<>0 OR invalid_releases<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
     OR to_regclass('public."EditorialRelease"') IS NULL
