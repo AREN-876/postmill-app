@@ -126,4 +126,36 @@ describe('TimeTable', () => {
     });
     expect(closeAll).toHaveBeenCalled();
   });
+
+  it('shows a MAX channel grid in Moscow time without changing stored UTC values', async () => {
+    render(
+      <TimeTable integration={{
+        ...integration([{ time: 1020 }, { time: 300 }, { time: 600 }]),
+        identifier: 'max',
+      }} mutate={vi.fn()} />
+    );
+    expect(screen.getByText('Московское время (UTC+03:00)')).toBeTruthy();
+    expect([...document.querySelectorAll('span.tabular-nums')].map(el => el.textContent))
+      .toEqual(['08:00', '13:00', '20:00']);
+    fireEvent.click(screen.getByText('Save Changes'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/integrations/int-1/time', {
+      method: 'POST',
+      body: JSON.stringify({ time: [{ time: 1020 }, { time: 300 }, { time: 600 }] }),
+    }));
+  });
+
+  it('adds an 08:00 Moscow slot as 05:00 UTC and refuses duplicates', async () => {
+    render(<TimeTable integration={{
+      ...integration([]), identifier: 'max',
+    }} mutate={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('hour'), { target: { value: '8' } });
+    fireEvent.click(screen.getByText('Add'));
+    fireEvent.click(screen.getByText('Add'));
+    expect(screen.getAllByText('08:00')).toHaveLength(1);
+    fireEvent.click(screen.getByText('Save Changes'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/integrations/int-1/time', {
+      method: 'POST',
+      body: JSON.stringify({ time: [{ time: 300 }] }),
+    }));
+  });
 });
