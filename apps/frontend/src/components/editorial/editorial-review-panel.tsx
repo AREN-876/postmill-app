@@ -45,9 +45,10 @@ type Props = {
   snapshot: EditorialReviewSnapshot;
   onCommand: (command: EditorialHumanCommand) => Promise<EditorialQueueReceipt>;
   onRefresh: () => Promise<void>;
+  mutationsBlocked?: boolean;
 };
 
-export function EditorialReviewPanel({ snapshot, onCommand, onRefresh }: Props) {
+export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutationsBlocked = false }: Props) {
   const [feedback, setFeedback] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -66,7 +67,7 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh }: Props) 
   const idle = snapshot.review?.status === 'idle';
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
-    idle && !busy && blockedAtSeq === null;
+    idle && !busy && blockedAtSeq === null && !mutationsBlocked;
   const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
 
   // Only a new, confirmed server revision can unlock commands. A refresh at
