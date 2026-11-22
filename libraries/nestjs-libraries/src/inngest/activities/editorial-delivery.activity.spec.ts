@@ -35,7 +35,9 @@ describe('editorial test-only send-once activity', () => {
     vi.stubEnv('EDITORIAL_TEST_SESSION_ENABLED', 'true');
     vi.stubEnv('EDITORIAL_TEST_ORG_ID', scope.org_id);
     vi.stubEnv('EDITORIAL_TEST_MAX_TARGET', 'max:-73052031470103');
-    vi.mocked(readFileSync).mockImplementation((p) =>
+    // readFileSync is overloaded (Buffer vs encoded string); this runtime
+    // always uses encoding='utf8', so return the matching text fixture.
+    (vi.mocked(readFileSync) as any).mockImplementation((p: unknown) =>
       String(p).includes('request') ? 'a'.repeat(64) : 'b'.repeat(64),
     );
     posts.listPendingEditorialTestDelivery.mockResolvedValue([{ task: '5', scope }]);
