@@ -241,6 +241,10 @@ def collect() -> dict[str, object]:
     db["editorial_test_target_identified"] = (
         target["match_count"] == 1 and target["single_enabled"]
     )
+    # These identifiers are needed only to validate the private SQL response.
+    # Never emit org/integration IDs or posting slots in a copyable diagnostic.
+    # The exact runtime binding must be verified separately by the operator.
+    target.pop("identities")
 
     # "Ready for test activation" is intentionally not inferred from SQL alone.
     db["schema_installed"] = (

@@ -84,7 +84,13 @@ class ReadinessTests(unittest.TestCase):
         self.assertFalse(result["inventory"]["schema_installed"])
         self.assertEqual(result["inventory"]["active_campaigns"], 0)
         self.assertTrue(result["inventory"]["editorial_test_target_identified"])
-        self.assertEqual(result["inventory"]["editorial_test_target"]["identities"][0]["integration_id"], "int-test")
+        self.assertEqual(result["inventory"]["editorial_test_target"], {
+            "match_count": 1, "single_enabled": True,
+        })
+        serialized = json.dumps(result)
+        self.assertNotIn("org-test", serialized)
+        self.assertNotIn("int-test", serialized)
+        self.assertNotIn("posting_times_utc_minutes", serialized)
         self.assertFalse(result["approved_to_deploy"])
         self.assertEqual(result["prisma_migration_checksum_audit"]["status"], "MATCHED")
         self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 44)
