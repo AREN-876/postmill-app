@@ -44,6 +44,12 @@ RUN pnpm install --frozen-lockfile
 # install-agnostic image we build with a placeholder absolute URL that survives
 # minification byte-identical; docker/entrypoint.sh seds the real runtime value
 # across .next/ on container start.
+# The operator panel is built into the fork image only after an explicit
+# opt-in. Default public builds have NO visible editorial entry.
+ARG NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED=false
+ARG NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET=
+ENV NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED=${NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED}
+ENV NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET=${NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET}
 ENV NEXT_PUBLIC_BACKEND_URL=https://backend-url-not-set.postmill.invalid/api
 RUN NODE_OPTIONS="--max-old-space-size=4096" pnpm run build \
     # The Turbopack/Webpack build cache (~700 MB) is useless at runtime and still
