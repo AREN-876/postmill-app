@@ -129,7 +129,11 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect(runtime).not.toContain('EditorialHumanReviewModule');
     expect(app).toContain('editorialSessionRoutesEnabled(process.env)');
     expect(app).toContain('? [EditorialHumanReviewModule]');
-    expect(app).not.toContain('EditorialExchangeModule');
+    // Machine ingress is allowed only behind its independent, default-off gate.
+    expect(app).toContain('editorialMachineRoutesEnabled(process.env)');
+    expect(app).toContain('? [EditorialExchangeModule]');
+    expect(app).toContain('...editorialMachineModules');
+    expect(runtime).not.toContain('EditorialExchangeController');
   });
   it('permits current org editor to read verified text status and queue once', async () => {
     const r = await read();

@@ -57,12 +57,14 @@ describe('Editorial 11 — closed-by-default test-org runtime activation', () =>
     })).toBeNull();
   });
 
-  it('never imports machine receiver into production AppModule', () => {
+  it('does not mount the machine receiver unconditionally in AppModule', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../app.module.ts'), 'utf8');
     const mod = fs.readFileSync(path.resolve(__dirname, './editorial-human-review.module.ts'), 'utf8');
     expect(app).toContain('editorialSessionRoutesEnabled(process.env)');
     expect(app).toContain('? [EditorialHumanReviewModule]');
-    expect(app).not.toContain('EditorialExchangeModule');
+    expect(app).toContain('editorialMachineRoutesEnabled(process.env)');
+    expect(app).toContain('? [EditorialExchangeModule]');
+    expect(app).toContain('...editorialMachineModules');
     expect(mod).toContain('consumer.apply(AuthMiddleware).forRoutes(...authenticatedController)');
     expect(mod).toContain('consumer.apply(CsrfMiddleware).forRoutes(...authenticatedController)');
     expect(mod).not.toContain('EDITORIAL_EXCHANGE_CONFIG');
