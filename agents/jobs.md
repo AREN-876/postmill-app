@@ -287,3 +287,25 @@ Dev Server's timer resolution must not wake before PostgreSQL's not-before guard
 Recovery also initializes due MAX QUEUE roots without any occurrence, covering a
 crash between the post commit and asynchronous `startWorkflow`; initialization
 must retain legacy uncertainty guards and run under the parent-row lock. Reconcile due QUEUE roots even when they have older history: an explicit MAX reschedule can commit a new schedule revision before initializing its first occurrence. Initialization must never reopen the same cancelled/uncertain generation.
+
+## Editorial test decision delivery (opt-in)
+
+`EditorialDeliveryActivity.sweep` in
+`libraries/nestjs-libraries/src/inngest/activities/editorial-delivery.activity.ts`
+is called by the `editorial-test-delivery-sweep` five-minute UTC Inngest
+cron factory (`apps/backend/src/inngest/functions/editorial-delivery-sweep.ts`).
+It is inert unless all exact test org/target/session/delivery gates are enabled
+and two read-only HMAC key files are available in the Postmill container.
+
+Candidate discovery is limited to the immutable test-org MAX DRAFT and at
+most ten pending outbox events. Before a network request, the invoker SQL
+function `postmill_reserve_editorial_delivery_v1` atomically writes one
+`EditorialDeliveryReservation` per event under the same org/task lock as
+human review. A newly reserved event receives exactly one signed `submit`;
+a previously reserved event receives only signed `lookup`. A crash before
+the HTTP call is deliberately classified as unknown, not auto-retried.
+`EditorialDeliveryService.deliverReserved` binds either operation to that
+specific event ID, and SQL imports only a verified matching result. No
+AI/provider call, MAX dispatch or release is reachable from this job.
+Unit specs cover the runtime gate, reservation ordering, uncertain outcome
+and cron registration. Do not replace this logic with a generic retry queue.
