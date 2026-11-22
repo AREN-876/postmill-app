@@ -34,6 +34,8 @@ import { ProvidersModule } from '@postmill-ai/nestjs-libraries/providers/provide
 import { ProvidersBootstrap } from './providers.bootstrap';
 import { ProviderExceptionFilter } from './api/filters/provider-exception.filter';
 import { EditorialHumanReviewModule } from './api/editorial-human-review.module';
+import { EditorialExchangeModule } from './api/editorial-exchange.module';
+import { editorialMachineRoutesEnabled } from './api/editorial-machine-runtime';
 import { editorialSessionRoutesEnabled } from './api/editorial-session-runtime';
 import { SentryReportFilter } from './api/filters/sentry-report.filter';
 
@@ -44,10 +46,13 @@ const scheduleModule = featureFlags.isEnabled('cron')
   ? [ScheduleModule.forRoot()]
   : [];
 
-// Default OFF even when the binary contains Editorial code. The machine
-// bridge stays off; only test-org browser session routes may be registered.
+// Editorial operator/session routes and the machine DRAFT ingress are independent,
+// default-off gates. Neither activates transport delivery or native release.
 const editorialSessionModules = editorialSessionRoutesEnabled(process.env)
   ? [EditorialHumanReviewModule]
+  : [];
+const editorialMachineModules = editorialMachineRoutesEnabled(process.env)
+  ? [EditorialExchangeModule]
   : [];
 
 @Global()
@@ -57,6 +62,7 @@ const editorialSessionModules = editorialSessionRoutesEnabled(process.env)
     SentryModule.forRoot(),
     ...scheduleModule,
     ...editorialSessionModules,
+    ...editorialMachineModules,
     DatabaseModule,
     ApiModule,
     PublicApiModule,
