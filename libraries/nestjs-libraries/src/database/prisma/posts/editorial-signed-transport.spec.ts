@@ -213,4 +213,34 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     expect(result.status).toBe('no_pending');
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
+  it('reserved delivery refuses changed event identity before any network call', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn(),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const peer = mockedPeer();
+    await expect(svc.deliverReserved(
+      scope, '42', 'test-channel', cfg,
+      'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'submit', peer,
+    )).rejects.toBeInstanceOf(EditorialTransportError);
+    expect(peer).not.toHaveBeenCalled();
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+  });
+
+  it('reserved lookup cannot resend or invent remote acceptance', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn(),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const peer = mockedPeer({ lookupMissing: true });
+    await expect(svc.deliverReserved(
+      scope, '42', 'test-channel', cfg, eid, 'lookup', peer,
+    )).resolves.toEqual({ status: 'unknown' });
+    expect(peer).toHaveBeenCalledTimes(1);
+    expect((peer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+    expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+  });
+
 });
