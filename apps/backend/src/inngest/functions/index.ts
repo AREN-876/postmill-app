@@ -1,4 +1,5 @@
 import { PostActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/post.activity';
+import { EditorialDeliveryActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/editorial-delivery.activity';
 import { AnalyticsActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/analytics.activity';
 import { CommentsActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/comments.activity';
 import { EmailActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/email.activity';
@@ -49,6 +50,7 @@ import { createRefreshToken } from './refresh-token';
 import { createStreakTracker } from './streak-tracker';
 import { createAnalyticsBackfill } from './analytics-backfill';
 import { createPostPublishFunctions } from './post-publish';
+import { createEditorialDeliverySweep } from './editorial-delivery-sweep';
 import { createCommsInbound } from './comms-inbound';
 import {
   createCommsMatrixSync,
@@ -57,6 +59,7 @@ import {
 
 export interface InngestActivities {
   postActivity: PostActivity;
+  editorialDeliveryActivity: EditorialDeliveryActivity;
   analyticsActivity: AnalyticsActivity;
   commentsActivity: CommentsActivity;
   emailActivity: EmailActivity;
@@ -83,6 +86,7 @@ export const createFunctions = (activities: InngestActivities): InngestFunction.
   createCommentsCollection(activities.commentsActivity, activities.inngestRunService),
   createCommentsSyncOrg(activities.commentsActivity),
   createMissingPostFinder(activities.postActivity, activities.inngestRunService),
+  createEditorialDeliverySweep(activities.editorialDeliveryActivity, activities.inngestRunService),
   createMediaJobsPoll(activities.mediaJobsActivity, activities.inngestRunService),
   createMediaJobsPollJob(activities.mediaJobsActivity),
   createMediaRender(activities.mediaJobsActivity),
