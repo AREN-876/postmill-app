@@ -6,10 +6,10 @@ import {
   signedEditorialRequest, type EditorialWireConfig,
 } from './editorial-signed-transport';
 
-// Not registered by any Nest module or Inngest job. No timed polling,
-// automatic resend or provider/AI dispatch; activation is a separate gate.
-// Caller MUST have independently authenticated the actor/service principal
-// and resolved the task, scope, target and peer config from trusted state.
+// Used by the isolated, default-off editorial Inngest activity. Its explicit
+// reserved-event entry point never resends an event after an unknown outcome.
+// Human commands must first pass cookie/CSRF/RBAC and be persisted in Postmill;
+// this service cannot grant native publication or paid AI execution.
 @Injectable()
 export class EditorialDeliveryService {
   constructor(@Inject(PostsRepository) private readonly posts: PostsRepository) {}
