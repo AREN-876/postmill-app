@@ -181,6 +181,49 @@ export class PostsRepository {
     return result.result;
   }
 
+  // Only one test organization's frozen MAX story decisions are eligible.
+  // This is candidate discovery, NOT permission to submit: every event is
+  // revalidated by readPendingEditorialDelivery and the SQL reservation.
+  async listPendingEditorialTestDelivery(orgId: string, target: string) {
+    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope }>>`
+      SELECT p."editorialTaskId" AS task, r.request->'scope' AS scope
+      FROM "EditorialDecisionOutbox" o
+      JOIN "Post" p ON p.id=o."postId"
+      JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
+      JOIN "Integration" i ON i.id=p."integrationId"
+      LEFT JOIN "EditorialDecisionResult" d ON d."eventId"=o."eventId"
+      WHERE d."eventId" IS NULL
+        AND p."organizationId"=${orgId}::text
+        AND p.state='DRAFT'
+        AND p."editorialTaskId" IS NOT NULL
+        AND p."deletedAt" IS NULL
+        AND r.request->'scope'->>'org_id'=${orgId}::text
+        AND r.request->'scope'->'is_test'='true'::jsonb
+        AND r."targetSnapshot"->>'internalId'=${target}::text
+        AND i."internalId"=${target}::text
+        AND i."providerIdentifier"='max'
+        AND NOT i.disabled AND NOT i."refreshNeeded"
+        AND i."deletedAt" IS NULL
+      ORDER BY o."createdAt" ASC
+      LIMIT 10
+    `;
+  }
+
+  // Durable submit-once fence. Its result is committed BEFORE the signed
+  // network request; a second caller receives newly_reserved=false and may
+  // perform only a signed read-only lookup. SQL verifies the exact pending
+  // event and the original immutable scope/target under an advisory lock.
+  async reserveEditorialSubmit(scope: EditorialScope, task: string,
+    target: string, eventId: string) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_reserve_editorial_delivery_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text,
+        ${target}::text, ${eventId}::text
+      ) AS result
+    `;
+    return row.result;
+  }
+
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);
     const unreadMap = new Map<string, number>();
