@@ -157,6 +157,10 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       method: 'POST', redirect: 'follow',
     })).rejects.toBeInstanceOf(EditorialTransportError);
   });
+  it('has no unreserved primary-submit entry point', () => {
+    const svc = new EditorialDeliveryService({} as PostsRepository);
+    expect('attemptOnce' in svc).toBe(false);
+  });
   it('default reconciliation adapter is defined and does not touch the network without a pending event', async () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(null),
@@ -175,7 +179,7 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
     const failingPeer = mockedPeer({ wrongSignature: true });
-    await expect(svc.attemptOnce(scope, '42', 'test-channel', cfg, failingPeer))
+    await expect(svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', failingPeer))
       .rejects.toBeInstanceOf(EditorialTransportError);
     expect(failingPeer).toHaveBeenCalledTimes(1);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
@@ -191,12 +195,12 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
-    const a = await svc.attemptOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    const a = await svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
     expect(a.status).toBe('recorded');
     expect(repo.importEditorialDecisionResult).toHaveBeenCalledWith(
       scope, '42', 'test-channel', eid, row.payload_sha256, outcome,
     );
-    const b = await svc.reconcileOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    const b = await svc.reconcileOnce(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
     expect(b.status).toBe('recorded');
     expect(repo.importEditorialDecisionResult).toHaveBeenCalledTimes(2);
   });
@@ -206,10 +210,10 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       importEditorialDecisionResult: vi.fn(),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
-    await expect(svc.attemptOnce({ ...scope, org_id: 'other' }, '42',
-      'test-channel', cfg, mockedPeer())).rejects.toThrow();
+    await expect(svc.deliverReserved({ ...scope, org_id: 'other' }, '42',
+      'test-channel', cfg, eid, 'submit', mockedPeer())).rejects.toThrow();
     expect(repo.readPendingEditorialDelivery).not.toHaveBeenCalled();
-    const result = await svc.attemptOnce(scope, '42', 'test-channel', cfg, mockedPeer());
+    const result = await svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
     expect(result.status).toBe('no_pending');
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
