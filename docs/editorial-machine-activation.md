@@ -42,16 +42,20 @@ The current VPS has 52 Prisma migrations but this route is still **OFF** until
 a later explicitly approved image deployment and configuration. Before that:
 
 - Confirm the existing MAX integration is explicitly the operator's test channel.
-- Create an **active** campaign using normal Postmill controls (the November 22
-  inventory contained zero campaigns). Never relabel or replace the existing
-  Integration row or edit its MAX token.
-- Confirm exact Editorial channel ID and profile, not an alias inferred from a
-  display name.
+- An active operator test campaign is now present (created November 22, 2026).
+  Its exact ID must be supplied as a trusted runtime value after verification.
+  Never relabel or replace the existing Integration row or edit its MAX token.
+- An independent Editorial test-channel mapping has now been created for the
+  real Postmill Integration ID. Old tasks remain pinned to their old channel;
+  do not reuse an old task ID as though it belonged to the new channel.
+  Confirm the exact Editorial channel ID and profile at runtime.
 - Keep `EDITORIAL_TEST_SESSION_ENABLED=false` and
   `EDITORIAL_TEST_RELEASE_ENABLED=false` until their separate gates are approved.
-- Establish a protected/private HTTP path to this controller. The ordinary
-  nginx `/api/` proxy exposes backend routes to its configured listeners; a
-  bearer token does not make this a network-isolated endpoint.
+- The production all-in-one nginx config blocks
+  `/api/internal/editorial/v1/drafts` and all descendant paths with a 404.
+  Direct `127.0.0.1:3000` in Postmill's network namespace is the only intended
+  ingress. Verify in the deployed image that the edge really denies both
+  POST create and GET read; do not publish port 3000 or enable another proxy.
 - Keep sender, HMAC receiver, PG bridge login role and org allowlist OFF until
   separately provisioned and reviewed. The receiver needs an unprivileged
   sidecar sharing Postmill's network namespace; Docker bridge alone is not loopback.
