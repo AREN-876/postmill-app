@@ -604,12 +604,21 @@ model EditorialDecisionOutbox {
   createdAt   DateTime @default(now())
   anchor      EditorialReviewAnchor @relation(fields: [postId], references: [postId], onDelete: Restrict)
   result      EditorialDecisionResult?
+  deliveryReservation EditorialDeliveryReservation?
 
   @@unique([postId, commandId])
   @@unique([postId, expectedSeq])
 }
 
 // Immutable verified Editorial-013 outcome; transient transport flags excluded.
+// One durable attempt per immutable editorial event. A reservation is committed
+// before the first HTTP submit; later work may perform signed lookup only.
+model EditorialDeliveryReservation {
+  eventId     String   @id
+  reservedAt  DateTime @default(now())
+  event       EditorialDecisionOutbox @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
+}
+
 model EditorialDecisionResult {
   eventId     String   @id
   outcome     Json
