@@ -54,4 +54,33 @@ export class EditorialDeliveryService {
     );
     return { status: 'recorded' as const, receipt: recorded };
   }
+  // Used only AFTER a committed send reservation. Both the first submit and
+  // subsequent lookup are bound to that exact event ID; a newly queued event
+  // can never borrow an earlier event's reservation.
+  async deliverReserved(scope: EditorialScope, task: string, target: string,
+    config: EditorialWireConfig, reservedEventId: string,
+    operation: 'submit' | 'lookup',
+    fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
+    const peer = editorialWireConfig(config);
+    if (scope.org_id !== peer.orgId || scope.is_test !== true) {
+      throw new EditorialTransportError();
+    }
+    const raw = await this.posts.readPendingEditorialDelivery(scope, task, target);
+    if (raw === null) return { status: 'no_pending' as const };
+    const pending = editorialPending(raw, peer.orgId, task);
+    if (pending.event_id !== reservedEventId) throw new EditorialTransportError();
+
+    const remote = await signedEditorialRequest(pending, config, operation, fetcher);
+    if (operation === 'lookup' && (remote.found !== true || remote.outcome === null)) {
+      return { status: 'unknown' as const };
+    }
+    if (remote.outcome === null) throw new EditorialTransportError();
+
+    const recorded = await this.posts.importEditorialDecisionResult(
+      scope, task, target, pending.event_id, pending.payload_sha256,
+      remote.outcome as Parameters<PostsRepository['importEditorialDecisionResult']>[5],
+    );
+    return { status: 'recorded' as const, receipt: recorded };
+  }
+
 }
