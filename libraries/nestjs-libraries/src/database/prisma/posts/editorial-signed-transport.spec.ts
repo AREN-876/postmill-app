@@ -187,7 +187,7 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       .rejects.toBeInstanceOf(EditorialTransportError);
     expect(failingPeer).toHaveBeenCalledTimes(1);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
-    expect(repo.reserveEditorialSubmit.mock.invocationCallOrder[0])
+    expect(vi.mocked(repo.reserveEditorialSubmit).mock.invocationCallOrder[0])
       .toBeLessThan((failingPeer as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]);
     const missingPeer = mockedPeer({ lookupMissing: true });
     expect((await svc.deliverPending(scope, '42', 'test-channel', cfg, missingPeer)).status).toBe('unknown');
@@ -250,7 +250,7 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     const peer = mockedPeer({ lookupMissing: true });
     await expect(svc.deliverPending(
       scope, '42', 'test-channel', cfg, peer,
-    )).resolves.toEqual({ status: 'unknown' });
+    )).resolves.toMatchObject({ status: 'unknown', operation: 'lookup' });
     expect(peer).toHaveBeenCalledTimes(1);
     expect((peer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
