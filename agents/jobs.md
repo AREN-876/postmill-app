@@ -304,8 +304,10 @@ function `postmill_reserve_editorial_delivery_v1` atomically writes one
 human review. A newly reserved event receives exactly one signed `submit`;
 a previously reserved event receives only signed `lookup`. A crash before
 the HTTP call is deliberately classified as unknown, not auto-retried.
-`EditorialDeliveryService.deliverReserved` binds either operation to that
-specific event ID, and SQL imports only a verified matching result. No
+`EditorialDeliveryService.deliverPending` owns the SQL reservation and derives
+the signed `submit` versus `lookup` mode from the committed result; the
+Inngest activity cannot request a primary submit or bypass the reservation.
+SQL imports only a verified matching result. No
 AI/provider call, MAX dispatch or release is reachable from this job.
 Unit specs cover the runtime gate, reservation ordering, uncertain outcome
 and cron registration. Do not replace this logic with a generic retry queue.

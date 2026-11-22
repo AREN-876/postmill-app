@@ -6,8 +6,8 @@ import {
   signedEditorialRequest, type EditorialWireConfig,
 } from './editorial-signed-transport';
 
-// Used by the isolated, default-off editorial Inngest activity. Its explicit
-// reserved-event entry point never resends an event after an unknown outcome.
+// Used by the isolated, default-off editorial Inngest activity. It reserves
+// an event durably before primary submit and only looks up any reserved event.
 // Human commands must first pass cookie/CSRF/RBAC and be persisted in Postmill;
 // this service cannot grant native publication or paid AI execution.
 @Injectable()
