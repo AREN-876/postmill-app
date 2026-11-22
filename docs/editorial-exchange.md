@@ -179,3 +179,61 @@ operator must separately approve a test-only deployment and real loopback
 HTTP + PostgreSQL + Postmill end-to-end idempotency tests (lost response,
 cross-org denial, wrong MAC, stale target). Unknown outcome remains queued
 and unconfirmed; no implicit paid retry or publication.
+
+## Test operator workflow — signed outbox delivery and embedded review panel
+
+The tested Editorial → Postmill DRAFT → human approval → native MAX release
+path is now available behind independent server-side gates. This section
+supersedes earlier "inactive" descriptions **only after the operator has
+explicitly deployed and enabled** this increment; historical 06A/06B notes
+remain documentation of those earlier changes.
+
+- The fork image embeds `EditorialReviewSession` in an existing Postmill
+  post-details modal only for a frozen editorial DRAFT on the exact
+  `max:-73052031470103` integration. Public/default Docker builds keep the
+  compile-time UI flag off. Cookie authentication, CSRF, org RBAC and native
+  immutable target checks are still server-side, independent of the UI.
+- The separately enabled `editorial-test-delivery-sweep` Inngest function
+  runs once per five minutes; inactive environments return `disabled` without
+  opening secrets or reading candidate decisions. It scans a maximum of ten
+  pending decisions for exactly one configured test organization and target.
+  It does NOT publish to MAX, execute paid AI, generate images or edit text.
+- `EditorialDeliveryReservation` is an additive, append-only, per-event
+  durable submit-once fence. The SQL invoker function
+  `postmill_reserve_editorial_delivery_v1` revalidates the current frozen
+  draft, bound org/task/target and exact pending event under the advisory lock.
+  The first reservation is COMMITTED before the signed HTTP submit. Later
+  sweeps use only signed `lookup`, including after an ambiguous HTTP result.
+  A crash between reservation and first send therefore causes an UNKNOWN
+  event requiring operator investigation, never an automatic retry.
+- Both HMAC hex keys must be mounted **read-only into the Postmill container**,
+  accessible to its unprivileged `app` user at:
+  `/run/secrets/postmill_editorial_request_hmac_hex` and
+  `/run/secrets/postmill_editorial_response_hmac_hex`.
+  Never put those keys in Compose `environment`, Docker inspect,
+  source control, CI variables, Inngest payloads or logs. The sidecar keeps
+  its existing independent credentials/mount.
+- Activation requires all of `EDITORIAL_TEST_SESSION_ENABLED=true`,
+  `EDITORIAL_TEST_DELIVERY_ENABLED=true`, exact `EDITORIAL_TEST_ORG_ID`
+  and `EDITORIAL_TEST_MAX_TARGET=max:-73052031470103`. The release
+  gate remains separate: `EDITORIAL_TEST_RELEASE_ENABLED` does NOT
+  participate in decision delivery and a final approval NEVER schedules or
+  publishes. The operator still explicitly authorizes `publish_now` or
+  `queue` using the protected release endpoint.
+
+Deployment order: back up Postmill; apply the committed additive Prisma
+migration with the approved `migrate deploy` flow; build/test and pin the
+new fork image; provision group-readable, root-owned secret files for the
+Postmill runtime user on a **read-only** mount; prepare Compose changes in
+the third overlay (not the image-only fourth overlay); recreate Postmill
+and its Compose-managed network-namespace bridge together; verify signed
+read-only lookup and session APIs; only then enable the independent delivery
+gate. No new MAX request is part of deployment. Keep `--sdk-url` and SDK
+serve origin/path pointed at the working nginx `postmill:5000/api/api/inngest`
+endpoint for this installation, not `postmill:3000`.
+
+If a decision is reserved but its lookup remains missing/unknown, STOP:
+do not delete its reservation, generate a new command, manually re-send or
+replay a paid request. Inspect exact event/receipt state, then resolve
+through an explicitly audited operator procedure. The prior frozen DRAFT,
+result ledger and MAX occurrence journal are never reset.
