@@ -29,7 +29,10 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
 SQL
-)" == '52' ]]
+)" == '53' ]] || {
+  echo 'FAIL: source must contain all 53 reviewed migrations before backup' >&2
+  exit 1
+}
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "EditorialDraftReceipt";
 SQL
@@ -80,11 +83,13 @@ BEGIN
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>52 OR draft_count<>2 OR release_count<>2
+  IF migrations<>53 OR draft_count<>2 OR release_count<>2
     OR invalid<>0 OR invalid_releases<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
     OR to_regclass('public."EditorialRelease"') IS NULL
+    OR to_regclass('public."EditorialDeliveryReservation"') IS NULL
+    OR to_regprocedure('postmill_reserve_editorial_delivery_v1(jsonb,text,text,text)') IS NULL
     OR to_regprocedure('postmill_release_editorial_story_v1(text,text,text,text,text,jsonb)') IS NULL
     OR to_regprocedure('postmill_read_editorial_delivery_v1(jsonb,text,text)') IS NULL
   THEN
