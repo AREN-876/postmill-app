@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { inngest } from './inngest.client';
 import { PostActivity } from './activities/post.activity';
+import { EditorialDeliveryActivity } from './activities/editorial-delivery.activity';
 import { AnalyticsActivity } from './activities/analytics.activity';
 import { CommentsActivity } from './activities/comments.activity';
 import { EmailActivity } from './activities/email.activity';
@@ -27,6 +28,7 @@ export class InngestService {
 
   constructor(
     postActivity: PostActivity,
+    editorialDeliveryActivity: EditorialDeliveryActivity,
     analyticsActivity: AnalyticsActivity,
     commentsActivity: CommentsActivity,
     emailActivity: EmailActivity,
@@ -53,6 +55,7 @@ export class InngestService {
     // populated list. Nest runs every constructor before any onModuleInit hook.
     this.functions = createFunctions({
       postActivity,
+      editorialDeliveryActivity,
       analyticsActivity,
       commentsActivity,
       emailActivity,
