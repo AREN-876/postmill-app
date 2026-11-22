@@ -196,9 +196,12 @@ approved deployment and explicit per-feature test-only activation; historical
   `max:-73052031470103` integration. Public/default Docker builds keep the
   compile-time UI flag off. Cookie authentication, CSRF, org RBAC and native
   immutable target checks are still server-side, independent of the UI.
-- The separately enabled `editorial-test-delivery-sweep` Inngest function
-  runs once per five minutes; inactive environments return `disabled` without
-  opening secrets or reading candidate decisions. It scans a maximum of ten
+- The `editorial-test-delivery-sweep` Inngest function is registered at
+  backend bootstrap **only** when the exact test-org/session/target/delivery
+  gate is enabled. Restart and re-sync Inngest after a separately approved
+  activation; disabled installations do not schedule the cron or write run
+  records. A second execution-time guard refuses already queued runs whose
+  test gate was removed, before touching the run ledger or mounted secrets. It scans a maximum of ten
   pending decisions for exactly one configured test organization and target.
   It does NOT publish to MAX, execute paid AI, generate images or edit text.
 - `EditorialDeliveryReservation` is an additive, append-only, per-event

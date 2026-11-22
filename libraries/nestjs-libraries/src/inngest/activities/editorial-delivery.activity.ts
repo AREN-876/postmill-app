@@ -10,14 +10,25 @@ const RESPONSE_SECRET_FILE = '/run/secrets/postmill_editorial_response_hmac_hex'
 const ORG = /^[A-Za-z0-9_.:-]{1,200}$/;
 const HEX = /^[0-9a-f]{64}$/;
 
-function runtime() {
-  const e = process.env;
+// The same exact, secret-free gate controls Inngest registration at boot
+// and protects each run if environment configuration is later removed.
+// Missing HMAC files still fail closed in runtime(), never at registration.
+export function editorialTestDeliveryScope(
+  e: Readonly<Record<string, string | undefined>>,
+): { orgId: string; target: typeof TEST_TARGET } | null {
+  const orgId = e.EDITORIAL_TEST_ORG_ID;
   if (e.EDITORIAL_TEST_DELIVERY_ENABLED !== 'true' ||
       e.EDITORIAL_TEST_SESSION_ENABLED !== 'true' ||
       e.EDITORIAL_TEST_MAX_TARGET !== TEST_TARGET ||
-      !e.EDITORIAL_TEST_ORG_ID || !ORG.test(e.EDITORIAL_TEST_ORG_ID)) {
+      !orgId || !ORG.test(orgId)) {
     return null;
   }
+  return { orgId, target: TEST_TARGET };
+}
+
+function runtime() {
+  const gate = editorialTestDeliveryScope(process.env);
+  if (!gate) return null;
   // Keys are mounted read-only as container secrets, never copied into
   // Docker environment, Inngest event payloads or log messages.
   const requestKeyHex = readFileSync(REQUEST_SECRET_FILE, 'utf8').trim();
@@ -26,11 +37,11 @@ function runtime() {
     throw new Error('editorial_delivery_keys_invalid');
   }
   const wire = {
-    orgId: e.EDITORIAL_TEST_ORG_ID,
+    orgId: gate.orgId,
     requestKeyHex, responseKeyHex,
   };
   editorialWireConfig(wire);
-  return { orgId: e.EDITORIAL_TEST_ORG_ID, target: TEST_TARGET, wire };
+  return { ...gate, wire };
 }
 
 @Injectable()

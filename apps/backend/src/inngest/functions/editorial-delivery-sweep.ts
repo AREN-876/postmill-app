@@ -1,10 +1,10 @@
 import { inngest } from '@postmill-ai/nestjs-libraries/inngest/inngest.client';
-import { EditorialDeliveryActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/editorial-delivery.activity';
+import { EditorialDeliveryActivity, editorialTestDeliveryScope } from '@postmill-ai/nestjs-libraries/inngest/activities/editorial-delivery.activity';
 import { InngestRunService } from '@postmill-ai/nestjs-libraries/inngest/inngest-run.service';
 import { trackRun } from './track-run';
 
-// The function is registered in every image but is a no-op without the
-// exact server-side org/target gate and mounted read-only HMAC key files.
+// The function is registered only on an exact test-only opt-in at bootstrap.
+// A second guard at execution time prevents any default-off run-ledger writes.
 export const createEditorialDeliverySweep = (
   activity: EditorialDeliveryActivity, runs: InngestRunService,
 ) => inngest.createFunction(
@@ -13,8 +13,12 @@ export const createEditorialDeliverySweep = (
     concurrency: 1,
     triggers: [{ cron: 'TZ=UTC */5 * * * *' }],
   },
-  async ({ step }) =>
-    trackRun(step, runs, 'editorial-test-delivery-sweep', () =>
+  async ({ step }) => {
+    if (!editorialTestDeliveryScope(process.env)) {
+      return { status: 'disabled' as const };
+    }
+    return trackRun(step, runs, 'editorial-test-delivery-sweep', () =>
       step.run('deliver-only-test-pending', () => activity.sweep())
-    )
+    );
+  }
 );

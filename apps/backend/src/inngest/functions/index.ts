@@ -1,5 +1,5 @@
 import { PostActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/post.activity';
-import { EditorialDeliveryActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/editorial-delivery.activity';
+import { EditorialDeliveryActivity, editorialTestDeliveryScope } from '@postmill-ai/nestjs-libraries/inngest/activities/editorial-delivery.activity';
 import { AnalyticsActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/analytics.activity';
 import { CommentsActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/comments.activity';
 import { EmailActivity } from '@postmill-ai/nestjs-libraries/inngest/activities/email.activity';
@@ -86,7 +86,11 @@ export const createFunctions = (activities: InngestActivities): InngestFunction.
   createCommentsCollection(activities.commentsActivity, activities.inngestRunService),
   createCommentsSyncOrg(activities.commentsActivity),
   createMissingPostFinder(activities.postActivity, activities.inngestRunService),
-  createEditorialDeliverySweep(activities.editorialDeliveryActivity, activities.inngestRunService),
+  // Do not register a live five-minute cron in default-off deployments.
+  // Reboot/re-sync the backend after an explicitly approved test opt-in.
+  ...(editorialTestDeliveryScope(process.env)
+    ? [createEditorialDeliverySweep(activities.editorialDeliveryActivity, activities.inngestRunService)]
+    : []),
   createMediaJobsPoll(activities.mediaJobsActivity, activities.inngestRunService),
   createMediaJobsPollJob(activities.mediaJobsActivity),
   createMediaRender(activities.mediaJobsActivity),

@@ -294,7 +294,11 @@ must retain legacy uncertainty guards and run under the parent-row lock. Reconci
 `libraries/nestjs-libraries/src/inngest/activities/editorial-delivery.activity.ts`
 is called by the `editorial-test-delivery-sweep` five-minute UTC Inngest
 cron factory (`apps/backend/src/inngest/functions/editorial-delivery-sweep.ts`).
-It is inert unless all exact test org/target/session/delivery gates are enabled
+The function is only registered during backend bootstrap when all exact
+test org/target/session/delivery gates are configured; restart and re-sync
+after an approved activation. A run-time guard also skips any previously
+queued execution if the gate is now disabled, without a run-ledger write.
+The activity is inert unless all exact test org/target/session/delivery gates are enabled
 and two read-only HMAC key files are available in the Postmill container.
 
 Candidate discovery is limited to the immutable test-org MAX DRAFT and at
