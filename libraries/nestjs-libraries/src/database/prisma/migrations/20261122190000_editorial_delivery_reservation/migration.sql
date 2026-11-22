@@ -11,6 +11,10 @@ CREATE TABLE "EditorialDeliveryReservation" (
     ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
+CREATE TRIGGER "EditorialDeliveryReservation_immutable_v1"
+  BEFORE UPDATE OR DELETE ON "EditorialDeliveryReservation"
+  FOR EACH ROW EXECUTE FUNCTION postmill_editorial_decision_immutable_v1();
+
 CREATE FUNCTION postmill_reserve_editorial_delivery_v1(
   s jsonb, task text, target text, eid text
 ) RETURNS jsonb
