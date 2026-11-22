@@ -15,7 +15,7 @@ loader.exec_module(readiness)
 
 
 def fake_inventory(status="NOT_APPLIED", **changes):
-    # Actual 52 migration files are checked out in CI; hashes are not mocked,
+    # Actual 53 migration files are checked out in CI; hashes are not mocked,
     # but Docker/psql responses are. This catches SQL migration text changes.
     paths = sorted(readiness.MIGRATION_ROOT.glob("*/migration.sql"))
     names = paths if status == "APPLIED" else paths[:44]
@@ -91,12 +91,35 @@ class ReadinessTests(unittest.TestCase):
         self.assertNotIn("prisma_ledger", result["inventory"])
 
     def test_installed_schema_is_not_approval_or_live_integration(self):
-        row = fake_inventory("APPLIED", completed_migrations=52, active_campaigns=1)
+        row = fake_inventory("APPLIED", completed_migrations=53, active_campaigns=1)
         result = self.run_inventory(row)
         self.assertTrue(result["inventory"]["schema_installed"])
         self.assertEqual(result["runtime_module_activation"], "NOT_VERIFIED")
         self.assertEqual(result["editorial_connection"], "NOT_VERIFIED")
         self.assertFalse(result["approved_to_deploy"])
+
+    def test_52_migrations_do_not_claim_new_reservation_installed(self):
+        # Historical production 52-migration DB remains a valid checksum
+        # baseline, but the new delivery reservation is explicitly NOT ready.
+        row = fake_inventory()
+        paths = sorted(readiness.MIGRATION_ROOT.glob("*/migration.sql"))
+        row["prisma_ledger"] = [
+            {"name": f.parent.name,
+             "checksum": hashlib.sha256(f.read_bytes()).hexdigest(),
+             "finished": True, "rolled_back": False}
+            for f in paths[:52]
+        ]
+        row["completed_migrations"] = 52
+        row["editorial_migrations"] = {
+            name: ("NOT_APPLIED" if name == "20261122190000_editorial_delivery_reservation"
+                   else "APPLIED")
+            for name in readiness.MIGRATIONS
+        }
+        row["managed_draft_column"] = True
+        row["editorial_receipts"] = True
+        result = self.run_inventory(row)
+        self.assertFalse(result["inventory"]["schema_installed"])
+        self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 52)
 
     def test_missing_or_duplicate_test_channel_never_becomes_verified(self):
         missing = fake_inventory(editorial_test_target={
