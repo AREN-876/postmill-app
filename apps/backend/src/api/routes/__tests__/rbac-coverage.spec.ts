@@ -128,8 +128,8 @@ const PUBLIC_CONTROLLERS = new Set<string>([
 
 // Isolated machine capability: authorization is checked before DB access by
 // EditorialExchangeService; no session roles or generic API keys are accepted.
-// This exemption is valid ONLY while the module is not wired into runtime.
-// Revisit the classification and security tests on any activation.
+// Dedicated machine bearer auth and an explicit test-channel runtime gate replace
+// session RBAC here. Any change to the gate requires a matching security test.
 const ISOLATED_MACHINE_CONTROLLERS = new Set<string>([
   'EditorialExchangeController',
 ]);
@@ -386,15 +386,18 @@ describe('RBAC coverage — every org-resource mutation is gated or explicitly a
     ).toEqual([]);
   });
 
-  it('the isolated Editorial machine controller stays out of runtime entrypoint modules', () => {
-    // Static wiring regression check; no boot, database or real credential.
+  it('Editorial machine ingress is conditional and excluded from ordinary APIs', () => {
+    // No boot, database, token or live MAX request.
+    const app = fs.readFileSync(path.resolve(ROUTES_DIR, '../../app.module.ts'), 'utf8');
+    expect(app).toContain('editorialMachineRoutesEnabled(process.env)');
+    expect(app).toContain('? [EditorialExchangeModule]');
+    expect(app).toContain('...editorialMachineModules');
     for (const entrypoint of [
-      '../../app.module.ts',
       '../api.module.ts',
       '../../public-api/public.api.module.ts',
     ]) {
       const source = fs.readFileSync(path.resolve(ROUTES_DIR, entrypoint), 'utf8');
-      expect(source, entrypoint).not.toMatch(/\bEditorialExchange(?:Module|Controller)\b/);
+      expect(source, entrypoint).not.toMatch(/\\bEditorialExchange(?:Module|Controller)\\b/);
     }
   });
 
