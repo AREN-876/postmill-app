@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { readFileSync } from 'node:fs';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { EditorialDeliveryService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-delivery.service';
-import { editorialPending, editorialWireConfig } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-signed-transport';
+import { editorialWireConfig } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-signed-transport';
 
 const TEST_TARGET = 'max:-73052031470103';
 const REQUEST_SECRET_FILE = '/run/secrets/postmill_editorial_request_hmac_hex';
@@ -58,29 +58,12 @@ export class EditorialDeliveryActivity {
           item.scope.is_test !== true || typeof item.task !== 'string') {
         throw new Error('editorial_delivery_scope_mismatch');
       }
-      const raw = await this.posts.readPendingEditorialDelivery(
-        item.scope, item.task, cfg.target,
+      // Service reserves atomically and selects submit versus lookup.
+      const result = await this.delivery.deliverPending(
+        item.scope, item.task, cfg.target, cfg.wire,
       );
-      if (raw === null) continue;
-      const pending = editorialPending(raw, cfg.orgId, item.task);
-
-      // Committed BEFORE any network. P2002/uncertain DB outcome must NOT
-      // reach transport. All later invocations are lookup-only.
-      const reserved = await this.posts.reserveEditorialSubmit(
-        item.scope, item.task, cfg.target, pending.event_id,
-      );
-      if (reserved === null) continue;
-      if (!reserved || typeof reserved !== 'object' || Array.isArray(reserved) ||
-          reserved.event_id !== pending.event_id ||
-          typeof reserved.newly_reserved !== 'boolean') {
-        throw new Error('editorial_delivery_reservation_unknown');
-      }
-      const operation = reserved.newly_reserved ? 'submit' : 'lookup';
-      if (operation === 'submit') submitted++; else lookedUp++;
-      const result = await this.delivery.deliverReserved(
-        item.scope, item.task, cfg.target, cfg.wire, pending.event_id,
-        operation,
-      );
+      if (result.operation === 'submit') submitted++;
+      if (result.operation === 'lookup') lookedUp++;
       if (result.status === 'recorded') confirmed++;
       if (result.status === 'unknown') unknown++;
     }

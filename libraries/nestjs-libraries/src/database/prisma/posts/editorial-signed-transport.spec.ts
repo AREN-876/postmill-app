@@ -160,6 +160,7 @@ describe('06B-3C signed off-by-default editorial transport', () => {
   it('has no unreserved primary-submit entry point', () => {
     const svc = new EditorialDeliveryService({} as PostsRepository);
     expect('attemptOnce' in svc).toBe(false);
+    expect('deliverReserved' in svc).toBe(false);
   });
   it('default reconciliation adapter is defined and does not touch the network without a pending event', async () => {
     const repo = {
@@ -176,16 +177,22 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
       importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+      reserveEditorialSubmit: vi.fn()
+        .mockResolvedValueOnce({ event_id: eid, newly_reserved: true })
+        .mockResolvedValueOnce({ event_id: eid, newly_reserved: false }),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
     const failingPeer = mockedPeer({ wrongSignature: true });
-    await expect(svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', failingPeer))
+    await expect(svc.deliverPending(scope, '42', 'test-channel', cfg, failingPeer))
       .rejects.toBeInstanceOf(EditorialTransportError);
     expect(failingPeer).toHaveBeenCalledTimes(1);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+    expect(repo.reserveEditorialSubmit.mock.invocationCallOrder[0])
+      .toBeLessThan((failingPeer as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]);
     const missingPeer = mockedPeer({ lookupMissing: true });
-    expect((await svc.reconcileOnce(scope, '42', 'test-channel', cfg, missingPeer)).status).toBe('unknown');
+    expect((await svc.deliverPending(scope, '42', 'test-channel', cfg, missingPeer)).status).toBe('unknown');
     expect(missingPeer).toHaveBeenCalledTimes(1);
+    expect(repo.reserveEditorialSubmit).toHaveBeenCalledTimes(2);
     expect((missingPeer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
@@ -193,14 +200,15 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
       importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+      reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: true }),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
-    const a = await svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
+    const a = await svc.deliverPending(scope, '42', 'test-channel', cfg, mockedPeer());
     expect(a.status).toBe('recorded');
     expect(repo.importEditorialDecisionResult).toHaveBeenCalledWith(
       scope, '42', 'test-channel', eid, row.payload_sha256, outcome,
     );
-    const b = await svc.reconcileOnce(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
+    const b = await svc.reconcileOnce(scope, '42', 'test-channel', cfg, mockedPeer());
     expect(b.status).toBe('recorded');
     expect(repo.importEditorialDecisionResult).toHaveBeenCalledTimes(2);
   });
@@ -210,10 +218,10 @@ describe('06B-3C signed off-by-default editorial transport', () => {
       importEditorialDecisionResult: vi.fn(),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
-    await expect(svc.deliverReserved({ ...scope, org_id: 'other' }, '42',
-      'test-channel', cfg, eid, 'submit', mockedPeer())).rejects.toThrow();
+    await expect(svc.deliverPending({ ...scope, org_id: 'other' }, '42',
+      'test-channel', cfg, mockedPeer())).rejects.toThrow();
     expect(repo.readPendingEditorialDelivery).not.toHaveBeenCalled();
-    const result = await svc.deliverReserved(scope, '42', 'test-channel', cfg, eid, 'submit', mockedPeer());
+    const result = await svc.deliverPending(scope, '42', 'test-channel', cfg, mockedPeer());
     expect(result.status).toBe('no_pending');
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
@@ -221,12 +229,12 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
       importEditorialDecisionResult: vi.fn(),
+      reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: 'changed', newly_reserved: true }),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
     const peer = mockedPeer();
-    await expect(svc.deliverReserved(
-      scope, '42', 'test-channel', cfg,
-      'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'submit', peer,
+    await expect(svc.deliverPending(
+      scope, '42', 'test-channel', cfg, peer,
     )).rejects.toBeInstanceOf(EditorialTransportError);
     expect(peer).not.toHaveBeenCalled();
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
@@ -236,11 +244,12 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
       importEditorialDecisionResult: vi.fn(),
+      reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: false }),
     } as unknown as PostsRepository;
     const svc = new EditorialDeliveryService(repo);
     const peer = mockedPeer({ lookupMissing: true });
-    await expect(svc.deliverReserved(
-      scope, '42', 'test-channel', cfg, eid, 'lookup', peer,
+    await expect(svc.deliverPending(
+      scope, '42', 'test-channel', cfg, peer,
     )).resolves.toEqual({ status: 'unknown' });
     expect(peer).toHaveBeenCalledTimes(1);
     expect((peer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
