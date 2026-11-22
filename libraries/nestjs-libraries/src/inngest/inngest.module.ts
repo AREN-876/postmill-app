@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '@postmill-ai/nestjs-libraries/database/prisma/database.module';
 import { PostActivity } from './activities/post.activity';
+import { EditorialDeliveryActivity } from './activities/editorial-delivery.activity';
+import { EditorialDeliveryService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-delivery.service';
 import { AnalyticsActivity } from './activities/analytics.activity';
 import { CommentsActivity } from './activities/comments.activity';
 import { EmailActivity } from './activities/email.activity';
@@ -20,6 +22,8 @@ import { InngestRunService } from './inngest-run.service';
   imports: [DatabaseModule],
   providers: [
     PostActivity,
+    EditorialDeliveryService,
+    EditorialDeliveryActivity,
     AnalyticsActivity,
     CommentsActivity,
     EmailActivity,
@@ -37,6 +41,8 @@ import { InngestRunService } from './inngest-run.service';
   ],
   exports: [
     PostActivity,
+    EditorialDeliveryService,
+    EditorialDeliveryActivity,
     AnalyticsActivity,
     CommentsActivity,
     EmailActivity,
