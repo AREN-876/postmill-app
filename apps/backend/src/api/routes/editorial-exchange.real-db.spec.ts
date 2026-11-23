@@ -243,9 +243,9 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
 
     const native = await prisma.post.findUniqueOrThrow({ where: { id: pid } });
     expect(native.state).toBe('DRAFT');
-    expect(native.content).toBe(updated.title + '\\n\\n' + updated.parts[0]);
+    expect(native.content).toBe(updated.title + '\n\n' + updated.parts[0]);
     expect(JSON.parse(native.settings ?? '{}').continuationText).toBe(
-      updated.parts[1] + '\\n────────────────────────\\n' + updated.parts[2],
+      updated.parts[1] + '\n────────────────────────\n' + updated.parts[2],
     );
     const receipt = await prisma.editorialDraftReceipt.findUniqueOrThrow({ where: { postId: pid } });
     const journal = await prisma.editorialTextInstall.findUniqueOrThrow({ where: { postId: pid } });
