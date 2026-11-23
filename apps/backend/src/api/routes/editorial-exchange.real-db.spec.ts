@@ -207,8 +207,8 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
   });
 
   it('installs Editor text once while retaining the initial receipt and frozen DRAFT', async () => {
-    // Independent synthetic task; task 804 stays unchanged for human-review CI.
-    const textTask = '805';
+    // Independent synthetic task; tasks 804/805 stay unchanged for human-review and release CI.
+    const textTask = '1805';
     const original = { ...body, task_id: textTask };
     const create = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization },
