@@ -42,6 +42,14 @@ export class EditorialExchangeController {
     return this.exchange.create(requestOf(req), this.config);
   }
 
+  // Private machine-only, one-time pre-review Editor artifact installation.
+  @Post(':taskId/install-text')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  installText(@Param('taskId') taskId: string, @Req() req: RawBodyRequest<Request>) {
+    return this.exchange.installText(taskId, requestOf(req), this.config);
+  }
+
   @Get(':taskId')
   @Header('Cache-Control', 'no-store')
   read(@Param('taskId') taskId: string, @Req() req: RawBodyRequest<Request>) {
