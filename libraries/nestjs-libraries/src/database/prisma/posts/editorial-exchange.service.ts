@@ -60,31 +60,48 @@ export class EditorialExchangeService {
     }
   }
 
-  async create(req: ExchangeRequest, config: ExchangeConfiguration | null) {
+  // Shared strict machine ingress for create and one-time pre-review install.
+  // A raw JSON mismatch/duplicate key or a changed scope never reaches SQL.
+  private preparedRequest(req: ExchangeRequest, config: ExchangeConfiguration | null) {
     this.authenticate(req, config);
     if (req.queryPresent || headerCount(req.rawHeaders, 'content-type') !== 1 ||
         typeof req.contentType !== 'string' ||
-        !/^application\/json(?:;\s*charset=utf-8)?$/i.test(req.contentType) ||
+        !/^application\\/json(?:;\\s*charset=utf-8)?$/i.test(req.contentType) ||
         headerCount(req.rawHeaders, 'content-encoding') > 1 ||
         (req.contentEncoding !== undefined && req.contentEncoding !== 'identity') ||
         !Buffer.isBuffer(req.rawBody) || req.rawBody.length === 0 ||
         req.rawBody.length > 100000) {
       throw new HttpException('invalid_request', 400);
     }
-    // Exact UTF-8 JSON.stringify representation only: reject duplicate keys,
-    // invalid UTF-8, whitespace/escaped-key variants and lossy parse tricks.
     const canonical = JSON.stringify(req.body);
     if (typeof canonical !== 'string' || !Buffer.from(canonical, 'utf8').equals(req.rawBody)) {
       throw new HttpException('invalid_request', 400);
     }
-    let prepared;
     try {
-      prepared = prepareEditorialDraft(req.authorization, config!.credential, req.body);
+      return prepareEditorialDraft(req.authorization, config!.credential, req.body);
     } catch (e) {
       return fromIngress(e);
     }
+  }
+
+  async create(req: ExchangeRequest, config: ExchangeConfiguration | null) {
+    const prepared = this.preparedRequest(req, config);
     try {
       return await this.posts.exchangeCreateEditorialDraft(prepared, config!.targetInternalId);
+    } catch (e) {
+      return databaseError(e);
+    }
+  }
+
+  // Same trusted private bearer and pinned test target as creation. The path
+  // task must also match the canonical exact-body task ID. One install only.
+  async installText(task: unknown, req: ExchangeRequest, config: ExchangeConfiguration | null) {
+    const prepared = this.preparedRequest(req, config);
+    if (!isEditorialTaskId(task) || task !== prepared.task_id) {
+      throw new HttpException('invalid_request', 400);
+    }
+    try {
+      return await this.posts.exchangeInstallEditorialText(prepared, config!.targetInternalId);
     } catch (e) {
       return databaseError(e);
     }
