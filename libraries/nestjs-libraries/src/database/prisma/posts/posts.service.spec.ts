@@ -756,6 +756,47 @@ describe('0.5 — strip decrypted integration secrets from HTTP reads', () => {
     expect(integration.picture).toBe('pic.png');
     expect(integration.profile).toBe('handle');
   });
+
+  it('getPost exposes the immutable MAX target for editorial DRAFT detail without secrets', async () => {
+    const { service, postRepository } = makePostsService();
+    const postId = 'a'.repeat(32);
+    postRepository.getPost.mockResolvedValue({
+      id: postId, group: 'editorial-group', state: 'DRAFT', editorialTaskId: '6',
+      image: '[]', settings: '{}', integrationId: 'max-int', childrenPost: [],
+      integration: {
+        id: 'max-int', providerIdentifier: 'max', name: 'Renamed MAX channel',
+        picture: null, profile: null, internalId: 'max:-73052031470103',
+        token: 'SECRET_TOKEN', refreshToken: 'SECRET_REFRESH',
+        customInstanceDetails: 'SECRET_INSTANCE',
+      },
+    });
+
+    const result = await service.getPost('org-1', postId);
+    expect((result.posts[0] as any).integration).toEqual({
+      id: 'max-int', providerIdentifier: 'max', name: 'Renamed MAX channel',
+      picture: null, profile: null, internalId: 'max:-73052031470103',
+    });
+  });
+
+  it('getPost does not expose MAX target for ordinary or non-DRAFT posts', async () => {
+    const { service, postRepository } = makePostsService();
+    for (const [state, editorialTaskId] of [
+      ['DRAFT', null], ['QUEUE', '6'], ['PUBLISHED', '6'],
+    ] as const) {
+      postRepository.getPost.mockResolvedValue({
+        id: 'a'.repeat(32), group: 'group', state, editorialTaskId,
+        image: '[]', settings: '{}', integrationId: 'max-int', childrenPost: [],
+        integration: {
+          id: 'max-int', providerIdentifier: 'max', name: 'MAX channel',
+          picture: null, profile: null, internalId: 'max:-73052031470103',
+          token: 'SECRET_TOKEN',
+        },
+      });
+      const result = await service.getPost('org-1', 'a'.repeat(32));
+      expect((result.posts[0] as any).integration.internalId).toBeUndefined();
+      expect((result.posts[0] as any).integration.token).toBeUndefined();
+    }
+  });
 });
 
 describe('0.8 / 4.4e — unique publish event id + inngest-disabled warning', () => {
@@ -1340,6 +1381,7 @@ describe('getPostsByGroup', () => {
           name: 'Test channel',
           picture: 'picture.png',
           profile: 'profile',
+          internalId: 'non-max-external-account',
           token: 'SECRET_TOKEN',
           refreshToken: 'SECRET_REFRESH',
         },
@@ -1357,6 +1399,26 @@ describe('getPostsByGroup', () => {
       name: 'Test channel',
       picture: 'picture.png',
       profile: 'profile',
+    });
+  });
+
+  it('getPostsByGroup preserves editorial MAX target for the details view, never tokens', async () => {
+    const { service, postRepository } = makePostsService();
+    postRepository.getPostsByGroup.mockResolvedValue([{
+      id: 'b'.repeat(32), group: 'editorial-group', state: 'DRAFT',
+      editorialTaskId: '6', integrationId: 'max-int', image: '[]', settings: '{}',
+      integration: {
+        id: 'max-int', providerIdentifier: 'max', name: 'Changed channel name',
+        picture: null, profile: null, internalId: 'max:-73052031470103',
+        token: 'SECRET_TOKEN', refreshToken: 'SECRET_REFRESH',
+      },
+    }]);
+
+    const result = await service.getPostsByGroup('org-1', 'editorial-group');
+    expect(result.posts).toHaveLength(1);
+    expect(result.posts[0].integration).toEqual({
+      id: 'max-int', providerIdentifier: 'max', name: 'Changed channel name',
+      picture: null, profile: null, internalId: 'max:-73052031470103',
     });
   });
 });

@@ -910,11 +910,21 @@ export class PostsService {
       if (!post?.integration) {
         return post;
       }
-      const { id, providerIdentifier, name, picture, profile } =
+      const { id, providerIdentifier, name, picture, profile, internalId } =
         post.integration;
       return {
         ...post,
-        integration: { id, providerIdentifier, name, picture, profile },
+        integration: {
+          id, providerIdentifier, name, picture, profile,
+          // The human review entry must match an immutable MAX target. This
+          // identifier is not a credential; expose it only for editorial DRAFTs.
+          ...(providerIdentifier === 'max' &&
+            post.state === 'DRAFT' &&
+            post.editorialTaskId != null &&
+            typeof internalId === 'string'
+              ? { internalId }
+              : {}),
+        },
       };
     });
   }
