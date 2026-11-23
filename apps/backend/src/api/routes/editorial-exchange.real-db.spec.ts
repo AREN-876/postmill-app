@@ -206,6 +206,75 @@ describe.skipIf(!ciOnly)('Editorial 07: isolated real Nest HTTP + full Prisma Po
     expect(n.total).toBe(1n);
   });
 
+  it('installs Editor text once while retaining the initial receipt and frozen DRAFT', async () => {
+    // Independent synthetic task; task 804 stays unchanged for human-review CI.
+    const textTask = '805';
+    const original = { ...body, task_id: textTask };
+    const create = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization },
+      body: JSON.stringify(original),
+    });
+    expect(create.status).toBe(200);
+    const initial = await create.json();
+    const pid: string = initial.receipt.binding.post_id;
+    const updated = {
+      title: 'Редакторская версия',
+      parts: ['П'.repeat(2800), 'В'.repeat(2850), 'Т'.repeat(2900)],
+    };
+    const pgJson = '{"parts": [' + updated.parts.map(p => JSON.stringify(p)).join(', ') +
+      '], "title": ' + JSON.stringify(updated.title) + '}';
+    const revisedHash = createHash('sha256').update(pgJson).digest('hex');
+    const revised = {
+      ...original, text: { revision: 1, sha256: revisedHash }, content: updated,
+    };
+    const install = () => fetch(url + '/' + textTask + '/install-text', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization },
+      body: JSON.stringify(revised),
+    });
+    const installed = await install();
+    expect(installed.status).toBe(200);
+    const result = await installed.json();
+    expect(result.installed).toBe(true);
+    expect(result.state).toBe('DRAFT');
+    expect(result.native_verified).toBe(true);
+    expect(result.receipt.binding.post_id).toBe(pid);
+    expect(result.receipt.text.sha256).toBe(revisedHash);
+    expect(result.receipt.publishable).toBe(false);
+
+    const native = await prisma.post.findUniqueOrThrow({ where: { id: pid } });
+    expect(native.state).toBe('DRAFT');
+    expect(native.content).toBe(updated.title + '\\n\\n' + updated.parts[0]);
+    expect(JSON.parse(native.settings ?? '{}').continuationText).toBe(
+      updated.parts[1] + '\\n────────────────────────\\n' + updated.parts[2],
+    );
+    const receipt = await prisma.editorialDraftReceipt.findUniqueOrThrow({ where: { postId: pid } });
+    const journal = await prisma.editorialTextInstall.findUniqueOrThrow({ where: { postId: pid } });
+    expect((receipt.request as { content: unknown }).content).toEqual(content);
+    expect((journal.request as { content: unknown }).content).toEqual(updated);
+    expect(journal.sourceHash).toBe(digest);
+
+    const get = await fetch(url + '/' + textTask, { headers: { authorization } });
+    expect(get.status).toBe(200);
+    expect((await get.json()).receipt.text.sha256).toBe(revisedHash);
+    const replay = await install();
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).installed).toBe(false);
+    const obsolete = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization },
+      body: JSON.stringify(original),
+    });
+    expect(obsolete.status).toBe(409);
+    await expect(prisma.post.update({
+      where: { id: pid }, data: { content: 'Unauthorized edit' },
+    })).rejects.toThrow();
+    await expect(prisma.post.update({
+      where: { id: pid }, data: { state: 'QUEUE' },
+    })).rejects.toThrow();
+    await expect(prisma.editorialTextInstall.update({
+      where: { postId: pid }, data: { sourceHash: '0'.repeat(64) },
+    })).rejects.toThrow();
+  });
+
   it('operates a human cookie/CSRF review against the real isolated DRAFT and SQL', async () => {
     // Reuse the full-51-migration disposable CI database and the exact
     // synthetic org/MAX target from this test, never a real MAX integration.
