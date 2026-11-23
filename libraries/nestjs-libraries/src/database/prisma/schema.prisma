@@ -581,6 +581,16 @@ model EditorialDraftReceipt {
   createdAt DateTime @default(now())
   post      Post     @relation(fields: [postId], references: [id], onDelete: Restrict)
   reviewAnchor EditorialReviewAnchor?
+  textInstall EditorialTextInstall?
+}
+
+// One-time immutable pre-review text installation. The original receipt is retained.
+model EditorialTextInstall {
+  postId     String   @id
+  request    Json
+  sourceHash String
+  createdAt  DateTime @default(now())
+  draft      EditorialDraftReceipt @relation(fields: [postId], references: [postId], onDelete: Restrict)
 }
 
 // Immutable initial authoritative Editorial-013 snapshot, not an approval.

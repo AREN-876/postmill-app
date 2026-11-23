@@ -13,6 +13,7 @@ vi.mock('@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository', 
 }));
 const posts = {
   exchangeCreateEditorialDraft: vi.fn(),
+  exchangeInstallEditorialText: vi.fn(),
   exchangeReadEditorialDraft: vi.fn(),
 };
 @Global()
@@ -63,6 +64,7 @@ describe('Editorial Exchange private HTTP (synthetic localhost only)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     posts.exchangeCreateEditorialDraft.mockResolvedValue({ ...receipt, created: true });
+    posts.exchangeInstallEditorialText.mockResolvedValue({ ...receipt, installed: true });
     posts.exchangeReadEditorialDraft.mockResolvedValue(receipt);
   });
   const post = (value: string = raw, auth: string = authorization, path = '') =>
@@ -123,6 +125,29 @@ describe('Editorial Exchange private HTTP (synthetic localhost only)', () => {
     expect(unknown.status).toBe(503);
     expect(await unknown.text()).not.toContain('private provider secret');
     expect(posts.exchangeCreateEditorialDraft).toHaveBeenCalledTimes(2);
+  });
+  it('installs a final pre-review artifact under the same machine scope and no-cache route', async () => {
+    const res = await post(raw, authorization, '/4/install-text');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ ...receipt, installed: true });
+    expect(posts.exchangeInstallEditorialText).toHaveBeenCalledWith(
+      expect.objectContaining({ scope, task_id: '4', text: body.text, content }), 'test-channel',
+    );
+    expect(posts.exchangeCreateEditorialDraft).not.toHaveBeenCalled();
+    expect((await post(raw, 'Bearer edx_v1_' + 'b'.repeat(64), '/4/install-text')).status).toBe(401);
+    expect((await post(raw, authorization, '/5/install-text')).status).toBe(400);
+    expect((await post(JSON.stringify({ ...body, content: { ...content, title: 'Подмена' } }),
+      authorization, '/4/install-text')).status).toBe(400);
+    expect(posts.exchangeInstallEditorialText).toHaveBeenCalledTimes(1);
+  });
+  it('rejects a conflicting install without exposing SQL details', async () => {
+    posts.exchangeInstallEditorialText.mockRejectedValueOnce({
+      code: 'P2010', meta: { code: '55000', message: 'secret: never return' },
+    });
+    const response = await post(raw, authorization, '/4/install-text');
+    expect(response.status).toBe(409);
+    expect(await response.text()).not.toContain('secret:');
   });
   it('the isolated module has no configured credential by default', async () => {
     const disabledModule = await Test.createTestingModule({

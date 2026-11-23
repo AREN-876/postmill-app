@@ -57,6 +57,13 @@ export class PostsRepository {
     return result.result;
   }
 
+  async exchangeInstallEditorialText(prepared: PreparedEditorialDraft, target: string) {
+    const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_install_editorial_text_v1(${JSON.stringify(prepared)}::jsonb, ${target}::text) AS result
+    `;
+    return result.result;
+  }
+
   async exchangeReadEditorialDraft(scope: EditorialScope, task: string, target: string) {
     const [result] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
       SELECT public.postmill_read_editorial_draft_v1(${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text) AS result
