@@ -66,7 +66,7 @@ export class EditorialExchangeService {
     this.authenticate(req, config);
     if (req.queryPresent || headerCount(req.rawHeaders, 'content-type') !== 1 ||
         typeof req.contentType !== 'string' ||
-        !/^application\\/json(?:;\\s*charset=utf-8)?$/i.test(req.contentType) ||
+        !/^application\/json(?:;\s*charset=utf-8)?$/i.test(req.contentType) ||
         headerCount(req.rawHeaders, 'content-encoding') > 1 ||
         (req.contentEncoding !== undefined && req.contentEncoding !== 'identity') ||
         !Buffer.isBuffer(req.rawBody) || req.rawBody.length === 0 ||
