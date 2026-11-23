@@ -29,15 +29,15 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
 SQL
-)" == '53' ]] || {
-  echo 'FAIL: source must contain all 53 reviewed migrations before backup' >&2
+)" == '54' ]] || {
+  echo 'FAIL: source must contain all 54 reviewed migrations before backup' >&2
   exit 1
 }
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "EditorialDraftReceipt";
 SQL
-)" == '2' ]] || {
-  echo 'FAIL: isolated integration test must leave two managed editorial drafts' >&2
+)" == '3' ]] || {
+  echo 'FAIL: isolated integration test must leave three managed editorial drafts' >&2
   exit 1
 }
 [[ "$(sql "$SOURCE" <<'SQL'
@@ -65,12 +65,14 @@ docker exec "$C" pg_restore -U "$DBUSER" --exit-on-error \
 sql "$RESTORE" <<'SQL'
 DO $ci$
 DECLARE migrations integer; draft_count integer; release_count integer;
-  invalid integer; invalid_releases integer;
+  install_count integer; invalid integer; invalid_releases integer;
+  invalid_installs integer;
 BEGIN
   SELECT count(*) INTO migrations FROM "_prisma_migrations"
    WHERE finished_at IS NOT NULL;
   SELECT count(*) INTO draft_count FROM "EditorialDraftReceipt";
   SELECT count(*) INTO release_count FROM "EditorialRelease";
+  SELECT count(*) INTO install_count FROM "EditorialTextInstall";
   SELECT count(*) INTO invalid_releases FROM "EditorialRelease" r
    JOIN "Post" source ON source.id=r."sourcePostId"
    JOIN "Post" publication ON publication.id=r."publicationPostId"
@@ -79,16 +81,25 @@ BEGIN
       OR source."integrationId" IS DISTINCT FROM publication."integrationId"
       OR source.content IS DISTINCT FROM publication.content
       OR source.settings IS DISTINCT FROM publication.settings;
+  SELECT count(*) INTO invalid_installs FROM "EditorialTextInstall" i
+   JOIN "EditorialDraftReceipt" r ON r."postId"=i."postId"
+   JOIN "Post" p ON p.id=i."postId"
+   WHERE p.state<>'DRAFT' OR i."sourceHash" IS DISTINCT FROM r.request->'text'->>'sha256'
+     OR p.content IS DISTINCT FROM i.request->>'firstPart'
+     OR p.settings::jsonb->>'continuationText' IS DISTINCT FROM i.request->>'continuationText'
+     OR i.request->'text'->>'sha256' IS DISTINCT FROM
+        encode(sha256(convert_to((i.request->'content')::text,'UTF8')),'hex');
   SELECT count(*) INTO invalid FROM "Post" p
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>53 OR draft_count<>2 OR release_count<>2
-    OR invalid<>0 OR invalid_releases<>0
+  IF migrations<>54 OR draft_count<>3 OR release_count<>2 OR install_count<>1
+    OR invalid<>0 OR invalid_releases<>0 OR invalid_installs<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
     OR to_regclass('public."EditorialRelease"') IS NULL
     OR to_regclass('public."EditorialDeliveryReservation"') IS NULL
+    OR to_regclass('public."EditorialTextInstall"') IS NULL
     OR to_regprocedure('postmill_reserve_editorial_delivery_v1(jsonb,text,text,text)') IS NULL
     OR to_regprocedure('postmill_release_editorial_story_v1(text,text,text,text,text,jsonb)') IS NULL
     OR to_regprocedure('postmill_read_editorial_delivery_v1(jsonb,text,text)') IS NULL
