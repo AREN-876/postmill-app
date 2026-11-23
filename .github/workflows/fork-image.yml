@@ -64,7 +64,10 @@ jobs:
           load: true
           push: false
           tags: ${{ env.IMAGE }}
-          build-args: NEXT_PUBLIC_VERSION=${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_VERSION=${{ github.sha }}
+            NEXT_PUBLIC_EDITORIAL_REVIEW_ENABLED=true
+            NEXT_PUBLIC_EDITORIAL_TEST_MAX_TARGET=max:-73052031470103
           labels: |
             org.opencontainers.image.source=https://github.com/AREN-876/postmill-app
             org.opencontainers.image.revision=${{ github.sha }}

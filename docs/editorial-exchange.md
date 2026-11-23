@@ -1,6 +1,6 @@
-# Editorial Exchange — Postmill 06A (inactive foundation)
+# Editorial Exchange — Postmill 06A–09B (test-only, default-off)
 
-Related: [Editorial Engine #16](https://github.com/AREN-876/max-editorial-engine/issues/16), [#36](https://github.com/AREN-876/max-editorial-engine/issues/36), [#42](https://github.com/AREN-876/max-editorial-engine/pull/42). This change does not create managed posts, authenticate an exchange client, or authorize any publication. No live migration, new release, or service deployment.
+Related: [Editorial Engine #16](https://github.com/AREN-876/max-editorial-engine/issues/16), [#36](https://github.com/AREN-876/max-editorial-engine/issues/36), [#42](https://github.com/AREN-876/max-editorial-engine/pull/42). This document preserves historical 06A/06B design notes. Later increments add separately gated machine/session routes and a default-off Inngest decision sender, but this PR does not activate them, migrate the live database, or authorize any publication. The final **Test operator workflow** section describes the current implementation.
 
 ## Why a separate managed draft path
 
@@ -11,7 +11,7 @@ Existing native campaign draft approval is a single approvalStatus (pending/appr
 - Managed row must be a fresh single MAX story draft in an existing enabled org-owned MAX integration and active org-owned campaign; no parent, recurrence, native approval, deletion, release or schedule revision. A draft flag cannot be applied retroactively or removed. All semantic changes and deletes are frozen; only operational fields (updatedAt, commentCount, lastViews/lastLikes/lastComments) may change. The database constraint/trigger catches native write paths regardless of controller. Native approval is NOT text approval. SQL guard is not a substitute for auth, full group/child validation, or the eventual artifact-bound release check.
 - MaxOccurrences.active explicitly refuses managed identity before planning/claiming/sending; the publication handler and PostActivity.postSocial also stop managed rows before delivery, including stale repeat events. Existing MAX delivery logic is otherwise unchanged. DB fence does not prevent a user with ordinary posting privileges from separately composing an unrelated unmanaged copy; service token must be limited to managed paths, not generic scheduling. Do not create managed rows manually, even on test until controlled API and cleanup path exist.
 
-## Following increments (not implemented)
+## Historical 06A roadmap (later increments detailed below)
 
 1. Authenticated scoped machine API: idempotent create of a single normalized story draft under the same transaction/unique key, stable identity, immutable revision references and exact content reconciliation. No ordinary publication API permissions for machine principal. Human RBAC/CSRF via existing authenticated campaign surface; explicit actions approve_text/request_text_changes/request_image/request_image_changes/confirm_image_reuse/approve_final/reject; never interpret ordinary comments as commands. Avoid accepting actor/org from user body.
 2. Durable revision state and append-only outbox in Postmill, atomic with each decision. Event v1 exactly matches Editorial-013 JSON, bigint task/seq as strings; exact binding/sequence/content; replay original receipt, reject conflicting ID/stale events. Scoped GET reconciliation, no direct database exchange or general API-key elevation. No batch or paid dispatch from Postmill.
@@ -30,12 +30,12 @@ uses fixed `docker inspect` plus `docker exec` with `BEGIN READ ONLY`; it
 never pulls an image, alters a file/role, migrates, creates a draft, exposes
 Postmill secrets, or contacts MAX. Output is a bounded inventory containing
 the image reference, container health, completed/unfinished migrations, the
-seven Editorial migration states, and counts of enabled MAX integrations and
+nine Editorial migration states, and counts of enabled MAX integrations and
 active campaigns. It does not report IDs, credentials, or editorial content.
 
 The same `--check` now compares the live Postmill `_prisma_migrations`
-ledger (44 or 51 completed rows) against the exact SHA-256 of each
-`migration.sql` in the **local full 51-file fork checkout**. A missing source
+ledger (44, 51, 52 or 53 completed rows) against the exact SHA-256 of each
+`migration.sql` in the **local full 53-file fork checkout**. A missing source
 tree, changed migration checksum, missing/extra migration, incomplete or
 rolled-back entry is a hard refusal; only counts/status are printed, not raw
 ledger checksums, PostgreSQL errors or secrets. This is read-only and does
@@ -50,7 +50,7 @@ and deployment permission as NOT_VERIFIED/false. There is **no `--apply`**,
 no migration runner and no silent operational change.
 
 Current 2026-11-20 VPS evidence: image created November 16, 44 committed
-Prisma migrations, last `20261114090000_max_target_binding`, all seven
+Prisma migrations, last `20261114090000_max_target_binding`, all then-existing
 Editorial migrations NOT_APPLIED, no `Post.editorialTaskId` or
 `EditorialDraftReceipt`, no active Campaign, and the Editorial task #4's
 channel alias `test:terra-v2` is not an Integration ID/internalId in the
@@ -104,7 +104,7 @@ Additive migrations + parameterized repository adapters only. The original inact
 
 Paired receiver: AREN-876/max-editorial-engine issue #45 / draft PR #46; see its docs/editorial/exchange_transport.md. The Editorial Engine has no live HTTP service as of 06B-3C development. The Python receiver is opt-in loopback only; no runtime DB role, TLS proxy or secrets are installed. **This is a compiled, mocked/tested integration path, not a functioning production connection.**
 
-Postmill's \`postmill_read_editorial_delivery_v1\` reads exactly one pending immutable \`EditorialDecisionOutbox\` record only after current native DRAFT/target verification. It never claims/deletes/times out a decision or changes native approvals. \`EditorialDeliveryService\` is not registered anywhere: no Inngest job, cron, route or automatic invocation. A separately authorized operator flow can explicitly call \`attemptOnce\` (single POST) or \`reconcileOnce\` (read-only lookup) with trusted scope/target and approved service configuration. **Neither has implicit retry**. Any timeout, unsigned/wrong event reply, network failure, 5xx or ambiguous result stays pending. A signed lookup returning found=false means UNKNOWN, not rejected. The SQL import function from 06B-3B remains the final state-transition gate.
+Postmill's `postmill_read_editorial_delivery_v1` reads exactly one pending immutable `EditorialDecisionOutbox` record only after current native DRAFT/target verification. It never claims/deletes/times out a decision or changes native approvals. As of the later operator increment, `EditorialDeliveryService` **is registered** in the Inngest module and exposes `deliverPending` (durable SQL reservation before one signed `submit`, then signed read-only `lookup`) and `reconcileOnce` (lookup only). The five-minute cron is registered but its activity is a no-op without exact test-only server gates. The old unreserved `attemptOnce` was removed and **must not be used**. Any timeout, unsigned/wrong event reply, network failure, 5xx or ambiguous result stays pending; never repeat `submit` after a reservation. A signed lookup returning found=false means UNKNOWN, not rejected. The SQL import function from 06B-3B remains the final state-transition gate.
 
 **06B-local revision (single VPS only):** The original public HTTPS/DNS proxy design is superseded before activation. The sender now pins the literal `http://127.0.0.1:8794` and rejects all configurable origins. Only two exact POST paths can be requested; a dedicated loopback-only fetch never relaxes the global `safeFetch` SSRF policy, and redirects are forbidden. The receiver stays bound to `127.0.0.1:8794`. These processes must share the **Postmill container network namespace**, for example via a separately approved sidecar with Docker Compose `network_mode: service:postmill`, not merely run on the same host or Docker bridge. No port mapping, host/public listener, external reverse proxy or DNS is needed; absent matching namespace, delivery fails closed. HMAC retains independent 256-bit request/response keys, bounded timestamps, CSPRNG nonce, exact event ID, canonical PostgreSQL JSONB digest and signed bounded response. Human RBAC remains distinct.
 
@@ -124,18 +124,20 @@ client-generated UUID retry identity; `expected_seq` is the string seen on GET.
 Valid actions are `approve_text`, `request_text_changes`, `reject` and
 `request_image`; only text-change feedback may be nonempty.
 
-Both routes are declared ONLY in the isolated, unimported
-`EditorialHumanReviewModule`, with its own `authenticatedController` list
-bound to the standard AuthMiddleware, CsrfMiddleware and OrgRbacGuard.
-They are **not registered in ApiModule/AppModule**, even disabled.
-On explicit future activation GET requires `posts:read`, POST `posts:update`. Additionally, the controller rejects header/API credentials,
-impersonation and requests without the `auth` cookie; the service checks
-actual organization membership and permissions even for platform admins.
-The actor ID is the resolved server-side user. An operator must separately
-approve a non-null `EDITORIAL_HUMAN_REVIEW_CONFIG` limited to one test org
-and native MAX target. The production value is **null**, and the module is not imported,
-so no production route is registered at all. No remote sender or AI worker is
-registered by this change.
+Both routes belong ONLY to `EditorialHumanReviewModule`, with its own
+`authenticatedController` list bound to AuthMiddleware, CsrfMiddleware and
+OrgRbacGuard. `AppModule` imports this module **conditionally at bootstrap**
+when `editorialSessionRoutesEnabled(process.env)` validates the exact test
+organization and `max:-73052031470103` target. With the default-off gates,
+the module is not imported and the routes do not exist. `ApiModule` never
+registers these routes. When enabled, GET requires `posts:read`, POST
+`posts:update`; the controller rejects API/header credentials, impersonation
+and requests without the `auth` cookie, while the service independently
+verifies organization membership and permissions (including admins).
+The actor ID is resolved server-side; browser-supplied actor/org/target is
+never trusted. Native release and machine ingress have independent gates.
+The registered Editorial Inngest delivery cron remains inert without its
+own independent delivery/session/test-target configuration.
 
 SQL functions `postmill_read_editorial_human_v1` and
 `postmill_queue_editorial_human_v1` derive the immutable scope and target from
@@ -172,10 +174,72 @@ keys stored outside git/logs, bounded requests and loopback bind. Do not
 install Python inside Postmill's image or change the general SSRF filter.
 
 This reduces network components, but **does not complete activation**:
-machine delivery and human review remain unregistered, runtime config null,
-no sidecar/credentials/automatic sender are installed by this PR. No VPS,
-PostgreSQL, MAX or paid AI calls in CI. Before any runtime installation the
+conditional session/machine modules and the test delivery cron exist in code,
+but their runtime gates are off by default. No sidecar, secrets, credentials,
+or active sender are installed by this PR. No VPS, MAX or paid AI calls in CI;
+CI PostgreSQL exercises only isolated disposable databases. Before any runtime installation the
 operator must separately approve a test-only deployment and real loopback
 HTTP + PostgreSQL + Postmill end-to-end idempotency tests (lost response,
 cross-org denial, wrong MAC, stale target). Unknown outcome remains queued
 and unconfirmed; no implicit paid retry or publication.
+
+## Test operator workflow — signed outbox delivery and embedded review panel
+
+The tested Editorial → Postmill DRAFT → human approval → native MAX release
+path is now available behind independent server-side gates. This section describes the current code and supersedes older "unregistered"
+claims above. These features remain **inactive on the VPS** until separately
+approved deployment and explicit per-feature test-only activation; historical
+06A/06B notes document earlier stages.
+
+- The fork image embeds `EditorialReviewSession` in an existing Postmill
+  post-details modal only for a frozen editorial DRAFT on the exact
+  `max:-73052031470103` integration. Public/default Docker builds keep the
+  compile-time UI flag off. Cookie authentication, CSRF, org RBAC and native
+  immutable target checks are still server-side, independent of the UI.
+- The `editorial-test-delivery-sweep` Inngest function is registered at
+  backend bootstrap **only** when the exact test-org/session/target/delivery
+  gate is enabled. Restart and re-sync Inngest after a separately approved
+  activation; disabled installations do not schedule the cron or write run
+  records. A second execution-time guard refuses already queued runs whose
+  test gate was removed, before touching the run ledger or mounted secrets. It scans a maximum of ten
+  pending decisions for exactly one configured test organization and target.
+  It does NOT publish to MAX, execute paid AI, generate images or edit text.
+- `EditorialDeliveryReservation` is an additive, append-only, per-event
+  durable submit-once fence. The SQL invoker function
+  `postmill_reserve_editorial_delivery_v1` revalidates the current frozen
+  draft, bound org/task/target and exact pending event under the advisory lock.
+  The first reservation is COMMITTED before the signed HTTP submit. Later
+  sweeps use only signed `lookup`, including after an ambiguous HTTP result.
+  A crash between reservation and first send therefore causes an UNKNOWN
+  event requiring operator investigation, never an automatic retry.
+- Both HMAC hex keys must be mounted **read-only into the Postmill container**,
+  accessible to its unprivileged `app` user at:
+  `/run/secrets/postmill_editorial_request_hmac_hex` and
+  `/run/secrets/postmill_editorial_response_hmac_hex`.
+  Never put those keys in Compose `environment`, Docker inspect,
+  source control, CI variables, Inngest payloads or logs. The sidecar keeps
+  its existing independent credentials/mount.
+- Activation requires all of `EDITORIAL_TEST_SESSION_ENABLED=true`,
+  `EDITORIAL_TEST_DELIVERY_ENABLED=true`, exact `EDITORIAL_TEST_ORG_ID`
+  and `EDITORIAL_TEST_MAX_TARGET=max:-73052031470103`. The release
+  gate remains separate: `EDITORIAL_TEST_RELEASE_ENABLED` does NOT
+  participate in decision delivery and a final approval NEVER schedules or
+  publishes. The operator still explicitly authorizes `publish_now` or
+  `queue` using the protected release endpoint.
+
+Deployment order: back up Postmill; apply the committed additive Prisma
+migration with the approved `migrate deploy` flow; build/test and pin the
+new fork image; provision group-readable, root-owned secret files for the
+Postmill runtime user on a **read-only** mount; prepare Compose changes in
+the third overlay (not the image-only fourth overlay); recreate Postmill
+and its Compose-managed network-namespace bridge together; verify signed
+read-only lookup and session APIs; only then enable the independent delivery
+gate. No new MAX request is part of deployment. Keep `--sdk-url` and SDK
+serve origin/path pointed at the working nginx `postmill:5000/api/api/inngest`
+endpoint for this installation, not `postmill:3000`.
+
+If a decision is reserved but its lookup remains missing/unknown, STOP:
+do not delete its reservation, generate a new command, manually re-send or
+replay a paid request. Inspect exact event/receipt state, then resolve
+through an explicitly audited operator procedure. The prior frozen DRAFT,
+result ledger and MAX occurrence journal are never reset.
