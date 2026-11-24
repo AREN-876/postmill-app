@@ -18,6 +18,7 @@ describe('editorial test-only delivery activity', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv('EDITORIAL_TEST_DELIVERY_ENABLED', 'true');
+    vi.stubEnv('EDITORIAL_TEST_RECOVERY_ENABLED', 'false');
     vi.stubEnv('EDITORIAL_TEST_SESSION_ENABLED', 'true');
     vi.stubEnv('EDITORIAL_TEST_ORG_ID', scope.org_id);
     vi.stubEnv('EDITORIAL_TEST_MAX_TARGET', 'max:-73052031470103');
@@ -42,8 +43,15 @@ describe('editorial test-only delivery activity', () => {
     expect(delivery.deliverPending).toHaveBeenCalledTimes(1);
     expect(delivery.deliverPending).toHaveBeenCalledWith(
       scope, '5', 'max:-73052031470103',
-      expect.objectContaining({ orgId: scope.org_id }),
+      expect.objectContaining({ orgId: scope.org_id, allowMissingRecovery: false }),
     );
+  });
+
+  it('explicit opt-in is required for bounded recovery', async () => {
+    vi.stubEnv('EDITORIAL_TEST_RECOVERY_ENABLED', 'true');
+    await activity.sweep();
+    expect(delivery.deliverPending).toHaveBeenCalledWith(scope, '5', 'max:-73052031470103',
+      expect.objectContaining({ allowMissingRecovery: true }));
   });
 
   it('reflects lookup after uncertain outcome without passing a submit mode', async () => {
