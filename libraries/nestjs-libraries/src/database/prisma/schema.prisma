@@ -214,6 +214,7 @@ model File {
   designPreviews     Design[]
   designTemplateThumbnails DesignTemplate[]
   signatures         Signatures[]
+  editorialImageImportReceipt EditorialImageImportReceipt?
 
   @@index([name])
   @@index([organizationId])
@@ -583,6 +584,7 @@ model EditorialDraftReceipt {
   reviewAnchor EditorialReviewAnchor?
   textInstall EditorialTextInstall?
   textRevisions EditorialTextRevision[]
+  imageImports EditorialImageImport[]
 }
 
 // One-time immutable pre-review text installation. The original receipt is retained.
@@ -653,6 +655,35 @@ model EditorialTextRevision {
   draft EditorialDraftReceipt @relation(fields: [postId], references: [postId], onDelete: Restrict)
 
   @@unique([postId, revision])
+}
+
+// Mock-only native storage import reservation and immutable receipt.
+model EditorialImageImport {
+  id String @id
+  postId String
+  revision Int
+  installEventId String
+  proof Json
+  proofHash String
+  beforeState Json
+  token String
+  fileId String @unique
+  createdAt DateTime @default(now())
+  draft EditorialDraftReceipt @relation(fields: [postId], references: [postId], onDelete: Restrict)
+  receipt EditorialImageImportReceipt?
+
+  @@unique([postId, revision])
+  @@unique([postId, installEventId])
+}
+
+model EditorialImageImportReceipt {
+  importId String @id
+  fileId String @unique
+  storagePath String
+  assetSha256 String
+  createdAt DateTime @default(now())
+  reservation EditorialImageImport @relation(fields: [importId], references: [id], onDelete: Restrict)
+  file File @relation(fields: [fileId], references: [id], onDelete: Restrict)
 }
 
 model EditorialDecisionResult {

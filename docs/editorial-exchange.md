@@ -263,3 +263,7 @@ CI: signed proof unit/negative tests, opt-in and UI regressions, full migrated/r
 ## Mock Image Engine transport (draft)
 
 Editorial-019 adds default-off exact installation proof and raw binary read, restricted to the disposable `org-modes`/`mock-review-*` fixture. `fetchEditorialMockImage` authenticates both EDX1 responses, independently checks the exact next snapshot, PostgreSQL canonical hashes, source/asset metadata and pinned synthetic PNG bytes. It reuses the dedicated numeric loopback sender; the JSON cap is unchanged, and the raw response is separately bounded to 8 MiB. No production caller, database import, UI, storage write, release or activation is part of this commit. Next: native storage ownership, durable reservation/receipt, stale-checked transaction and cross-database qualification.
+
+## Native mock image import (draft)
+
+The next stage uses the existing tenant-local native storage adapter and an ordinary `File` record marked `internal=editorial-mock` (not a publishable library item). A committed immutable reservation precedes the write; read-back digest verification precedes an atomic File + immutable receipt transaction. Incomplete reservations block new decisions, are never automatically retried, and may leave an orphan for explicit operator reconciliation. The native Post image field stays empty and release remains blocked. Cloud storage and production provider activation are not qualified by this fixture-only increment.
