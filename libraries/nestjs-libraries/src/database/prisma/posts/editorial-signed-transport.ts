@@ -6,6 +6,8 @@ export const EDITORIAL_LOOKUP_PATH = '/internal/editorial/v1/events/lookup';
 export const EDITORIAL_REVISION_LOOKUP_PATH = '/internal/editorial/v1/revisions/lookup';
 export const EDITORIAL_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/images/lookup';
 export const EDITORIAL_IMAGE_READ_PATH = '/internal/editorial/v1/images/read';
+export const EDITORIAL_LIVE_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/live-images/lookup';
+export const EDITORIAL_LIVE_IMAGE_READ_PATH = '/internal/editorial/v1/live-images/read';
 const MAX_IMAGE_RESPONSE = 8 * 1024 * 1024;
 const MAX_REVISION_RESPONSE = 100_000;
 // Fixed numeric loopback only. No DNS, configurable URL, public origin or TLS
@@ -34,6 +36,7 @@ export type EditorialWireConfig = {
   responseKeyHex: string;
   orgId: string;
   allowMockImageReview?: boolean;
+  allowLiveImageRead?: boolean;
 };
 export type EditorialPending = {
   schema_version: 1;
@@ -99,7 +102,9 @@ export async function editorialLoopbackFetch(url: string, init?: RequestInit): P
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_REVISION_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_LOOKUP_PATH &&
-       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_READ_PATH) ||
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_READ_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_LOOKUP_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_READ_PATH) ||
       init?.method !== 'POST' || init.redirect !== 'error') {
     throw new EditorialTransportError();
   }
@@ -144,7 +149,8 @@ function responseMessage(path: string, timestamp: string, nonce: string,
 
 // Shared bounded signed round-trip; request and response limits remain separate.
 type EditorialPath = typeof EDITORIAL_SUBMIT_PATH | typeof EDITORIAL_LOOKUP_PATH |
-  typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH;
+  typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH |
+  typeof EDITORIAL_LIVE_IMAGE_LOOKUP_PATH | typeof EDITORIAL_LIVE_IMAGE_READ_PATH;
 
 async function signedExchangeRaw(
   path: EditorialPath, body: JsonRecord, config: EditorialWireConfig,
@@ -471,5 +477,99 @@ export async function fetchEditorialMockImage(
     'application/octet-stream');
   if (bytes.length !== asset.size_bytes || sha(bytes) !== asset.sha256 ||
       !bytes.equals(MOCK_PNG)) throw new EditorialTransportError();
+  return {proof,bytes};
+}
+
+// Live read transport only; no native writes or runtime caller. Full JPEG
+// decoding is mandatory in the future native import service.
+export type EditorialLiveImageRequest = EditorialMockImageRequest;
+export type EditorialLiveImageAsset = { asset_id:string; sha256:string; mime:'image/jpeg'; width:number; height:number; size_bytes:number; provider:'openai'|'fal'; model:string; plan_id:string };
+export type EditorialLiveImageProof = Omit<EditorialMockImageProof,'manifest'> & {manifest:[EditorialLiveImageAsset]};
+function checkedLiveRequest(request: EditorialLiveImageRequest, config: EditorialWireConfig): void {
+  const peer = editorialWireConfig(config);
+  if (!exact(request, ['org_id','task_id','channel_id','state']) ||
+      request.org_id !== peer.orgId || config.allowLiveImageRead !== true ||
+      !validInt64(request.task_id) || !validInt64(request.channel_id) ||
+      !exact(request.state, STATE_KEYS) || Buffer.byteLength(mockProofJson(request.state)) > 8192) {
+    throw new EditorialTransportError();
+  }
+  const s = request.state;
+  if (!exact(s.binding, BINDING_KEYS) || s.binding.org_id !== request.org_id ||
+      s.binding.task_id !== request.task_id || s.binding.is_test !== true ||
+      !validString(s.binding.integration_id) ||
+      !validString(s.binding.post_id) || !validString(s.binding.group_id) ||
+      !validString(s.binding.profile_ref) || !validInt64(s.seq, true) ||
+      !['after_text_approval','automatic','manual'].includes(s.image_mode as string) ||
+      !['pending','approved'].includes(s.text_status as string) ||
+      (s.image_mode === 'after_text_approval' && s.text_status !== 'approved') ||
+      s.text_request_id !== null || !artifactRef(s.text) ||
+      !(s.image === null || artifactRef(s.image)) ||
+      !validString(s.image_intent, 220) || s.image_compatible !== false || s.rejected !== false ||
+      s.final_approved !== false || s.publishable !== false || s.dispatch_authorized !== false) {
+    throw new EditorialTransportError();
+  }
+}
+function checkedLiveProof(request: EditorialLiveImageRequest, value: unknown): EditorialLiveImageProof {
+  if (!exact(value, ['channel_id','install_event_id','install_payload_sha256','install_event','state',
+      'manifest','publishable','dispatch_authorized']) ||
+      value.channel_id !== request.channel_id || value.publishable !== false ||
+      value.dispatch_authorized !== false || !validString(value.install_event_id) ||
+      typeof value.install_payload_sha256 !== 'string' || !SHA.test(value.install_payload_sha256) ||
+      !exact(value.install_event, EVENT_KEYS) || !exact(value.state, STATE_KEYS) ||
+      !Array.isArray(value.manifest) || value.manifest.length !== 1) throw new EditorialTransportError();
+  const before = request.state, after = value.state, event = value.install_event, asset = value.manifest[0];
+  if (!exact(asset, ['asset_id','sha256','mime','width','height','size_bytes','provider','model','plan_id']) ||
+      typeof asset.asset_id !== 'string' || !UUID.test(asset.asset_id) ||
+      typeof asset.plan_id !== 'string' || !UUID.test(asset.plan_id) ||
+      typeof asset.sha256 !== 'string' || !SHA.test(asset.sha256) ||
+      typeof asset.size_bytes !== 'number' || !Number.isSafeInteger(asset.size_bytes) ||
+      asset.size_bytes < 4 || asset.size_bytes > MAX_IMAGE_RESPONSE ||
+      asset.mime !== 'image/jpeg' ||
+      !((asset.provider === 'openai' && asset.model === 'gpt-image-2.6-flare' && asset.width === 1536 && asset.height === 1024) ||
+        (asset.provider === 'fal' && ['fal-ai/flux-2/klein/9b','fal-ai/flux/schnell'].includes(asset.model as string) &&
+         asset.width === 1152 && asset.height === 768)) ||
+      value.install_event_id !== 'live-image:' + asset.plan_id ||
+      !artifactRef(after.image) || after.image.sha256 !== sha(mockProofJson(value.manifest)) ||
+      after.image.revision !== (artifactRef(before.image) ? before.image.revision : 0)+1 ||
+      !sameMockProof(after, {...before, seq: (BigInt(before.seq as string)+1n).toString(),
+        image: after.image, image_compatible: true, image_intent: null, final_approved: false}) ||
+      event.schema_version !== 1 || event.event_id !== value.install_event_id ||
+      event.producer !== 'operator' || event.action !== 'install_image' ||
+      !validString(event.actor_id) || typeof event.occurred_at !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(event.occurred_at) ||
+      event.expected_seq !== before.seq || !sameMockProof(event.binding,before.binding) ||
+      !sameMockProof(event.text,before.text) || !sameMockProof(event.image,before.image) ||
+      event.feedback !== '' || event.request_id !== before.image_intent ||
+      !exact(event.revision_content,['plan_id','plan_sha256','asset_sha256']) ||
+      event.revision_content.plan_id !== asset.plan_id ||
+      event.revision_content.asset_sha256 !== asset.sha256 ||
+      typeof event.revision_content.plan_sha256 !== 'string' || !SHA.test(event.revision_content.plan_sha256) ||
+      sha(mockProofJson(event)) !== value.install_payload_sha256) throw new EditorialTransportError();
+  return value as EditorialLiveImageProof;
+}
+
+export async function fetchEditorialLiveImage(
+  request: EditorialLiveImageRequest, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs = Date.now(),
+): Promise<{proof: EditorialLiveImageProof; bytes: Buffer} | null> {
+  checkedLiveRequest(request, config);
+  const body = {schema_version:1, ...request};
+  const parsed = await signedExchangeBody(EDITORIAL_LIVE_IMAGE_LOOKUP_PATH, body, config,
+    fetcher, nowMs, randomBytes(16).toString('hex'), MAX_BODY);
+  if (!exact(parsed,['schema_version','found','proof']) || parsed.schema_version !== 1 ||
+      typeof parsed.found !== 'boolean') throw new EditorialTransportError();
+  if (!parsed.found) {
+    if (parsed.proof !== null) throw new EditorialTransportError();
+    return null;
+  }
+  const proof = checkedLiveProof(request, parsed.proof);
+  const asset = proof.manifest[0];
+  const bytes = await signedExchangeRaw(EDITORIAL_LIVE_IMAGE_READ_PATH,
+    {...body,state:proof.state,asset_id:asset.asset_id,asset_sha256:asset.sha256},
+    config, fetcher, nowMs, randomBytes(16).toString('hex'), MAX_IMAGE_RESPONSE,
+    'application/octet-stream');
+  if (bytes.length !== asset.size_bytes || sha(bytes) !== asset.sha256 ||
+      bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length-2] !== 0xff || bytes[bytes.length-1] !== 0xd9) throw new EditorialTransportError();
   return {proof,bytes};
 }
