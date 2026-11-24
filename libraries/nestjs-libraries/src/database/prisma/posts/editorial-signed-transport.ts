@@ -373,7 +373,7 @@ function mockProofJson(value: unknown, depth = 0): string {
   if (Array.isArray(value)) return '[' + value.map(v => mockProofJson(v, depth+1)).join(', ') + ']';
   if (record(value)) {
     const keys = Object.keys(value);
-    if (keys.some(k => !/^[a-z_]+$/.test(k))) throw new EditorialTransportError();
+    if (keys.some(k => !/^[a-z][a-z0-9_]*$/.test(k))) throw new EditorialTransportError();
     keys.sort((a,b) => a.length-b.length || (a < b ? -1 : a > b ? 1 : 0));
     return '{' + keys.map(k => JSON.stringify(k)+': '+mockProofJson(value[k], depth+1)).join(', ') + '}';
   }
