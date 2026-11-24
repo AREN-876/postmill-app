@@ -2,7 +2,7 @@
 -- Disposable fixture only: age synthetic reservations by inserting historical
 -- timestamps; production never edits/deletes either immutable reservation.
 BEGIN;
-DO $
+DO $recovery$
 DECLARE task text; p jsonb; s jsonb; snap jsonb; ev jsonb; eid text; digest text;
  target text:='max:-73052031470103'; pid text;
 BEGIN
@@ -68,6 +68,6 @@ BEGIN
   END;
  END LOOP;
  UPDATE "Integration" SET "internalId"='test-channel' WHERE id='max-a';
-END $;
+END $recovery$;
 ROLLBACK;
 SELECT 'POSTMILL_EDITORIAL_BOUNDED_RECOVERY_OK';
