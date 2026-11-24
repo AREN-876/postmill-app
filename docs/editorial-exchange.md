@@ -243,3 +243,10 @@ do not delete its reservation, generate a new command, manually re-send or
 replay a paid request. Inspect exact event/receipt state, then resolve
 through an explicitly audited operator procedure. The prior frozen DRAFT,
 result ledger and MAX occurrence journal are never reset.
+
+
+## Test-only bounded missing-event recovery (2026-11-24)
+
+Incident: after image replacement the loopback sidecar stayed in the previous container network namespace. Story #6's decision was durably reserved but the receiver had no event. After restoring the namespace, an authenticated lookup returned `found:false`; an operator sent the exact original envelope once, and the normal Inngest lookup imported the accepted receipt. One event in each DB, matching hash and sequence 1; no release. Do not interpret this as authorization to retry publication or model requests.
+
+The new additive migration retains the immutable primary reservation and adds an immutable recovery-attempt ledger. `EDITORIAL_TEST_RECOVERY_ENABLED=true` is a separate, default-off opt-in, subordinate to the existing exact test-delivery gate. Only a successful authenticated exact-event lookup with `found:false,outcome:null` may enter recovery. The original task, actor, command, event ID, payload digest and envelope never change. SQL revalidates current pending scope/target under the same advisory lock and atomically reserves at most two extra sends, at least ten minutes after the previous reservation. A failed/ambiguous claim, invalid signature, timeout or HTTP error cannot directly authorize another send. A spent claim is never erased. Re-read the pending event before sending. An existing receipt is always imported instead of resubmitted. The remote reducer serializes task updates and deduplicates exact events; conflicting ID/payload is an error. After the cap, continue read-only reconciliation; missing remains unknown. No generic endpoint, native approval, MAX send, paid generation or schedule permission is added. Keep recovery off until the new migration, backup/restore drill, CI and isolated test have been reviewed.
