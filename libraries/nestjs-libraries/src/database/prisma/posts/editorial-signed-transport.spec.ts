@@ -196,6 +196,57 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     expect((missingPeer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
+  it('recovery requires an authenticated missing lookup, committed claim and the identical envelope', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+      reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: false }),
+      reserveEditorialRecovery: vi.fn().mockResolvedValue(true),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const peer = mockedPeer({ lookupMissing: true });
+    const target = 'max:-73052031470103';
+    const opt = { ...cfg, allowMissingRecovery: true };
+    await expect(svc.deliverPending(scope, '42', target, opt, peer))
+      .resolves.toMatchObject({ status: 'recorded', operation: 'submit' });
+    expect(repo.reserveEditorialRecovery).toHaveBeenCalledWith(scope, '42', target, eid, row.payload_sha256);
+    expect(peer).toHaveBeenCalledTimes(2);
+    const calls = (peer as ReturnType<typeof vi.fn>).mock;
+    expect(calls.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+    expect(calls.calls[1][0]).toContain(EDITORIAL_SUBMIT_PATH);
+    const claimOrder = vi.mocked(repo.reserveEditorialRecovery).mock.invocationCallOrder[0];
+    expect(calls.invocationCallOrder[0]).toBeLessThan(claimOrder);
+    expect(claimOrder).toBeLessThan(calls.invocationCallOrder[1]);
+    expect(repo.importEditorialDecisionResult).toHaveBeenCalledWith(scope, '42', target, eid, row.payload_sha256, outcome);
+  });
+
+  it.each(['disabled', 'wrong_target', 'denied', 'bad_signature', 'known', 'claim_error', 'changed'])(
+    'does not recovery-submit when %s', async mode => {
+      const repo = {
+        readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+        importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+        reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: false }),
+        reserveEditorialRecovery: vi.fn().mockResolvedValue(mode !== 'denied'),
+      } as unknown as PostsRepository;
+      const svc = new EditorialDeliveryService(repo);
+      const peer = mockedPeer({ lookupMissing: mode !== 'known', wrongSignature: mode === 'bad_signature' });
+      if (mode === 'claim_error') vi.mocked(repo.reserveEditorialRecovery).mockRejectedValueOnce(new Error('unknown claim'));
+      if (mode === 'changed') vi.mocked(repo.readPendingEditorialDelivery)
+        .mockResolvedValueOnce(row).mockResolvedValueOnce(row)
+        .mockResolvedValueOnce({ ...row, payload_sha256: 'd'.repeat(64) });
+      const call = svc.deliverPending(scope, '42',
+        mode === 'wrong_target' ? 'test-channel' : 'max:-73052031470103',
+        { ...cfg, allowMissingRecovery: mode !== 'disabled' }, peer);
+      if (['bad_signature', 'claim_error', 'changed'].includes(mode)) await expect(call).rejects.toThrow();
+      else await expect(call).resolves.toMatchObject({ status: mode === 'known' ? 'recorded' : 'unknown', operation: 'lookup' });
+      expect(peer).toHaveBeenCalledTimes(1);
+      expect((peer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+      if (['disabled', 'wrong_target', 'bad_signature', 'known'].includes(mode))
+        expect(repo.reserveEditorialRecovery).not.toHaveBeenCalled();
+      if (mode !== 'known') expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+    },
+  );
+
   it('imports only authenticated signed outcome and preserves exact event/hash', async () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
