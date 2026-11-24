@@ -244,6 +244,47 @@ export class PostsRepository {
     return row.result;
   }
 
+  // Exact test-only accepted return requests that still await a newer artifact.
+  // Revalidated by the transactional import function after signed lookup.
+  async listPendingEditorialTextRevisions(orgId: string, target: string) {
+    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string }>>`
+      SELECT p."editorialTaskId" AS task, d.request->'scope' AS scope,
+             o."eventId", o."payloadHash" AS digest
+      FROM "EditorialDecisionOutbox" o
+      JOIN "EditorialDecisionResult" r ON r."eventId"=o."eventId"
+      JOIN "Post" p ON p.id=o."postId"
+      JOIN "EditorialDraftReceipt" d ON d."postId"=p.id
+      JOIN "Integration" i ON i.id=p."integrationId"
+      LEFT JOIN "EditorialTextRevision" v ON v."requestEventId"=o."eventId"
+      WHERE v."requestEventId" IS NULL AND o.payload->>'action'='request_text_changes'
+        AND r.outcome->>'status'='accepted'
+        AND p."organizationId"=${orgId}::text AND p.state='DRAFT' AND p."deletedAt" IS NULL
+        AND p."editorialTaskId" IS NOT NULL
+        AND d.request->'scope'->>'org_id'=${orgId}::text
+        AND d.request->'scope'->'is_test'='true'::jsonb
+        AND d.request->'scope'->>'image_mode'='disabled'
+        AND d."targetSnapshot"->>'internalId'=${target}::text AND i."internalId"=${target}::text
+        AND i."providerIdentifier"='max' AND NOT i.disabled AND NOT i."refreshNeeded"
+        AND i."deletedAt" IS NULL
+        AND public.postmill_editorial_confirmed_v1(p.id)->>'status'='idle'
+        AND public.postmill_editorial_confirmed_v1(p.id)->>'latest_event_id'=o."eventId"
+        AND public.postmill_editorial_confirmed_v1(p.id)->'last_confirmed_state'->>'text_status'='changes_requested'
+        AND NOT EXISTS(SELECT 1 FROM "EditorialRelease" x WHERE x."sourcePostId"=p.id)
+      ORDER BY o."createdAt" ASC LIMIT 10
+    `;
+  }
+
+  async importEditorialTextRevision(scope: EditorialScope, task: string, target: string,
+    eventId: string, digest: string, proof: object) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_import_editorial_revision_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
+        ${eventId}::text, ${digest}::text, ${JSON.stringify(proof)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
   private async _enrichWithUnreadComments(posts: any[], userId: string): Promise<void> {
     const postIds = posts.map(p => p.id);
     const unreadMap = new Map<string, number>();
