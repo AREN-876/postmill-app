@@ -86,6 +86,21 @@ export function EditorialReviewSession({
     return client.queue(postId, taskId, command);
   }, [client, enabled, identity, postId, taskId]);
 
+  const importImage = useCallback(async (seq: string) => {
+    if (!enabled || (attemptedRef.current?.identity === identity && attemptedRef.current.seq === seq)) {
+      throw new Error('editorial_image_outcome_unknown');
+    }
+    const lock = {identity,seq};
+    attemptedRef.current = lock;
+    setAttempted(lock);
+    const result = await client.importImage(postId,taskId,seq);
+    if (result.status === 'not_ready' && attemptedRef.current === lock) {
+      attemptedRef.current = null;
+      setAttempted(null);
+    }
+    return result;
+  }, [client,enabled,identity,postId,taskId]);
+
   if (!enabled) return <p>Редакторский обмен отключён.</p>;
   if (error) {
     return (
@@ -106,7 +121,7 @@ export function EditorialReviewSession({
         snapshot={loaded.snapshot}
         onCommand={queue}
         onRefresh={refresh}
-        onImportImage={(seq) => client.importImage(postId,taskId,seq)}
+        onImportImage={importImage}
         mutationsBlocked={attempted?.identity === identity &&
           attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
       />

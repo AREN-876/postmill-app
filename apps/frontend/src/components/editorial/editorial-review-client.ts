@@ -10,7 +10,7 @@ type Fetcher = (url: string, options?: RequestInit) => Promise<Response>;
 const POST_ID = /^[0-9a-f]{32}$/;
 const TASK_ID = /^[1-9][0-9]{0,18}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const ACTIONS = new Set(['approve_text', 'request_text_changes', 'reject', 'request_image']);
+const ACTIONS = new Set(['approve_text', 'request_text_changes', 'reject', 'request_image', 'request_image_changes', 'confirm_image_reuse', 'approve_final']);
 const MAX_TASK = '9223372036854775807';
 
 function record(x: unknown): x is Record<string, unknown> {
@@ -63,6 +63,12 @@ function checkedSnapshot(x: unknown, postId: string, taskId: string): EditorialR
         m.asset.png_base64 !== 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGNUNPdlYGBgYmBgYGBgAAAHugCprKZFeAAAAABJRU5ErkJggg=='))) {
       throw new Error('editorial_untrusted_image');
     }
+    const state = x.review.last_confirmed_state;
+    if ((m.status === 'recorded' && m.asset === null) || (m.asset !== null &&
+        (!record(m.asset) || !record(state) || !record(state.image) ||
+         state.image.revision !== m.asset.revision || state.image_compatible !== m.asset.compatible))) {
+      throw new Error('editorial_untrusted_image');
+    }
   }
   return x as EditorialReviewSnapshot;
 }
@@ -76,7 +82,7 @@ function checkedCommand(cmd: EditorialHumanCommand): void {
       (cmd.expected_seq.length === 19 && cmd.expected_seq > MAX_TASK) ||
       !ACTIONS.has(cmd.action) || typeof cmd.feedback !== 'string' ||
       cmd.feedback.length > 4000 || new TextEncoder().encode(cmd.feedback).length > 16000 ||
-      (cmd.action === 'request_text_changes' ? !cmd.feedback.trim() : cmd.feedback !== '')) {
+      (['request_text_changes','request_image_changes'].includes(cmd.action) ? !cmd.feedback.trim() : cmd.feedback !== '')) {
     throw new Error('editorial_invalid_command');
   }
 }

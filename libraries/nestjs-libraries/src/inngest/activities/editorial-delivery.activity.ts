@@ -40,6 +40,8 @@ function runtime() {
     orgId: gate.orgId,
     requestKeyHex, responseKeyHex,
     allowMissingRecovery: process.env.EDITORIAL_TEST_RECOVERY_ENABLED === 'true',
+    ...(gate.orgId === 'org-modes' && process.env.EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED === 'true'
+      ? {allowMockImageReview: true} : {}),
   };
   editorialWireConfig(wire);
   return { ...gate, wire, revisionsEnabled: process.env.EDITORIAL_TEST_REVISION_SYNC_ENABLED === 'true' };
@@ -82,10 +84,14 @@ export class EditorialDeliveryActivity {
     let revisionsRecorded = 0;
     let revisionsWaiting = 0;
     if (cfg.revisionsEnabled) {
-      const revisions = await this.posts.listPendingEditorialTextRevisions(cfg.orgId, cfg.target);
+      const revisions = cfg.wire.allowMockImageReview
+        ? await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target,true)
+        : await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target);
       for (const item of revisions) {
         if (!item.scope || item.scope.org_id !== cfg.orgId || item.scope.is_test !== true ||
-            item.scope.image_mode !== 'disabled' || typeof item.task !== 'string') {
+            (item.scope.image_mode !== 'disabled' && !(cfg.wire.allowMockImageReview &&
+              item.scope.org_id === 'org-modes' && item.scope.integration_id.startsWith('mock-review-') &&
+              ['automatic','manual','after_text_approval'].includes(item.scope.image_mode))) || typeof item.task !== 'string') {
           throw new Error('editorial_revision_scope_mismatch');
         }
         const result = await this.delivery.reconcileTextRevision(

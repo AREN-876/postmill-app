@@ -33,6 +33,7 @@ export type EditorialWireConfig = {
   requestKeyHex: string;
   responseKeyHex: string;
   orgId: string;
+  allowMockImageReview?: boolean;
 };
 export type EditorialPending = {
   schema_version: 1;
@@ -232,6 +233,11 @@ export async function signedEditorialRequest(
 ): Promise<EditorialWireResponse> {
   const peer = editorialWireConfig(config);
   editorialPending(pending, peer.orgId, pending.task_id);
+  if ((record(pending.event.image) || ['request_image_changes','confirm_image_reuse','approve_final'].includes(pending.event.action as string)) &&
+      (!config.allowMockImageReview || peer.orgId !== 'org-modes' || !record(pending.event.binding) ||
+       typeof pending.event.binding.integration_id !== 'string' || !pending.event.binding.integration_id.startsWith('mock-review-'))) {
+    throw new EditorialTransportError();
+  }
   if (!Number.isSafeInteger(nowMs) || !/^[0-9a-f]{32}$/.test(nonce)) {
     throw new EditorialTransportError();
   }
@@ -317,7 +323,9 @@ export async function signedEditorialRevisionLookup(
       !record(p.install_event.binding) || p.install_event.binding.org_id !== request.org_id ||
       p.install_event.binding.task_id !== request.task_id || p.install_event.binding.is_test !== true ||
       p.state.publishable !== false || p.state.dispatch_authorized !== false ||
-      p.state.image_mode !== 'disabled' || p.state.text_status !== 'pending' ||
+      (p.state.image_mode !== 'disabled' && !(config.allowMockImageReview === true && request.org_id === 'org-modes' &&
+        typeof p.install_event.binding.integration_id === 'string' && p.install_event.binding.integration_id.startsWith('mock-review-') &&
+        ['automatic','manual','after_text_approval'].includes(p.state.image_mode as string))) || p.state.text_status !== 'pending' ||
       p.state.final_approved !== false || p.state.rejected !== false) {
     throw new EditorialTransportError();
   }

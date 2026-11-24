@@ -36,7 +36,10 @@ export type EditorialHumanAction =
   | 'approve_text'
   | 'request_text_changes'
   | 'reject'
-  | 'request_image';
+  | 'request_image'
+  | 'request_image_changes'
+  | 'confirm_image_reuse'
+  | 'approve_final';
 
 export type EditorialHumanCommand = {
   command_id: string;
@@ -61,6 +64,7 @@ type Props = {
 
 export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportImage, mutationsBlocked = false }: Props) {
   const [feedback, setFeedback] = useState('');
+  const [imageFeedback,setImageFeedback] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [blockedAtSeq, setBlockedAtSeq] = useState<string | null>(null);
@@ -79,13 +83,21 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
   const validSeq = typeof seq === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(seq);
   const idle = snapshot.review?.status === 'idle';
   const state = snapshot.review?.last_confirmed_state;
-  const waitingRevision = state?.image_mode === 'disabled' && state.text_status === 'changes_requested';
+  const waitingRevision = state?.text_status === 'changes_requested';
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
     idle && !waitingRevision && state?.rejected !== true && state?.final_approved !== true &&
     !busy && !importing && importBlocked !== seq && blockedAtSeq === null && !mutationsBlocked &&
     snapshot.mock_image?.status !== 'uncertain' && snapshot.mock_image?.status !== 'unavailable';
-  const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
+  const imageAllowed = state?.image_mode === 'manual' || state?.image_mode === 'automatic' ||
+    (state?.image_mode === 'after_text_approval' && state.text_status === 'approved');
+  const canRequestImage = imageAllowed && state?.image_intent == null && state?.image_compatible !== true &&
+    (state?.image_mode === 'manual' || !!snapshot.mock_image);
+  const canReviewImage = imageAllowed && state?.image_intent === null && !!state.image &&
+    snapshot.mock_image?.status === 'recorded' && !!snapshot.mock_image.asset;
+  const canReuse = canReviewImage && state?.image_compatible === false;
+  const canFinal = canReviewImage && state?.image_compatible === true && state.text_status === 'approved';
+  const canApproveText = state?.text_status === undefined || state.text_status === 'pending';
 
   // Only a new, confirmed server revision can unlock commands. A refresh at
   // the same revision must NOT retry an uncertain or already-queued decision.
@@ -95,12 +107,16 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
       setBlockedAtSeq(null);
       setConfirmReject(false);
       setFeedback('');
+      setImageFeedback('');
       setNotice(null);
     }
   }, [blockedAtSeq, busy, validSeq, seq, idle, snapshot.review_acknowledged]);
 
   async function queue(action: EditorialHumanAction) {
-    if (!canDecide || (action === 'request_image' && !imageManual) ||
+    if (!canDecide || (action === 'request_image' && !canRequestImage) ||
+        (action === 'approve_text' && !canApproveText) ||
+        (action === 'request_image_changes' && (!canReviewImage || !imageFeedback.trim())) ||
+        (action === 'confirm_image_reuse' && !canReuse) || (action === 'approve_final' && !canFinal) ||
         (action === 'request_text_changes' && !feedback.trim()) ||
         (action === 'reject' && !confirmReject) || !seq) {
       return;
@@ -115,7 +131,8 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
         command_id: crypto.randomUUID(),
         expected_seq: seq,
         action,
-        feedback: action === 'request_text_changes' ? feedback.trim() : '',
+        feedback: action === 'request_text_changes' ? feedback.trim() :
+          action === 'request_image_changes' ? imageFeedback.trim() : '',
       });
       if (result.status === 'queued/unconfirmed' &&
           result.dispatch_authorized === false && result.publishable === false) {
@@ -197,6 +214,17 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
           )}
           {snapshot.mock_image.status === 'uncertain' && <p role="status">Запись не подтверждена. Повтор запрещён.</p>}
           {snapshot.mock_image.status === 'unavailable' && <p role="alert">Не удалось проверить файл.</p>}
+          {canReviewImage && (<>
+            <label htmlFor="editorial-image-feedback">Замечания к изображению</label>
+            <textarea id="editorial-image-feedback" value={imageFeedback} maxLength={4000}
+              disabled={!canDecide} onChange={e => setImageFeedback(e.target.value)} />
+            <Button secondary type="button" disabled={!canDecide || !imageFeedback.trim()}
+              onClick={() => void queue('request_image_changes')}>Переделать изображение</Button>
+            {canReuse && <Button secondary type="button" disabled={!canDecide}
+              onClick={() => void queue('confirm_image_reuse')}>Подтвердить повторное использование</Button>}
+            {canFinal && <Button type="button" disabled={!canDecide}
+              onClick={() => void queue('approve_final')}>Утвердить текст и изображение</Button>}
+          </>)}
           {snapshot.mock_image.can_import && onImportImage && (
             <Button secondary type="button" disabled={!canDecide || importing} onClick={() => void importImage()}>
               {importing ? 'Импорт…' : 'Получить изображение'}
@@ -219,14 +247,14 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
         />
         <p className="text-[13px] text-newTableText">Для отправки на доработку укажи замечания к тексту.</p>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" disabled={!canDecide} onClick={() => void queue('approve_text')}>
+          <Button type="button" disabled={!canDecide || !canApproveText} onClick={() => void queue('approve_text')}>
             Утвердить текст
           </Button>
           <Button secondary type="button" disabled={!canDecide || !feedback.trim()}
             onClick={() => void queue('request_text_changes')}>
             Отправить на доработку
           </Button>
-          {imageManual && (
+          {canRequestImage && (
             <Button secondary type="button" disabled={!canDecide} onClick={() => void queue('request_image')}>
               Запросить изображение
             </Button>

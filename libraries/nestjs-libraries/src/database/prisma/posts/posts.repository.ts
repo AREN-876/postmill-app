@@ -270,7 +270,7 @@ export class PostsRepository {
 
   // Exact test-only accepted return requests that still await a newer artifact.
   // Revalidated by the transactional import function after signed lookup.
-  async listPendingEditorialTextRevisions(orgId: string, target: string) {
+  async listPendingEditorialTextRevisions(orgId: string, target: string, allowMock = false) {
     return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string }>>`
       SELECT p."editorialTaskId" AS task, d.request->'scope' AS scope,
              o."eventId", o."payloadHash" AS digest
@@ -286,7 +286,8 @@ export class PostsRepository {
         AND p."editorialTaskId" IS NOT NULL
         AND d.request->'scope'->>'org_id'=${orgId}::text
         AND d.request->'scope'->'is_test'='true'::jsonb
-        AND d.request->'scope'->>'image_mode'='disabled'
+        AND (d.request->'scope'->>'image_mode'='disabled' OR (${allowMock}::boolean AND
+          public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)))
         AND d."targetSnapshot"->>'internalId'=${target}::text AND i."internalId"=${target}::text
         AND i."providerIdentifier"='max' AND NOT i.disabled AND NOT i."refreshNeeded"
         AND i."deletedAt" IS NULL
