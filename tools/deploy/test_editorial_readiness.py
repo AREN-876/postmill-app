@@ -15,7 +15,7 @@ loader.exec_module(readiness)
 
 
 def fake_inventory(status="NOT_APPLIED", **changes):
-    # Actual 54 migration files are checked out in CI; hashes are not mocked,
+    # Actual 55 migration files are checked out in CI; hashes are not mocked,
     # but Docker/psql responses are. This catches SQL migration text changes.
     paths = sorted(readiness.MIGRATION_ROOT.glob("*/migration.sql"))
     names = paths if status == "APPLIED" else paths[:44]
@@ -97,7 +97,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertNotIn("prisma_ledger", result["inventory"])
 
     def test_installed_schema_is_not_approval_or_live_integration(self):
-        row = fake_inventory("APPLIED", completed_migrations=54, active_campaigns=1)
+        row = fake_inventory("APPLIED", completed_migrations=55, active_campaigns=1)
         result = self.run_inventory(row)
         self.assertTrue(result["inventory"]["schema_installed"])
         self.assertEqual(result["runtime_module_activation"], "NOT_VERIFIED")
@@ -115,7 +115,7 @@ class ReadinessTests(unittest.TestCase):
         ]
         row["completed_migrations"] = 53
         row["editorial_migrations"] = {
-            name: ("NOT_APPLIED" if name == "20261123150000_editorial_pre_review_text_install"
+            name: ("NOT_APPLIED" if name in ("20261123150000_editorial_pre_review_text_install", "20261124100000_editorial_delivery_recovery")
                    else "APPLIED")
             for name in readiness.MIGRATIONS
         }
@@ -139,7 +139,8 @@ class ReadinessTests(unittest.TestCase):
         row["completed_migrations"] = 52
         row["editorial_migrations"] = {
             name: ("NOT_APPLIED" if name in ("20261122190000_editorial_delivery_reservation",
-                                  "20261123150000_editorial_pre_review_text_install")
+                                  "20261123150000_editorial_pre_review_text_install",
+                                  "20261124100000_editorial_delivery_recovery")
                    else "APPLIED")
             for name in readiness.MIGRATIONS
         }
