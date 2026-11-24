@@ -11,14 +11,15 @@ const scope = {
 };
 
 describe('editorial test-only delivery activity', () => {
-  const posts = { listPendingEditorialTestDelivery: vi.fn() };
-  const delivery = { deliverPending: vi.fn() };
+  const posts = { listPendingEditorialTestDelivery: vi.fn(), listPendingEditorialTextRevisions: vi.fn() };
+  const delivery = { deliverPending: vi.fn(), reconcileTextRevision: vi.fn() };
   const activity = new EditorialDeliveryActivity(posts as any, delivery as any);
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv('EDITORIAL_TEST_DELIVERY_ENABLED', 'true');
     vi.stubEnv('EDITORIAL_TEST_RECOVERY_ENABLED', 'false');
+    vi.stubEnv('EDITORIAL_TEST_REVISION_SYNC_ENABLED', 'false');
     vi.stubEnv('EDITORIAL_TEST_SESSION_ENABLED', 'true');
     vi.stubEnv('EDITORIAL_TEST_ORG_ID', scope.org_id);
     vi.stubEnv('EDITORIAL_TEST_MAX_TARGET', 'max:-73052031470103');
@@ -41,6 +42,7 @@ describe('editorial test-only delivery activity', () => {
     const result = await activity.sweep();
     expect(result).toMatchObject({ submitted: 1, confirmed: 1, lookedUp: 0 });
     expect(delivery.deliverPending).toHaveBeenCalledTimes(1);
+    expect(posts.listPendingEditorialTextRevisions).not.toHaveBeenCalled();
     expect(delivery.deliverPending).toHaveBeenCalledWith(
       scope, '5', 'max:-73052031470103',
       expect.objectContaining({ orgId: scope.org_id, allowMissingRecovery: false }),
@@ -52,6 +54,16 @@ describe('editorial test-only delivery activity', () => {
     await activity.sweep();
     expect(delivery.deliverPending).toHaveBeenCalledWith(scope, '5', 'max:-73052031470103',
       expect.objectContaining({ allowMissingRecovery: true }));
+  });
+
+  it('syncs revisions only with separate opt-in and preserves the exact return reference', async () => {
+    vi.stubEnv('EDITORIAL_TEST_REVISION_SYNC_ENABLED', 'true');
+    posts.listPendingEditorialTextRevisions.mockResolvedValue([{ task: '7', scope,
+      eventId: 'request-id', digest: 'a'.repeat(64) }]);
+    delivery.reconcileTextRevision.mockResolvedValue({ status: 'recorded' });
+    await expect(activity.sweep()).resolves.toMatchObject({ revisionsRecorded: 1, revisionsWaiting: 0 });
+    expect(delivery.reconcileTextRevision).toHaveBeenCalledWith(scope,'7','max:-73052031470103',
+      'request-id','a'.repeat(64),expect.objectContaining({ orgId: scope.org_id }));
   });
 
   it('reflects lookup after uncertain outcome without passing a submit mode', async () => {
