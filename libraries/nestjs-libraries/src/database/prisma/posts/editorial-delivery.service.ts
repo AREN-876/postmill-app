@@ -1,9 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PostsRepository } from './posts.repository';
-import { type EditorialScope } from './editorial-ingress';
+import { validateEditorialArtifact, type EditorialScope } from './editorial-ingress';
 import {
   editorialPending, editorialWireConfig, editorialLoopbackFetch, EditorialTransportError,
-  signedEditorialRequest, type EditorialWireConfig,
+  signedEditorialRequest, signedEditorialRevisionLookup, type EditorialWireConfig,
 } from './editorial-signed-transport';
 
 // Used by the isolated, default-off editorial Inngest activity. It reserves
@@ -17,6 +17,40 @@ export type EditorialDeliveryConfig = EditorialWireConfig & {
 @Injectable()
 export class EditorialDeliveryService {
   constructor(@Inject(PostsRepository) private readonly posts: PostsRepository) {}
+
+  // The caller is the scoped test-only sweep, never a human HTTP endpoint.
+  // Proof lookup cannot write remotely. The native artifact is independently
+  // validated before the local SQL transaction consumes it.
+  async reconcileTextRevision(scope: EditorialScope, task: string, target: string,
+    eventId: string, digest: string, config: EditorialWireConfig,
+    fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
+    const peer = editorialWireConfig(config);
+    if (scope.org_id !== peer.orgId || scope.is_test !== true ||
+        scope.image_mode !== 'disabled' || target !== 'max:-73052031470103') {
+      throw new EditorialTransportError();
+    }
+    const proof = await signedEditorialRevisionLookup({
+      org_id: scope.org_id, task_id: task, event_id: eventId, payload_sha256: digest,
+    }, config, fetcher);
+    if (proof === null) return { status: 'not_ready' as const };
+    const ref = proof.state.text;
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref) ||
+        typeof (ref as Record<string, unknown>).revision !== 'number' ||
+        !Number.isSafeInteger((ref as Record<string, unknown>).revision) ||
+        Number((ref as Record<string, unknown>).revision) < 2) {
+      throw new EditorialTransportError();
+    }
+    try {
+      validateEditorialArtifact(proof.install_event.revision_content,
+        (ref as Record<string, unknown>).sha256);
+    } catch {
+      throw new EditorialTransportError();
+    }
+    const receipt = await this.posts.importEditorialTextRevision(
+      scope, task, target, eventId, digest, proof,
+    );
+    return { status: 'recorded' as const, receipt };
+  }
 
   // Read-only lookup may run without a send reservation; primary submit may not.
   async reconcileOnce(scope: EditorialScope, task: string, target: string,
