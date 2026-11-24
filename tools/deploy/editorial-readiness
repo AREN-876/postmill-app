@@ -2,7 +2,7 @@
 """Read-only VPS inventory for Editorial 06B. Never installs, migrates or deploys.
 
 This probes the *running* containers and compares the live migration
-ledger against the reviewed local 56-migration checkout. It does not establish
+ledger against the reviewed local 57-migration checkout. It does not establish
 schema/data identity or readiness to deploy. Does not verify credentials, Postmill route activation,
 MAX safety, backup integrity, or Editorial/PG end-to-end behavior.
 """
@@ -19,7 +19,7 @@ import sys
 POSTMILL = "postmill-postmill-1"
 POSTGRES = "postmill-postgres-1"
 # Local source is required to validate the checksums in _prisma_migrations.
-# It must be the full reviewed fork checkout (56 migration.sql files).
+# It must be the full reviewed fork checkout (57 migration.sql files).
 MIGRATION_ROOT = Path(__file__).resolve().parents[2] / (
     "libraries/nestjs-libraries/src/database/prisma/migrations"
 )
@@ -37,6 +37,7 @@ MIGRATIONS = (
     "20261123150000_editorial_pre_review_text_install",
     "20261124100000_editorial_delivery_recovery",
     "20261124120000_editorial_text_revision",
+    "20261124140000_editorial_mock_image_import",
 )
 
 # Fixed SQL, fixed containers, no user-supplied SQL, credentials, or queries.
@@ -166,8 +167,9 @@ def verify_applied_checksums(db: dict[str, object]) -> dict[str, object]:
     """
     try:
         files = sorted(MIGRATION_ROOT.glob("*/migration.sql"))
-        if len(files) != 56 or files[43].parent.name != BASELINE_LAST:
-            raise Refused("local migration checkout is not the reviewed 56-file tree")
+        if (len(files) != 57 or files[43].parent.name != BASELINE_LAST
+                or tuple(p.parent.name for p in files[44:]) != MIGRATIONS):
+            raise Refused("local migration checkout is not the reviewed 57-file tree")
         expected = {
             p.parent.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in files
@@ -175,7 +177,7 @@ def verify_applied_checksums(db: dict[str, object]) -> dict[str, object]:
     except OSError as exc:
         raise Refused("unable to read reviewed local migration files") from exc
     rows = db.pop("prisma_ledger", None)
-    if not isinstance(rows, list) or len(rows) not in (44, 51, 52, 53, 54, 55, 56):
+    if not isinstance(rows, list) or len(rows) not in (44, 51, 52, 53, 54, 55, 56, 57):
         raise Refused("unexpected Prisma migration ledger size")
     names = [r.get("name") for r in rows if isinstance(r, dict)]
     if len(names) != len(rows) or len(set(names)) != len(names):
@@ -225,6 +227,12 @@ def collect() -> dict[str, object]:
     # A matching _prisma_migrations ledger is necessary, not proof that live
     # tables/objects are identical to the checked-in Prisma schema.
     baseline = verify_applied_checksums(db)
+    # Independently cross-check the per-migration SQL inventory against the
+    # verified ledger prefix. Do not let a contradictory inventory report ready.
+    applied = max(0, baseline["applied_count"] - 44)
+    if any(migrations[name] != ("APPLIED" if i < applied else "NOT_APPLIED")
+           for i, name in enumerate(MIGRATIONS)):
+        raise Refused("editorial migration inventory disagrees with verified ledger")
 
     # An exact native MAX target mapping is evidence, NOT deployment approval.
     # Its organization/integration IDs must still be checked against trusted
