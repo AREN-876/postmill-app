@@ -144,7 +144,18 @@ export function prepareEditorialDraft(
       typeof body.text.sha256 !== 'string' || !SHA.test(body.text.sha256)) {
     throw new EditorialIngressError('invalid_request');
   }
-  const content = contentOf(body.content);
+  const { content, firstPart, continuationText } = validateEditorialArtifact(body.content, body.text.sha256);
+  return {
+    schema_version: 1, task_id: body.task_id, scope,
+    text: { revision: 1, sha256: body.text.sha256 },
+    content, firstPart, continuationText,
+  };
+}
+
+// Shared native StoryGo round-trip and exact Editorial digest check.
+export function validateEditorialArtifact(value: unknown, expectedHash: unknown) {
+  if (typeof expectedHash !== 'string' || !SHA.test(expectedHash)) throw new EditorialIngressError('invalid_request');
+  const content = contentOf(value);
   const firstPart = content.title + '\n\n' + content.parts[0];
   const continuationText = content.parts.slice(1).join('\n' + STORYGO_DIVIDER + '\n');
   try {
@@ -157,12 +168,8 @@ export function prepareEditorialDraft(
   } catch {
     throw new EditorialIngressError('invalid_request');
   }
-  if (editorialTextDigest(content) !== body.text.sha256) {
+  if (editorialTextDigest(content) !== expectedHash) {
     throw new EditorialIngressError('digest_mismatch');
   }
-  return {
-    schema_version: 1, task_id: body.task_id, scope,
-    text: { revision: 1, sha256: body.text.sha256 },
-    content, firstPart, continuationText,
-  };
+  return { content, firstPart, continuationText };
 }
