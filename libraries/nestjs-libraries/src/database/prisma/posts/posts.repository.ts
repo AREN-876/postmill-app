@@ -218,7 +218,7 @@ export class PostsRepository {
 
   // Durable submit-once fence. Its result is committed BEFORE the signed
   // network request; a second caller receives newly_reserved=false and may
-  // perform only a signed read-only lookup. SQL verifies the exact pending
+  // first perform signed lookup. SQL verifies the exact pending
   // event and the original immutable scope/target under an advisory lock.
   async reserveEditorialSubmit(scope: EditorialScope, task: string,
     target: string, eventId: string) {
@@ -226,6 +226,19 @@ export class PostsRepository {
       SELECT public.postmill_reserve_editorial_delivery_v1(
         ${JSON.stringify(scope)}::jsonb, ${task}::text,
         ${target}::text, ${eventId}::text
+      ) AS result
+    `;
+    return row.result;
+  }
+
+  // Only after a verified negative lookup. The DB enforces the original
+  // reservation, exact digest, target, durable limit and cooldown.
+  async reserveEditorialRecovery(scope: EditorialScope, task: string,
+    target: string, eventId: string, digest: string) {
+    const [row] = await this._post.$queryRaw<Array<{ result: boolean }>>`
+      SELECT public.postmill_reserve_editorial_recovery_v1(
+        ${JSON.stringify(scope)}::jsonb, ${task}::text,
+        ${target}::text, ${eventId}::text, ${digest}::text
       ) AS result
     `;
     return row.result;
