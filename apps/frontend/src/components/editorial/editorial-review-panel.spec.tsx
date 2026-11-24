@@ -149,6 +149,19 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     expect(onCommand).toHaveBeenCalledTimes(1);
   });
 
+  it('blocks decisions during revision import and after terminal rejection', () => {
+    const first = show(snapshot({ review: { status: 'idle', last_confirmed_state: {
+      seq: '1', image_mode: 'disabled', text_status: 'changes_requested',
+    } } }));
+    expect(screen.getByRole('button', { name: 'Утвердить текст' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Отклонить материал' })).toBeDisabled();
+    first.unmount();
+    show(snapshot({ review: { status: 'idle', last_confirmed_state: {
+      seq: '2', image_mode: 'disabled', rejected: true,
+    } } }));
+    expect(screen.getByRole('button', { name: 'Утвердить текст' })).toBeDisabled();
+  });
+
   it('unlocks only when a newly confirmed sequence arrives from the server', async () => {
     const mounted = show();
     fireEvent.click(screen.getByRole('button', { name: 'Утвердить текст' }));
