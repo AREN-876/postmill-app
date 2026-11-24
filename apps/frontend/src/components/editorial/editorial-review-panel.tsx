@@ -14,6 +14,7 @@ export type EditorialReviewSnapshot = {
     status: string;
     last_confirmed_state?: {
       seq: string;
+      text?: { revision: number; sha256: string };
       image_mode?: string;
       text_status?: string;
       final_approved?: boolean;
@@ -68,9 +69,11 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
     snapshot.content.parts.every((part) => typeof part === 'string' && part.trim().length > 0);
   const validSeq = typeof seq === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(seq);
   const idle = snapshot.review?.status === 'idle';
+  const state = snapshot.review?.last_confirmed_state;
+  const waitingRevision = state?.image_mode === 'disabled' && state.text_status === 'changes_requested';
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
-    idle && snapshot.review?.last_confirmed_state?.final_approved !== true &&
+    idle && !waitingRevision && state?.rejected !== true && state?.final_approved !== true &&
     !busy && blockedAtSeq === null && !mutationsBlocked;
   const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
 
@@ -133,7 +136,9 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
     <section aria-label="Редакторская проверка" className="space-y-4">
       <header className="space-y-2">
         <h2 className="text-xl font-semibold">Редакторская проверка</h2>
-        <p>Статус Postmill: {snapshot.review?.status ?? 'неизвестен'}; последняя подтверждённая версия: {seq ?? 'нет'}.</p>
+        <p>Статус Postmill: {snapshot.review?.status ?? 'неизвестен'}; последовательность решений: {seq ?? 'нет'}; редакция текста: {state?.text?.revision ?? 'нет'}.</p>
+        {waitingRevision && <p role="status">Текст возвращён на доработку. Новая редакция ожидает подтверждения.</p>}
+        {state?.rejected === true && <p role="status">Материал окончательно отклонён.</p>}
         <p>Черновик защищён от публикации. Решение редактора, доставка решения и публикация — разные операции.</p>
       </header>
 
