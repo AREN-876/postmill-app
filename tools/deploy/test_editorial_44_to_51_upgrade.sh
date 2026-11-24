@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI ONLY: actual historic 44 Prisma migrations -> pg_dump/pg_restore -> 56.
+# CI ONLY: actual historic 44 Prisma migrations -> pg_dump/pg_restore -> 59.
 set -Eeuo pipefail
 OLD=9f867ba77472b8574d60407112e2caebf5304eb4
 REL=libraries/nestjs-libraries/src/database/prisma
@@ -29,7 +29,7 @@ OLD_SCHEMA="$ROOT/$REL/schema.prisma"
 NEW_SCHEMA="$GITHUB_WORKSPACE/$REL/schema.prisma"
 [[ -f "$OLD_SCHEMA" && -f "$NEW_SCHEMA" ]]
 [[ "$(find "$ROOT/$REL/migrations" -name migration.sql | wc -l)" == '44' ]]
-[[ "$(find "$GITHUB_WORKSPACE/$REL/migrations" -name migration.sql | wc -l)" == '56' ]]
+[[ "$(find "$GITHUB_WORKSPACE/$REL/migrations" -name migration.sql | wc -l)" == '59' ]]
 [[ -f "$ROOT/$REL/migrations/20261114090000_max_target_binding/migration.sql" ]]
 [[ ! -d "$ROOT/$REL/migrations/20261119120000_editorial_draft_fence" ]]
 [[ -f "$GITHUB_WORKSPACE/$REL/migrations/20261120130000_editorial_human_review/migration.sql" ]]
@@ -105,22 +105,26 @@ DECLARE want text[]:=ARRAY[
  '20261122190000_editorial_delivery_reservation',
  '20261123150000_editorial_pre_review_text_install',
  '20261124100000_editorial_delivery_recovery',
- '20261124120000_editorial_text_revision'
+ '20261124120000_editorial_text_revision',
+ '20261124140000_editorial_mock_image_import',
+ '20261124160000_editorial_mock_image_review',
+ '20261124180000_editorial_mock_image_release'
 ];
 body jsonb; scope jsonb; prepared jsonb; one jsonb; two jsonb; seen jsonb;
 pid text; digest text;
 BEGIN
- IF (SELECT count(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL)<>56
+ IF (SELECT count(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL)<>59
  OR EXISTS(SELECT 1 FROM "_prisma_migrations"
            WHERE finished_at IS NULL AND rolled_back_at IS NULL)
  OR (SELECT count(*) FROM "_prisma_migrations" WHERE migration_name=ANY(want)
-      AND finished_at IS NOT NULL)<>12
+      AND finished_at IS NOT NULL)<>15
  OR to_regclass('public."EditorialDraftReceipt"') IS NULL
  OR to_regclass('public."EditorialDecisionResult"') IS NULL
  OR to_regclass('public."EditorialRelease"') IS NULL
  OR to_regclass('public."EditorialDeliveryReservation"') IS NULL
  OR to_regclass('public."EditorialDeliveryRecovery"') IS NULL
  OR to_regclass('public."EditorialTextRevision"') IS NULL
+ OR to_regclass('public."EditorialImageImportReceipt"') IS NULL
  OR to_regprocedure('postmill_import_editorial_revision_v1(jsonb,text,text,text,text,jsonb)') IS NULL
  OR to_regprocedure('postmill_reserve_editorial_recovery_v1(jsonb,text,text,text,text)') IS NULL
  OR to_regprocedure('postmill_reserve_editorial_delivery_v1(jsonb,text,text,text)') IS NULL
@@ -129,7 +133,7 @@ BEGIN
  OR (SELECT count(*) FROM "Post" WHERE id='edx-ci-original-post-44'
     AND state='DRAFT' AND content='Preserve this 44-migration draft'
     AND "editorialTaskId" IS NULL)<>1
- THEN RAISE EXCEPTION 'EDX_44_TO_56_MIGRATION_FAILED'; END IF;
+ THEN RAISE EXCEPTION 'EDX_44_TO_59_MIGRATION_FAILED'; END IF;
 
  body:=jsonb_build_object('title','Synthetic upgraded draft',
    'parts',jsonb_build_array(repeat('a',2900),repeat('b',2900),repeat('c',2900)));
@@ -160,7 +164,7 @@ BEGIN
  OR (SELECT count(*) FROM "Post" WHERE "organizationId"='edx-ci-org-44')<>2
  OR NOT EXISTS(SELECT 1 FROM "Post" WHERE id=pid AND state='DRAFT'
                AND "approvalStatus"='pending')
- THEN RAISE EXCEPTION 'EDX_44_TO_56_DRAFT_UNSAFE'; END IF;
+ THEN RAISE EXCEPTION 'EDX_44_TO_59_DRAFT_UNSAFE'; END IF;
  BEGIN
    UPDATE "Post" SET state='QUEUE' WHERE id=pid;
    RAISE EXCEPTION 'EDX_MANAGED_DRAFT_PUBLISH_ALLOWED';
@@ -168,9 +172,10 @@ BEGIN
    IF SQLERRM<>'EDITORIAL_MANAGED_DRAFT_FROZEN' THEN RAISE; END IF;
  END;
 END $ci$;
-SELECT 'EDX_REAL_44_BACKUP_RESTORE_56_SQL_OK';
+SELECT 'EDX_REAL_44_BACKUP_RESTORE_59_SQL_OK';
 SQL
+sql "$DB_NEW" < tools/db/editorial-image-full-assertions.sql
 # Full Prisma schema drift on an actual upgraded, non-empty database.
 npx --yes prisma@6.5.0 migrate diff --from-url "$DATABASE_URL" \
   --to-schema-datamodel "$NEW_SCHEMA" --exit-code
-echo 'POSTMILL_44_TO_56_ISOLATED_DRILL_OK'
+echo 'POSTMILL_44_TO_59_ISOLATED_DRILL_OK'

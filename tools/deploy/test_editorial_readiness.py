@@ -15,7 +15,7 @@ loader.exec_module(readiness)
 
 
 def fake_inventory(status="NOT_APPLIED", **changes):
-    # Actual 56 migration files are checked out in CI; hashes are not mocked,
+    # Actual 59 migration files are checked out in CI; hashes are not mocked,
     # but Docker/psql responses are. This catches SQL migration text changes.
     paths = sorted(readiness.MIGRATION_ROOT.glob("*/migration.sql"))
     names = paths if status == "APPLIED" else paths[:44]
@@ -97,7 +97,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertNotIn("prisma_ledger", result["inventory"])
 
     def test_installed_schema_is_not_approval_or_live_integration(self):
-        row = fake_inventory("APPLIED", completed_migrations=56, active_campaigns=1)
+        row = fake_inventory("APPLIED", completed_migrations=59, active_campaigns=1)
         result = self.run_inventory(row)
         self.assertTrue(result["inventory"]["schema_installed"])
         self.assertEqual(result["runtime_module_activation"], "NOT_VERIFIED")
@@ -115,9 +115,8 @@ class ReadinessTests(unittest.TestCase):
         ]
         row["completed_migrations"] = 53
         row["editorial_migrations"] = {
-            name: ("NOT_APPLIED" if name in ("20261123150000_editorial_pre_review_text_install", "20261124100000_editorial_delivery_recovery", "20261124120000_editorial_text_revision")
-                   else "APPLIED")
-            for name in readiness.MIGRATIONS
+            name: ("APPLIED" if i < 53 - 44 else "NOT_APPLIED")
+            for i, name in enumerate(readiness.MIGRATIONS)
         }
         row["managed_draft_column"] = True
         row["editorial_receipts"] = True
@@ -138,17 +137,52 @@ class ReadinessTests(unittest.TestCase):
         ]
         row["completed_migrations"] = 52
         row["editorial_migrations"] = {
-            name: ("NOT_APPLIED" if name in ("20261122190000_editorial_delivery_reservation",
-                                  "20261123150000_editorial_pre_review_text_install",
-                                  "20261124100000_editorial_delivery_recovery", "20261124120000_editorial_text_revision")
-                   else "APPLIED")
-            for name in readiness.MIGRATIONS
+            name: ("APPLIED" if i < 52 - 44 else "NOT_APPLIED")
+            for i, name in enumerate(readiness.MIGRATIONS)
         }
         row["managed_draft_column"] = True
         row["editorial_receipts"] = True
         result = self.run_inventory(row)
         self.assertFalse(result["inventory"]["schema_installed"])
         self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 52)
+
+    def test_historical_56_matches_but_image_import_not_installed(self):
+        row = fake_inventory("APPLIED")
+        del row["prisma_ledger"][56:]
+        row["completed_migrations"] = 56
+        for name in readiness.MIGRATIONS[12:]:
+            row["editorial_migrations"][name] = "NOT_APPLIED"
+        result = self.run_inventory(row)
+        self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 56)
+        self.assertEqual(result["prisma_migration_checksum_audit"]["source_file_count"], 59)
+        self.assertFalse(result["inventory"]["schema_installed"])
+        self.assertFalse(result["approved_to_deploy"])
+
+    def test_historical_57_matches_but_image_review_not_installed(self):
+        row = fake_inventory("APPLIED")
+        del row["prisma_ledger"][57:]
+        row["completed_migrations"] = 57
+        for name in readiness.MIGRATIONS[13:]:
+            row["editorial_migrations"][name] = "NOT_APPLIED"
+        result = self.run_inventory(row)
+        self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 57)
+        self.assertFalse(result["inventory"]["schema_installed"])
+
+    def test_historical_58_matches_but_mock_release_not_installed(self):
+        row = fake_inventory("APPLIED")
+        row["prisma_ledger"].pop()
+        row["completed_migrations"] = 58
+        row["editorial_migrations"][readiness.MIGRATIONS[-1]] = "NOT_APPLIED"
+        result = self.run_inventory(row)
+        self.assertEqual(result["prisma_migration_checksum_audit"]["applied_count"], 58)
+        self.assertFalse(result["inventory"]["schema_installed"])
+
+    def test_contradictory_image_inventory_refused(self):
+        row = fake_inventory("APPLIED")
+        del row["prisma_ledger"][56:]
+        row["completed_migrations"] = 56
+        with self.assertRaisesRegex(readiness.Refused, "disagrees with verified ledger"):
+            self.run_inventory(row)
 
     def test_missing_or_duplicate_test_channel_never_becomes_verified(self):
         missing = fake_inventory(editorial_test_target={

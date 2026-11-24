@@ -209,7 +209,7 @@ jobs:
           DATABASE_URL: postgresql://postmill-local:postmill-local-pwd@localhost:5432/postmill-db-local
         run: pnpm --dir apps/backend exec vitest run src/api/routes/editorial-exchange.real-db.spec.ts
 
-      - name: Editorial 07 real 51-migration backup and isolated restore drill
+      - name: Editorial 07 real 59-migration backup and isolated restore drill
         env:
           EDX_BACKUP_CI: '1'
           PG_CI_CONTAINER: ${{ job.services.postgres.id }}

@@ -26,13 +26,15 @@ export class EditorialDeliveryService {
     fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
     const peer = editorialWireConfig(config);
     if (scope.org_id !== peer.orgId || scope.is_test !== true ||
-        scope.image_mode !== 'disabled' || target !== 'max:-73052031470103') {
+        (scope.image_mode !== 'disabled' && !(config.allowMockImageReview === true && scope.org_id === 'org-modes' &&
+          scope.integration_id.startsWith('mock-review-') && ['automatic','manual','after_text_approval'].includes(scope.image_mode))) || target !== 'max:-73052031470103') {
       throw new EditorialTransportError();
     }
     const proof = await signedEditorialRevisionLookup({
       org_id: scope.org_id, task_id: task, event_id: eventId, payload_sha256: digest,
     }, config, fetcher);
     if (proof === null) return { status: 'not_ready' as const };
+    if (proof.state.image_mode !== scope.image_mode) throw new EditorialTransportError();
     const ref = proof.state.text;
     if (!ref || typeof ref !== 'object' || Array.isArray(ref) ||
         typeof (ref as Record<string, unknown>).revision !== 'number' ||

@@ -10,7 +10,7 @@ type Fetcher = (url: string, options?: RequestInit) => Promise<Response>;
 const POST_ID = /^[0-9a-f]{32}$/;
 const TASK_ID = /^[1-9][0-9]{0,18}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const ACTIONS = new Set(['approve_text', 'request_text_changes', 'reject', 'request_image']);
+const ACTIONS = new Set(['approve_text', 'request_text_changes', 'reject', 'request_image', 'request_image_changes', 'confirm_image_reuse', 'approve_final']);
 const MAX_TASK = '9223372036854775807';
 
 function record(x: unknown): x is Record<string, unknown> {
@@ -52,6 +52,24 @@ function checkedSnapshot(x: unknown, postId: string, taskId: string): EditorialR
       throw new Error('editorial_untrusted_snapshot');
     }
   }
+  if (x.mock_image !== undefined) {
+    const m=x.mock_image;
+    if (!record(m) || !['waiting','recorded','uncertain','unavailable'].includes(m.status as string) ||
+        typeof m.can_import !== 'boolean' || (m.asset !== null && (!record(m.asset) ||
+        typeof m.asset.file_id !== 'string' || !UUID.test(m.asset.file_id) ||
+        typeof m.asset.revision !== 'number' || !Number.isSafeInteger(m.asset.revision) || m.asset.revision<1 ||
+        typeof m.asset.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(m.asset.sha256) ||
+        typeof m.asset.compatible !== 'boolean' ||
+        m.asset.png_base64 !== 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGNUNPdlYGBgYmBgYGBgAAAHugCprKZFeAAAAABJRU5ErkJggg=='))) {
+      throw new Error('editorial_untrusted_image');
+    }
+    const state = x.review.last_confirmed_state;
+    if ((m.status === 'recorded' && m.asset === null) || (m.asset !== null &&
+        (!record(m.asset) || !record(state) || !record(state.image) ||
+         state.image.revision !== m.asset.revision || state.image_compatible !== m.asset.compatible))) {
+      throw new Error('editorial_untrusted_image');
+    }
+  }
   return x as EditorialReviewSnapshot;
 }
 
@@ -64,7 +82,7 @@ function checkedCommand(cmd: EditorialHumanCommand): void {
       (cmd.expected_seq.length === 19 && cmd.expected_seq > MAX_TASK) ||
       !ACTIONS.has(cmd.action) || typeof cmd.feedback !== 'string' ||
       cmd.feedback.length > 4000 || new TextEncoder().encode(cmd.feedback).length > 16000 ||
-      (cmd.action === 'request_text_changes' ? !cmd.feedback.trim() : cmd.feedback !== '')) {
+      (['request_text_changes','request_image_changes'].includes(cmd.action) ? !cmd.feedback.trim() : cmd.feedback !== '')) {
     throw new Error('editorial_invalid_command');
   }
 }
@@ -77,6 +95,16 @@ export function editorialReviewClient(fetcher: Fetcher) {
       if (!res.ok) throw new Error('editorial_review_read_unavailable');
       const data: unknown = await res.json();
       return checkedSnapshot(data, postId, taskId);
+    },
+    async importImage(postId:string,taskId:string,seq:string): Promise<{status:string}> {
+      const url=path(postId,taskId);
+      if (!/^(0|[1-9][0-9]{0,18})$/.test(seq)) throw new Error('editorial_invalid_identity');
+      const res=await fetcher(url+'/image/import',{method:'POST',cache:'no-store',body:JSON.stringify({expected_seq:seq})});
+      if (!res.ok) throw new Error('editorial_image_outcome_unknown');
+      const x:unknown=await res.json();
+      if (!record(x) || !['recorded','not_ready','uncertain'].includes(x.status as string) ||
+          x.publishable!==false || x.dispatch_authorized!==false) throw new Error('editorial_image_outcome_unknown');
+      return {status:x.status as string};
     },
     async queue(
       postId: string, taskId: string, command: EditorialHumanCommand,

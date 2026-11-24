@@ -167,6 +167,16 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect(posts.readEditorialHuman).not.toHaveBeenCalled();
     expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
   });
+  it('mock image import remains off and retains session/RBAC checks', async () => {
+    const request = (session: string, headers: Record<string,string> = {}) => fetch(url+path+'/image/import',{
+      method:'POST',headers:{cookie:session,'content-type':'application/json','x-csrf-token':csrf,...headers},
+      body:JSON.stringify({expected_seq:'0'}),
+    });
+    expect((await request(cookie)).status).toBe(404);
+    expect((await request('auth=viewer; csrf_token='+csrf)).status).toBe(403);
+    expect((await request('')).status).toBe(403);
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+  });
   it('denies viewer mutation through real OrgRbacGuard', async () => {
     const d = await decision(command, {}, 'auth=viewer; csrf_token=' + csrf);
     expect(d.status).toBe(403);

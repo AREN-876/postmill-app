@@ -46,6 +46,22 @@ export class EditorialHumanReviewController {
     return this.review.read(org.id, user.id, postId, taskId);
   }
 
+  @Post(':postId/:taskId/image/import')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @RequirePermission('posts', 'update')
+  importMockImage(
+    @Req() req: Request,
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('postId') postId: string,
+    @Param('taskId') taskId: string,
+    @Body() body: unknown,
+  ) {
+    sessionOnly(req);
+    return this.review.importMockImage(org.id,user.id,postId,taskId,body);
+  }
+
   @Post(':postId/:taskId/decisions')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')

@@ -1,8 +1,10 @@
-import { ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, HttpException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/roles/roles.service';
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
 import { isEditorialTaskId } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-ingress';
+
+import { EditorialMockImageService, mockImageImportEnabled } from './editorial-mock-image.service';
 
 export const EDITORIAL_HUMAN_REVIEW_CONFIG = Symbol('EDITORIAL_HUMAN_REVIEW_CONFIG');
 export type EditorialHumanReviewConfig = {
@@ -10,12 +12,12 @@ export type EditorialHumanReviewConfig = {
   testOrgId: string;
   targetInternalId: string;
 };
-type Action = 'approve_text' | 'request_text_changes' | 'reject' | 'request_image';
+type Action = 'approve_text' | 'request_text_changes' | 'reject' | 'request_image' | 'request_image_changes' | 'confirm_image_reuse' | 'approve_final';
 export type HumanCommand = { command_id: string; expected_seq: string; action: Action; feedback: string };
 const POST_ID = /^[0-9a-f]{32}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SEQ = /^(0|[1-9][0-9]{0,18})$/;
-const ACTIONS: Action[] = ['approve_text', 'request_text_changes', 'reject', 'request_image'];
+const ACTIONS: Action[] = ['approve_text', 'request_text_changes', 'reject', 'request_image', 'request_image_changes', 'confirm_image_reuse', 'approve_final'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -29,7 +31,7 @@ function checkedCommand(value: unknown): HumanCommand {
       typeof value.action !== 'string' || !ACTIONS.includes(value.action as Action) ||
       typeof value.feedback !== 'string' || value.feedback.length > 4000 ||
       Buffer.byteLength(value.feedback, 'utf8') > 16000 ||
-      (value.action === 'request_text_changes' ? !/\S/u.test(value.feedback) : value.feedback !== '')) {
+      (['request_text_changes','request_image_changes'].includes(value.action) ? !/\S/u.test(value.feedback) : value.feedback !== '')) {
     throw new HttpException('editorial_invalid_command', 400);
   }
   return value as HumanCommand;
@@ -55,6 +57,7 @@ export class EditorialHumanReviewService {
     @Inject(RolesService) private readonly roles: RolesService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(EDITORIAL_HUMAN_REVIEW_CONFIG) private readonly config: EditorialHumanReviewConfig | null,
+    @Optional() @Inject(EditorialMockImageService) private readonly images?: EditorialMockImageService,
   ) {}
 
   private configFor(orgId: string): EditorialHumanReviewConfig {
@@ -99,7 +102,24 @@ export class EditorialHumanReviewService {
       result = await this.posts.readEditorialHuman(orgId, postId, taskId, cfg.targetInternalId);
     } catch (e) { return fromDatabase(e); }
     if (result === null) throw new NotFoundException('editorial_review_not_found');
+    if (this.images && isRecord(result) && isRecord(result.review)) {
+      const image = await this.images.preview(orgId,postId,taskId,cfg.targetInternalId,result.review.last_confirmed_state);
+      if (image !== undefined) return {...result,mock_image:image};
+    }
     return result;
+  }
+
+  async importMockImage(orgId: string, userId: string, postId: string, taskId: string, body: unknown) {
+    const cfg = this.configFor(orgId);
+    this.validateIds(postId,taskId);
+    await this.authorize(orgId,userId,'update');
+    if (!this.images) throw new NotFoundException('editorial_image_import_disabled');
+    if (!isRecord(body) || Object.keys(body).length !== 1 ||
+        typeof body.expected_seq !== 'string' || !SEQ.test(body.expected_seq) ||
+        (body.expected_seq.length === 19 && body.expected_seq > '9223372036854775807')) {
+      throw new HttpException('editorial_invalid_command',400);
+    }
+    return this.images.import(orgId,postId,taskId,cfg.targetInternalId,body.expected_seq);
   }
 
   async queue(orgId: string, userId: string, postId: string, taskId: string, body: unknown) {
@@ -107,6 +127,17 @@ export class EditorialHumanReviewService {
     this.validateIds(postId, taskId);
     const command = checkedCommand(body);
     await this.authorize(orgId, userId, 'update');
+    if (['request_image_changes','confirm_image_reuse','approve_final'].includes(command.action)) {
+      if (!this.images || !mockImageImportEnabled(orgId,cfg.targetInternalId)) {
+        throw new NotFoundException('editorial_image_review_disabled');
+      }
+      const image = await this.images.preview(orgId,postId,taskId,cfg.targetInternalId,{seq:command.expected_seq});
+      if (image?.status !== 'recorded' || !image.asset ||
+          (command.action === 'confirm_image_reuse' && image.asset.compatible) ||
+          (command.action === 'approve_final' && !image.asset.compatible)) {
+        throw new HttpException('editorial_image_review_conflict',409);
+      }
+    }
     let result: unknown;
     try {
       result = await this.posts.queueEditorialHuman(orgId, postId, taskId,
