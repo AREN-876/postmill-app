@@ -168,13 +168,13 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     const first = show(snapshot({ review: { status: 'idle', last_confirmed_state: {
       seq: '1', image_mode: 'disabled', text_status: 'changes_requested',
     } } }));
-    expect(screen.getByRole('button', { name: 'Утвердить текст' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Отклонить материал' })).toBeDisabled();
+    expect((screen.getByRole('button', { name: 'Утвердить текст' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Отклонить материал' }) as HTMLButtonElement).disabled).toBe(true);
     first.unmount();
     show(snapshot({ review: { status: 'idle', last_confirmed_state: {
       seq: '2', image_mode: 'disabled', rejected: true,
     } } }));
-    expect(screen.getByRole('button', { name: 'Утвердить текст' })).toBeDisabled();
+    expect((screen.getByRole('button', { name: 'Утвердить текст' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('unlocks only when a newly confirmed sequence arrives from the server', async () => {
