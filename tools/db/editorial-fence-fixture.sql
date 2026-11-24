@@ -17,7 +17,8 @@ CREATE TABLE "Post" (
  "parentPostId" text REFERENCES "Post"(id), "intervalInDays" integer, "deletedAt" timestamp(3),
  "releaseId" text, "releaseURL" text, "approvalStatus" text, "approvedAt" timestamp(3), "approvedById" text,
  "maxScheduleRevision" integer NOT NULL DEFAULT 0, "publishDate" timestamp(3) NOT NULL DEFAULT now(),
- content text NOT NULL DEFAULT 'fixture', settings text, image text, "maxTarget" jsonb,
+ -- Match the real Prisma Post title column: catch PL/pgSQL name ambiguity in cross-DB CI.
+ content text NOT NULL DEFAULT 'fixture', title text, settings text, image text, "maxTarget" jsonb,
  "updatedAt" timestamp(3) NOT NULL DEFAULT now(), "commentCount" integer NOT NULL DEFAULT 0,
  "lastViews" double precision, "lastLikes" double precision, "lastComments" double precision
 );
