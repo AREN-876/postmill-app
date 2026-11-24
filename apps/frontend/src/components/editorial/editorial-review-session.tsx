@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@postmill-ai/react/form/button';
 import { useFetch } from '@postmill-ai/helpers/utils/custom.fetch';
 import { editorialReviewClient } from './editorial-review-client';
 import { EditorialReleaseControls } from './editorial-release-controls';
@@ -90,9 +91,9 @@ export function EditorialReviewSession({
     return (
       <section aria-label="Редакторская проверка">
         <p role="alert">Не удалось подтвердить актуальное состояние черновика. Решения недоступны.</p>
-        <button type="button" disabled={reading} onClick={() => void refresh().catch(() => undefined)}>
+        <Button secondary type="button" disabled={reading} onClick={() => void refresh().catch(() => undefined)}>
           Проверить статус (только чтение)
-        </button>
+        </Button>
       </section>
     );
   }
