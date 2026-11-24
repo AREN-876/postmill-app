@@ -463,17 +463,17 @@ describe('XDto poll validation (2.2)', () => {
 describe('PostActivity MAX StoryGo immutable photo package', () => {
   it('binds actual org-owned bytes, 2+ parts and UUIDv5 to the single occurrence', async () => {
     const occurrenceId = 'max_' + 'a'.repeat(64);
-    const imageBytes = Buffer.from('synthetic verified PNG bytes');
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGNUNPdlYGBgYmBgYGBgAAAHugCprKZFeAAAAABJRU5ErkJggg==','base64');
     const sha256 = createHash('sha256').update(imageBytes).digest('hex');
     const settings = {
       __type: 'max',
       mode: 'story',
-      continuationText: 'Вторая часть',
-      storyImageId: 'file-owned',
+      continuationText: 'Вторая часть\n────────────────────────\nТретья часть',
+      storyImageId: 'a8db6639-7ba0-42b7-8587-dd39d630c91b',
       storyImageSha256: sha256,
     };
     const post = {
-      id: 'post-1', content: 'Заголовок',
+      id: 'a'.repeat(32), content: 'Заголовок\n\nПервая часть',
       organizationId: 'org-1', campaignId: null,
       settings: JSON.stringify(settings), image: '[]',
     } as any;
@@ -516,7 +516,10 @@ describe('PostActivity MAX StoryGo immutable photo package', () => {
     expect(response[0].postId).toBe('mid.from-storygo');
     expect(updateTags).not.toHaveBeenCalled();
     const payload = sendPost.mock.calls[0][2][0];
-    expect(payload.message).toBe('Заголовок');
+    expect(payload.message).toBe(post.content);
+    expect(payload.media).toEqual([]);
+    expect(payload.settings.storyImageId).toBe(settings.storyImageId);
+    expect(payload.settings.continuationText).toBe(settings.continuationText);
     expect(payload.settings.__gateway).toMatchObject({
       externalPostId: post.id, revision: occurrenceId,
       operationId: uuidv5('postmill:max:occurrence:' + occurrenceId, uuidv5.URL),
@@ -530,6 +533,21 @@ describe('PostActivity MAX StoryGo immutable photo package', () => {
     // Neither bot token nor base64 bytes are in the confirmed receipt.
     expect(JSON.stringify(confirmMaxDelivery.mock.calls)).not.toContain('BOT-SECRET');
     expect(JSON.stringify(confirmMaxDelivery.mock.calls)).not.toContain(imageBytes.toString('base64'));
+  });
+
+  it('blocks a replaced StoryGo image before occurrence claim or provider send', async () => {
+    const post = {id:'b'.repeat(32),content:'Title\n\nOpening',organizationId:'org-1',campaignId:null,
+      settings:JSON.stringify({__type:'max',mode:'story',continuationText:'Second\n────────────────────────\nThird',
+        storyImageId:'a8db6639-7ba0-42b7-8587-dd39d630c91b',storyImageSha256:'f'.repeat(64)}),image:'[]'} as any;
+    const integration={id:'integration-1',organizationId:'org-1',providerIdentifier:'max',internalId:'max:-123',
+      providerVersion:'v1',providerConfigId:null,name:'Test MAX',token:'synthetic'} as any;
+    const sendPost=vi.fn(); const beginMaxDelivery=vi.fn();
+    const {activity}=build({_postService:{readStoryGoImage:vi.fn().mockResolvedValue({bytes:Buffer.from('changed'),sha256:'a'.repeat(64),mimeType:'image/png'}),beginMaxDelivery},
+      _integrationManager:{getSocialIntegration:vi.fn().mockResolvedValue({editor:'normal',post:sendPost}),requireClientInformation:vi.fn().mockResolvedValue(undefined)},
+      _integrationService:{getIntegrationById:vi.fn().mockResolvedValue(integration)},
+      _orgProviderConfigService:{getVpnSelectionForIntegration:vi.fn().mockResolvedValue(null)}});
+    await expect(activity.postSocial(integration,[post],'max_'+'a'.repeat(64),1)).rejects.toThrow();
+    expect(beginMaxDelivery).not.toHaveBeenCalled(); expect(sendPost).not.toHaveBeenCalled();
   });
 });
 
