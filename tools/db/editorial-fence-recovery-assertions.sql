@@ -49,7 +49,7 @@ BEGIN
   THEN RAISE EXCEPTION 'recovery cooldown/limit bypassed'; END IF;
   IF (SELECT count(*) FROM "EditorialDeliveryReservation" WHERE "eventId"=eid)<>1
     OR (SELECT count(*) FROM "EditorialDeliveryRecovery" WHERE "eventId"=eid)
-       <>CASE WHEN task='197' THEN 1 ELSE 2 END
+       <>(CASE WHEN task='197' THEN 1 ELSE 2 END)
     OR (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)<>1
     OR NOT EXISTS(SELECT 1 FROM "Post" WHERE id=pid AND state='DRAFT')
   THEN RAISE EXCEPTION 'recovery ledger/native draft mismatch'; END IF;
