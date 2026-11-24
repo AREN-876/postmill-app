@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button } from '@postmill-ai/react/form/button';
 import type { EditorialReviewSnapshot } from './editorial-review-panel';
 import {
   canOfferEditorialRelease,
@@ -100,13 +101,13 @@ export function EditorialReleaseControls({
             ? <p>Ближайший свободный слот для всей истории: <strong>{preview.next_slot.localTime} МСК</strong>.</p>
             : <p>Слоты очереди не настроены или заняты. Публикация сейчас остаётся доступной.</p>}
           <div className="flex gap-2 flex-wrap">
-            <button type="button" disabled={!canSubmit} onClick={() => setChoice('publish_now')}>
+            <Button secondary type="button" disabled={!canSubmit} onClick={() => setChoice('publish_now')}>
               Опубликовать сейчас
-            </button>
+            </Button>
             {preview.next_slot && (
-              <button type="button" disabled={!canSubmit} onClick={() => setChoice('queue')}>
+              <Button secondary type="button" disabled={!canSubmit} onClick={() => setChoice('queue')}>
                 Добавить в очередь
-              </button>
+              </Button>
             )}
           </div>
         </>
@@ -116,11 +117,11 @@ export function EditorialReleaseControls({
           <p>{choice === 'publish_now'
             ? 'Подтверди выпуск всех трёх частей сейчас.'
             : `Подтверди выпуск всех трёх частей ${preview?.next_slot?.localTime} МСК.`}</p>
-          <div className="flex gap-2">
-            <button type="button" onClick={() => void submit()}>
+          <div className="flex flex-wrap gap-2">
+            <Button danger className="border border-red-500/40" type="button" onClick={() => void submit()}>
               Подтвердить выпуск
-            </button>
-            <button type="button" onClick={() => setChoice(null)}>Отмена</button>
+            </Button>
+            <Button secondary type="button" onClick={() => setChoice(null)}>Отмена</Button>
           </div>
         </div>
       )}
@@ -128,10 +129,10 @@ export function EditorialReleaseControls({
         <p role="status">Повторная отправка заблокирована до выяснения состояния предыдущей команды.</p>
       )}
       {notice && <p role="status">{notice}</p>}
-      <button type="button" disabled={sending || reading}
+      <Button secondary type="button" disabled={sending || reading}
         onClick={() => void refresh()}>
         Проверить выпуск (только чтение)
-      </button>
+      </Button>
     </section>
   );
 }

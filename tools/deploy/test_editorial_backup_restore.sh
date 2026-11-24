@@ -29,8 +29,8 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
 SQL
-)" == '54' ]] || {
-  echo 'FAIL: source must contain all 54 reviewed migrations before backup' >&2
+)" == '56' ]] || {
+  echo 'FAIL: source must contain all 56 reviewed migrations before backup' >&2
   exit 1
 }
 [[ "$(sql "$SOURCE" <<'SQL'
@@ -93,12 +93,14 @@ BEGIN
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>54 OR draft_count<>3 OR release_count<>2 OR install_count<>1
+  IF migrations<>56 OR draft_count<>3 OR release_count<>2 OR install_count<>1
     OR invalid<>0 OR invalid_releases<>0 OR invalid_installs<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
     OR to_regclass('public."EditorialRelease"') IS NULL
     OR to_regclass('public."EditorialDeliveryReservation"') IS NULL
+    OR to_regclass('public."EditorialDeliveryRecovery"') IS NULL
+    OR to_regclass('public."EditorialTextRevision"') IS NULL
     OR to_regclass('public."EditorialTextInstall"') IS NULL
     OR to_regprocedure('postmill_reserve_editorial_delivery_v1(jsonb,text,text,text)') IS NULL
     OR to_regprocedure('postmill_release_editorial_story_v1(text,text,text,text,text,jsonb)') IS NULL
@@ -108,4 +110,5 @@ BEGIN
   END IF;
 END $ci$;
 SQL
+sql "$RESTORE" < tools/db/editorial-revision-full-assertions.sql
 echo 'POSTMILL_FULL_PRISMA_BACKUP_AND_RESTORE_CI_OK'

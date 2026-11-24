@@ -56,6 +56,21 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     expect(onRefresh).not.toHaveBeenCalled();
   });
 
+  it('uses distinguishable primary, secondary and danger button styles and native disabled state', () => {
+    show();
+    const approve = screen.getByRole('button', { name: 'Утвердить текст' });
+    const revise = screen.getByRole('button', { name: 'Отправить на доработку' }) as HTMLButtonElement;
+    const reject = screen.getByRole('button', { name: 'Отклонить материал' });
+    const refresh = screen.getByRole('button', { name: /Проверить статус/ });
+    expect(approve.classList.contains('bg-btnPrimary')).toBe(true);
+    expect(revise.classList.contains('bg-btnSimple')).toBe(true);
+    expect(revise.classList.contains('opacity-50')).toBe(true);
+    expect(revise.disabled).toBe(true);
+    expect(reject.classList.contains('bg-red-500/10')).toBe(true);
+    expect(refresh.classList.contains('bg-btnSimple')).toBe(true);
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
   it('queues exactly the four allowed command keys, then blocks a second command', async () => {
     show();
     fireEvent.click(screen.getByRole('button', { name: 'Утвердить текст' }));
@@ -147,6 +162,19 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     expect((screen.getByRole('button', { name: 'Утвердить текст' }) as HTMLButtonElement).disabled)
       .toBe(true);
     expect(onCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks decisions during revision import and after terminal rejection', () => {
+    const first = show(snapshot({ review: { status: 'idle', last_confirmed_state: {
+      seq: '1', image_mode: 'disabled', text_status: 'changes_requested',
+    } } }));
+    expect((screen.getByRole('button', { name: 'Утвердить текст' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Отклонить материал' }) as HTMLButtonElement).disabled).toBe(true);
+    first.unmount();
+    show(snapshot({ review: { status: 'idle', last_confirmed_state: {
+      seq: '2', image_mode: 'disabled', rejected: true,
+    } } }));
+    expect((screen.getByRole('button', { name: 'Утвердить текст' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('unlocks only when a newly confirmed sequence arrives from the server', async () => {

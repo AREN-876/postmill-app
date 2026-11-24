@@ -41,6 +41,25 @@ class Docker:
         self.changed_schema = False
         self.extra_override = False
         self.corrupt_others = False
+        self.bridge = None
+        self.bridge_declared = False
+        self.bridge_wrong_namespace = False
+        self.bridge_fail_up = False
+        self.bridge_wrong_image = False
+
+    def enable_bridge(self):
+        self.bridge_declared = True
+        self.current['State']['Pid'] = 100
+        self.bridge = {
+            'Id': 'bridge-old', 'Name': '/' + u.BRIDGE_CONTAINER,
+            'Image': 'sha256:bridge', 'RestartCount': 0,
+            'Config': {'Env': ['BRIDGE_ENABLED=1'], 'Labels': {
+                'com.docker.compose.project': 'postmill',
+                'com.docker.compose.service': u.BRIDGE_SERVICE}},
+            'State': {'Running': True, 'StartedAt': 'old', 'Pid': 200},
+            'HostConfig': {'NetworkMode': 'container:' + self.current['Id']},
+            'Mounts': [],
+        }
 
     def __call__(self, *args, **kwargs):
         self.calls.append(args)
@@ -49,6 +68,8 @@ class Docker:
         if args[0] == 'compose':
             if 'config' in args:
                 config = copy.deepcopy(CONFIG)
+                if self.bridge_declared:
+                    config['services'][u.BRIDGE_SERVICE] = {'image': 'bridge:existing', 'network_mode': 'service:postmill', 'environment': {'BRIDGE_ENABLED': '1'}}
                 files = [args[i+1] for i, a in enumerate(args) if a == '-f']
                 if len(files) == 4:
                     value = Path(files[3]).read_text()
@@ -57,7 +78,21 @@ class Docker:
                     if self.extra_override:
                         config['services']['postmill']['environment']['CERT'] = 'lost'
                 return json.dumps(config)
+            if 'stop' in args and args[-1] == u.BRIDGE_SERVICE:
+                if self.bridge:
+                    self.bridge['State']['Running'] = False
+                return ''
             if 'up' in args:
+                if args[-1] == u.BRIDGE_SERVICE:
+                    if self.bridge_fail_up:
+                        raise u.Refused('bridge startup failed')
+                    self.bridge['Id'] += '-recreated'
+                    self.bridge['State']['Running'] = True
+                    self.bridge['State']['StartedAt'] = 'recreated'
+                    self.bridge['HostConfig']['NetworkMode'] = 'container:' + self.current['Id']
+                    if self.bridge_wrong_image:
+                        self.bridge['Image'] = 'sha256:foreign'
+                    return ''
                 if self.fail_up:
                     self.current['Image'] = 'sha256:new'
                     self.current['State']['Running'] = False
@@ -66,21 +101,31 @@ class Docker:
                 self.current['Image'] = 'sha256:new' if ref == NEW else 'sha256:old'
                 self.current['Config']['Image'] = ref
                 self.current['State']['Running'] = True
+                if self.bridge_declared:
+                    self.current['Id'] += '-recreated'
                 if self.corrupt_others:
                     self.other['RestartCount'] += 1
                 return ''
         if args[:2] == ('image', 'inspect'):
+            if args[2] == 'bridge:existing':
+                return json.dumps([{'Id': 'sha256:bridge'}])
             old = args[2] in (OLD, 'sha256:old')
             return json.dumps([{'Id': 'sha256:old' if old else 'sha256:new', 'Os': 'linux', 'Architecture': 'amd64',
                 'RepoDigests': [OLD if old else NEW], 'Config': {'Labels': {
                     'org.opencontainers.image.source': 'https://github.com/AREN-876/postmill-app',
                     'org.opencontainers.image.revision': SHA}}}])
         if args[0] == 'inspect':
-            return json.dumps([self.current] if args[1] == u.CONTAINER else [self.other])
+            if args[1] == u.CONTAINER:
+                return json.dumps([self.current])
+            if args[1] == u.BRIDGE_CONTAINER:
+                return json.dumps([self.bridge])
+            return json.dumps([self.other] + ([self.bridge] if self.bridge else []))
         if args[0] == 'run':
             return json.dumps({'schema.prisma': 'changed' if self.changed_schema and 'sha256:new' in args else 'same', 'migrations/existing.sql': 'same'})
         if args[0] == 'ps':
-            return 'pg'
+            return 'pg bridge' if self.bridge else 'pg'
+        if args[0] == 'exec' and args[-1] == 'http://127.0.0.1:8794/':
+            return '501'
         if args[0] in ('pull', 'exec'):
             return ''
         raise AssertionError(args)
@@ -177,6 +222,54 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(u.Refused, 'Recovery state retained'):
             self.up.apply(SHA)
         self.assertTrue((self.up.state/'pending.json').exists())
+
+    def test_bridge_recreated_after_app_on_update_and_rollback(self):
+        self.docker.enable_bridge()
+        with patch.object(u.os, 'readlink', return_value='net:[42]'):
+            self.up.apply(SHA)
+            self.up.apply(None, rollback=True)
+        operations = [(('stop' if 'stop' in c else 'up'), c[-1])
+                      for c in self.docker.calls if c[0] == 'compose' and ('stop' in c or 'up' in c)]
+        self.assertEqual(operations, [('stop', u.BRIDGE_SERVICE), ('up', 'postmill'),
+                                      ('up', u.BRIDGE_SERVICE)] * 2)
+        for call in self.docker.calls:
+            if call[0] == 'compose' and 'up' in call and call[-1] == u.BRIDGE_SERVICE:
+                self.assertIn('--force-recreate', call)
+                self.assertIn('--no-deps', call)
+                self.assertIn('--no-build', call)
+                self.assertIn('never', call)
+        self.assertEqual(self.docker.bridge['HostConfig']['NetworkMode'],
+                         'container:' + self.docker.current['Id'])
+        self.assertEqual(self.docker.bridge['Image'], 'sha256:bridge')
+        self.assertFalse((self.up.state/'pending.json').exists())
+
+    def test_undeclared_running_bridge_blocks_before_update(self):
+        self.docker.enable_bridge()
+        self.docker.bridge_declared = False
+        with self.assertRaisesRegex(u.Refused, 'not declared'):
+            self.up.apply(SHA)
+        self.assertFalse(self.up.override.exists())
+
+    def test_bridge_namespace_mismatch_preserves_recovery_state(self):
+        self.docker.enable_bridge()
+        with patch.object(u.os, 'readlink', side_effect=['net:[1]', 'net:[2]']):
+            with self.assertRaisesRegex(u.Refused, 'Recovery state retained'):
+                self.up.apply(SHA)
+        self.assertTrue((self.up.state/'pending.json').exists())
+        with patch.object(u.os, 'readlink', return_value='net:[1]'):
+            self.up.apply(None, rollback=True)
+        self.assertFalse((self.up.state/'pending.json').exists())
+
+    def test_bridge_start_failure_is_not_success_and_rollback_recovers(self):
+        self.docker.enable_bridge()
+        self.docker.bridge_fail_up = True
+        with self.assertRaisesRegex(u.Refused, 'Recovery state retained'):
+            self.up.apply(SHA)
+        self.assertTrue((self.up.state/'pending.json').exists())
+        self.docker.bridge_fail_up = False
+        with patch.object(u.os, 'readlink', return_value='net:[1]'):
+            self.up.apply(None, rollback=True)
+        self.assertFalse((self.up.state/'pending.json').exists())
 
     def test_review_hash_is_target_specific(self):
         old = {'schema': 'old'}

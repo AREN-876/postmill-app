@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Button } from '@postmill-ai/react/form/button';
 
 // Presentation only: this component has no network client or production route.
 // A future session-authenticated caller must supply server-verified snapshots
@@ -14,6 +15,7 @@ export type EditorialReviewSnapshot = {
     status: string;
     last_confirmed_state?: {
       seq: string;
+      text?: { revision: number; sha256: string };
       image_mode?: string;
       text_status?: string;
       final_approved?: boolean;
@@ -68,9 +70,11 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
     snapshot.content.parts.every((part) => typeof part === 'string' && part.trim().length > 0);
   const validSeq = typeof seq === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(seq);
   const idle = snapshot.review?.status === 'idle';
+  const state = snapshot.review?.last_confirmed_state;
+  const waitingRevision = state?.image_mode === 'disabled' && state.text_status === 'changes_requested';
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
-    idle && snapshot.review?.last_confirmed_state?.final_approved !== true &&
+    idle && !waitingRevision && state?.rejected !== true && state?.final_approved !== true &&
     !busy && blockedAtSeq === null && !mutationsBlocked;
   const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
 
@@ -133,7 +137,9 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
     <section aria-label="Редакторская проверка" className="space-y-4">
       <header className="space-y-2">
         <h2 className="text-xl font-semibold">Редакторская проверка</h2>
-        <p>Статус Postmill: {snapshot.review?.status ?? 'неизвестен'}; последняя подтверждённая версия: {seq ?? 'нет'}.</p>
+        <p>Статус Postmill: {snapshot.review?.status ?? 'неизвестен'}; последовательность решений: {seq ?? 'нет'}; редакция текста: {state?.text?.revision ?? 'нет'}.</p>
+        {waitingRevision && <p role="status">Текст возвращён на доработку. Новая редакция ожидает подтверждения.</p>}
+        {state?.rejected === true && <p role="status">Материал окончательно отклонён.</p>}
         <p>Черновик защищён от публикации. Решение редактора, доставка решения и публикация — разные операции.</p>
       </header>
 
@@ -161,38 +167,39 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
           onChange={(event) => setFeedback(event.target.value)}
           maxLength={4000}
           disabled={!canDecide}
-          className="w-full border rounded p-2"
+          className="w-full min-h-[96px] border border-newTableBorder rounded-[8px] bg-input text-inputText p-[12px] focus-visible:ring-2 ring-btnPrimary/40 outline-hidden disabled:opacity-50 disabled:cursor-not-allowed"
         />
+        <p className="text-[13px] text-newTableText">Для отправки на доработку укажи замечания к тексту.</p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" disabled={!canDecide} onClick={() => void queue('approve_text')}>
+          <Button type="button" disabled={!canDecide} onClick={() => void queue('approve_text')}>
             Утвердить текст
-          </button>
-          <button type="button" disabled={!canDecide || !feedback.trim()}
+          </Button>
+          <Button secondary type="button" disabled={!canDecide || !feedback.trim()}
             onClick={() => void queue('request_text_changes')}>
             Отправить на доработку
-          </button>
+          </Button>
           {imageManual && (
-            <button type="button" disabled={!canDecide} onClick={() => void queue('request_image')}>
+            <Button secondary type="button" disabled={!canDecide} onClick={() => void queue('request_image')}>
               Запросить изображение
-            </button>
+            </Button>
           )}
-          <button type="button" disabled={!canDecide} onClick={() => setConfirmReject(true)}>
+          <Button danger className="border border-red-500/40" type="button" disabled={!canDecide} onClick={() => setConfirmReject(true)}>
             Отклонить материал
-          </button>
+          </Button>
         </div>
         {confirmReject && canDecide && (
-          <div role="group" aria-label="Подтверждение отклонения" className="flex gap-2">
-            <button type="button" onClick={() => void queue('reject')}>
+          <div role="group" aria-label="Подтверждение отклонения" className="flex flex-wrap gap-2">
+            <Button danger className="border border-red-500/40" type="button" onClick={() => void queue('reject')}>
               Подтвердить отклонение
-            </button>
-            <button type="button" onClick={() => setConfirmReject(false)}>Отмена</button>
+            </Button>
+            <Button secondary type="button" onClick={() => setConfirmReject(false)}>Отмена</Button>
           </div>
         )}
         {notice && <p role="status">{notice}</p>}
         {!canDecide && !notice && <p role="status">Новые решения сейчас недоступны.</p>}
-        <button type="button" disabled={refreshing || busy} onClick={() => void refresh()}>
+        <Button secondary type="button" disabled={refreshing || busy} onClick={() => void refresh()}>
           {refreshing ? 'Проверка…' : 'Проверить статус (только чтение)'}
-        </button>
+        </Button>
       </div>
     </section>
   );

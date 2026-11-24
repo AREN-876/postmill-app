@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual, single-service image update. Never builds images or migrates a DB."""
+"""Manual image update, including the declared Editorial namespace sidecar. No builds or DB migrations."""
 import argparse
 import fcntl
 import hashlib
@@ -10,10 +10,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 REPOSITORY = 'ghcr.io/aren-876/postmill-app'
 PROJECT = 'postmill'
 CONTAINER = 'postmill-postmill-1'
+BRIDGE_SERVICE = 'editorial-bridge'
+BRIDGE_CONTAINER = 'postmill-editorial-bridge-1'
 FILES = ('compose.yaml', 'compose.override.yaml', 'compose.giga.yaml', 'compose.image.yaml')
 # Executed as node, with no network/entrypoint, in each image. Read-only files only.
 MANIFEST_JS = r"""
@@ -85,8 +88,8 @@ def assert_overlay_only(base, merged):
     if base != merged:
         raise Refused('Fourth Compose file changes more than services.postmill.image; refusing to overwrite it.')
 
-def managed_runtime(config, container, check_networks=True):
-    service = config['services']['postmill']
+def managed_runtime(config, container, check_networks=True, service_name='postmill'):
+    service = config['services'][service_name]
     # Manual docker network connect/mount/env mutations would be lost on recreate.
     expected = {config['networks'][key]['name'] for key in service.get('networks', {})}
     if check_networks and expected != set(container['NetworkSettings']['Networks']):
@@ -117,13 +120,80 @@ def pinned_current(container):
     # Local immutable image ID remains usable if a registry digest is unavailable.
     return next(iter(info.get('RepoDigests') or []), container['Image'])
 
-def other_services():
+def project_containers():
     ids = run('ps', '-aq', '--filter', 'label=com.docker.compose.project=' + PROJECT).split()
-    if not ids:
-        return {}
+    return json.loads(run('inspect', *ids)) if ids else []
+
+
+def service_label(container):
+    return container['Config'].get('Labels', {}).get('com.docker.compose.service')
+
+
+def other_services(include_bridge=True):
+    excluded = {'postmill'} if include_bridge else {'postmill', BRIDGE_SERVICE}
     return {c['Id']: (c['State']['StartedAt'], c['RestartCount'], c['Image'])
-            for c in json.loads(run('inspect', *ids))
-            if c['Config'].get('Labels', {}).get('com.docker.compose.service') != 'postmill'}
+            for c in project_containers() if service_label(c) not in excluded}
+
+
+def bridge_plan(config, current, saved_image=None):
+    services = config['services']
+    if any(name != BRIDGE_SERVICE and svc.get('network_mode') == 'service:postmill'
+           for name, svc in services.items()):
+        raise Refused('Unexpected Postmill namespace-dependent service; review deployment separately.')
+    peers = [c for c in project_containers() if service_label(c) == BRIDGE_SERVICE]
+    declared = services.get(BRIDGE_SERVICE)
+    if declared is None:
+        if peers or saved_image:
+            raise Refused('Editorial bridge is not declared in managed Compose files.')
+        return None
+    if (declared.get('network_mode') != 'service:postmill' or declared.get('ports')
+            or declared.get('privileged') or not declared.get('image') or len(peers) > 1):
+        raise Refused('Unsafe or ambiguous Editorial bridge Compose configuration.')
+    image = json.loads(run('image', 'inspect', declared['image']))[0]['Id']
+    if saved_image and saved_image != image:
+        raise Refused('Editorial bridge image changed during interrupted update.')
+    if not peers:
+        if not saved_image:
+            raise Refused('Declared Editorial bridge is missing; reconcile it before updating.')
+        return image
+    peer = peers[0]
+    if (peer.get('Name') != '/' + BRIDGE_CONTAINER or peer['Image'] != image
+            or peer['Config'].get('Labels', {}).get('com.docker.compose.project') != PROJECT
+            or peer['HostConfig'].get('Privileged')
+            or peer['HostConfig'].get('PortBindings')
+            or not peer['HostConfig'].get('NetworkMode', '').startswith('container:')):
+        raise Refused('Editorial bridge runtime identity/image differs from managed Compose.')
+    managed_runtime(config, peer, check_networks=False, service_name=BRIDGE_SERVICE)
+    return image
+
+
+def verify_bridge(config, app, expected_image, timeout):
+    peer = json.loads(run('inspect', BRIDGE_CONTAINER))[0]
+    if (service_label(peer) != BRIDGE_SERVICE
+            or peer['Config'].get('Labels', {}).get('com.docker.compose.project') != PROJECT
+            or peer['Image'] != expected_image or not peer['State']['Running']
+            or peer['HostConfig'].get('Privileged') or peer['HostConfig'].get('PortBindings')
+            or peer['HostConfig'].get('NetworkMode') not in
+               ('container:' + app['Id'], 'container:' + app['Id'][:12], 'container:' + CONTAINER)):
+        raise Refused('Editorial bridge is not bound to the current Postmill container.')
+    managed_runtime(config, peer, check_networks=False, service_name=BRIDGE_SERVICE)
+    # A container name alone cannot establish kernel namespace identity.
+    if os.readlink('/proc/%s/ns/net' % app['State']['Pid']) != os.readlink('/proc/%s/ns/net' % peer['State']['Pid']):
+        raise Refused('Editorial bridge network namespace differs from Postmill.')
+    deadline = time.monotonic() + min(timeout, 30)
+    while True:
+        try:
+            status = run('exec', CONTAINER, 'curl', '-sS', '--max-time', '3',
+                         '-o', '/dev/null', '-w', '%{http_code}', 'http://127.0.0.1:8794/').strip()
+            # Python receiver does not implement GET. This probe cannot submit a decision.
+            if status == '501':
+                return
+        except Refused:
+            pass
+        if time.monotonic() >= deadline:
+            raise Refused('Editorial bridge loopback probe failed.')
+        time.sleep(1)
+
 
 class Updater:
     def __init__(self, directory):
@@ -167,6 +237,7 @@ class Updater:
             assert_overlay_only(base, json.loads(self.compose('config', '--format', 'json')))
         managed_runtime(base, current, check_networks=current['State']['Running'])
         previous_ref = pinned_current(current)
+        saved = None
         if rollback:
             source = pending_file if pending_file.exists() else previous_file
             if not source.exists():
@@ -199,9 +270,12 @@ class Updater:
                 raise Refused('No registry digest for the requested fork image.')
         if target_info['Architecture'] != 'amd64' or target_info['Os'] != 'linux':
             raise Refused('Target must be linux/amd64.')
+        bridge_image = bridge_plan(base, current, saved.get('bridge_image') if was_pending and saved else None)
         if target_info['Id'] == current['Image'] and not was_pending:
             if current['State'].get('Health', {}).get('Status') != 'healthy':
                 raise Refused('Requested image is already present but unhealthy.')
+            if bridge_image:
+                verify_bridge(base, current, bridge_image, timeout)
             print('Already running the requested image. Nothing changed.')
             return
         schema_check(schema_manifest(current['Image']), schema_manifest(target_info['Id']), reviewed)
@@ -216,14 +290,16 @@ class Updater:
                 raise Refused('Candidate image was not selected by Compose.')
         finally:
             os.unlink(candidate)
-        others = other_services()
-        record = {'old_ref': previous_ref, 'old_id': current['Image'], 'target_ref': target, 'target_id': target_info['Id']}
+        others = other_services(include_bridge=not bridge_image)
+        record = {'old_ref': previous_ref, 'old_id': current['Image'], 'target_ref': target, 'target_id': target_info['Id'], 'bridge_image': bridge_image}
         # A rollback of an interrupted update retains the original recovery target
         # until it succeeds, even if the process crashes again.
         if not (rollback and pending_file.exists()):
             atomic(pending_file, json.dumps(record))
         atomic(self.override, overlay(target))
         try:
+            if bridge_image:
+                self.compose('stop', '--timeout', '10', BRIDGE_SERVICE)
             self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never',
                          '--wait', '--wait-timeout', str(timeout), 'postmill')
             fresh = self.container()
@@ -232,9 +308,14 @@ class Updater:
             managed_runtime(merged, fresh)
             run('exec', CONTAINER, 'curl', '-fsS', '--max-time', '10', 'http://127.0.0.1:5000/api/health/ready')
             run('exec', CONTAINER, 'curl', '-fsS', '--max-time', '10', 'http://127.0.0.1:5000/auth/login')
-            if other_services() != others:
+            if bridge_image:
+                self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never',
+                             '--force-recreate', BRIDGE_SERVICE)
+                verify_bridge(merged, fresh, bridge_image, timeout)
+                print('Editorial bridge: same image, current namespace, loopback OK')
+            if other_services(include_bridge=not bridge_image) != others:
                 raise Refused('Another project service changed during this operation; investigate before proceeding.')
-        except (Refused, KeyboardInterrupt):
+        except (Refused, OSError, KeyboardInterrupt):
             raise Refused('Update did not complete. Recovery state retained. Inspect logs, then use postmill-rollback; DB migrations are never rolled back.')
         if not (rollback and was_pending):
             atomic(previous_file, json.dumps(record))

@@ -3,6 +3,8 @@ import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'und
 
 export const EDITORIAL_SUBMIT_PATH = '/internal/editorial/v1/events/submit';
 export const EDITORIAL_LOOKUP_PATH = '/internal/editorial/v1/events/lookup';
+export const EDITORIAL_REVISION_LOOKUP_PATH = '/internal/editorial/v1/revisions/lookup';
+const MAX_REVISION_RESPONSE = 100_000;
 // Fixed numeric loopback only. No DNS, configurable URL, public origin or TLS
 // proxy. Receiver MUST share the Postmill container's network namespace;
 // 127.0.0.1 otherwise fails closed (never point this at a host/public port).
@@ -85,12 +87,13 @@ export function editorialWireConfig(config: EditorialWireConfig): {
 }
 
 /** Dedicated internal transport. Never relax shared safeFetch SSRF policy.
- * Only these two literal loopback URLs can reach undici. No redirects.
+ * Only the three literal loopback URLs can reach undici. No redirects.
  * No callers outside this signed Editorial path should use this adapter.
  */
 export async function editorialLoopbackFetch(url: string, init?: RequestInit): Promise<Response> {
   if ((url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_SUBMIT_PATH &&
-       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH) ||
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_REVISION_LOOKUP_PATH) ||
       init?.method !== 'POST' || init.redirect !== 'error') {
     throw new EditorialTransportError();
   }
@@ -133,24 +136,16 @@ function responseMessage(path: string, timestamp: string, nonce: string,
   return ['EDX1', 'RESP', path, timestamp, nonce, sha(requestRaw), sha(responseRaw)].join('\n');
 }
 
-export async function signedEditorialRequest(
-  pending: EditorialPending, config: EditorialWireConfig,
-  operation: 'submit' | 'lookup',
-  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
-  nowMs: number = Date.now(),
-  nonce: string = randomBytes(16).toString('hex'),
-): Promise<EditorialWireResponse> {
+// Shared bounded signed round-trip; request and response limits remain separate.
+async function signedExchangeBody(
+  path: typeof EDITORIAL_SUBMIT_PATH | typeof EDITORIAL_LOOKUP_PATH | typeof EDITORIAL_REVISION_LOOKUP_PATH,
+  body: JsonRecord, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch, nowMs: number, nonce: string, responseLimit: number,
+): Promise<unknown> {
   const peer = editorialWireConfig(config);
-  editorialPending(pending, peer.orgId, pending.task_id);
   if (!Number.isSafeInteger(nowMs) || !/^[0-9a-f]{32}$/.test(nonce)) {
     throw new EditorialTransportError();
   }
-  const path = operation === 'submit' ? EDITORIAL_SUBMIT_PATH : EDITORIAL_LOOKUP_PATH;
-  const body: JsonRecord = {
-    schema_version: 1, org_id: pending.org_id, task_id: pending.task_id,
-    event_id: pending.event_id, payload_sha256: pending.payload_sha256,
-  };
-  if (operation === 'submit') body.event = pending.event;
   const raw = JSON.stringify(body);
   if (Buffer.byteLength(raw, 'utf8') > MAX_BODY) throw new EditorialTransportError();
   const timestamp = String(Math.floor(nowMs / 1000));
@@ -186,7 +181,7 @@ export async function signedEditorialRequest(
         const { done, value } = await reader.read();
         if (done) break;
         total += value.byteLength;
-        if (total > MAX_BODY) throw new EditorialTransportError();
+        if (total > responseLimit) throw new EditorialTransportError();
         chunks.push(Buffer.from(value));
       }
     } finally { reader.releaseLock(); }
@@ -203,7 +198,32 @@ export async function signedEditorialRequest(
     if (!timingSafeEqual(Buffer.from(supplied.slice(7), 'hex'), expected)) {
       throw new EditorialTransportError();
     }
-    const parsed: unknown = JSON.parse(responseRaw);
+    return JSON.parse(responseRaw) as unknown;
+  } catch {
+    throw new EditorialTransportError();
+  }
+}
+
+export async function signedEditorialRequest(
+  pending: EditorialPending, config: EditorialWireConfig,
+  operation: 'submit' | 'lookup',
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs: number = Date.now(),
+  nonce: string = randomBytes(16).toString('hex'),
+): Promise<EditorialWireResponse> {
+  const peer = editorialWireConfig(config);
+  editorialPending(pending, peer.orgId, pending.task_id);
+  if (!Number.isSafeInteger(nowMs) || !/^[0-9a-f]{32}$/.test(nonce)) {
+    throw new EditorialTransportError();
+  }
+  const path = operation === 'submit' ? EDITORIAL_SUBMIT_PATH : EDITORIAL_LOOKUP_PATH;
+  const body: JsonRecord = {
+    schema_version: 1, org_id: pending.org_id, task_id: pending.task_id,
+    event_id: pending.event_id, payload_sha256: pending.payload_sha256,
+  };
+  if (operation === 'submit') body.event = pending.event;
+  try {
+    const parsed = await signedExchangeBody(path, body, config, fetcher, nowMs, nonce, MAX_BODY);
     const keys = operation === 'submit'
       ? ['schema_version', 'event_id', 'payload_sha256', 'outcome']
       : ['schema_version', 'event_id', 'payload_sha256', 'found', 'outcome'];
@@ -226,4 +246,61 @@ export async function signedEditorialRequest(
     // UNKNOWN, never implicit retry, never "rejected", never approval.
     throw new EditorialTransportError();
   }
+}
+
+
+export type EditorialRevisionRequest = {
+  org_id: string; task_id: string; event_id: string; payload_sha256: string;
+};
+export type EditorialRevisionProof = {
+  install_event_id: string; install_payload_sha256: string;
+  install_event: JsonRecord; state: JsonRecord;
+  publishable: false; dispatch_authorized: false;
+};
+
+// Only a signed read of the original accepted return request, never a
+// sender-side install command. SQL independently re-derives the transition.
+export async function signedEditorialRevisionLookup(
+  request: EditorialRevisionRequest, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs = Date.now(), nonce = randomBytes(16).toString('hex'),
+): Promise<EditorialRevisionProof | null> {
+  const peer = editorialWireConfig(config);
+  if (!exact(request, ['org_id','task_id','event_id','payload_sha256']) ||
+      request.org_id !== peer.orgId || typeof request.task_id !== 'string' ||
+      !TASK.test(request.task_id) ||
+      (request.task_id.length === 19 && request.task_id > '9223372036854775807') ||
+      typeof request.event_id !== 'string' || !UUID.test(request.event_id) ||
+      typeof request.payload_sha256 !== 'string' || !SHA.test(request.payload_sha256)) {
+    throw new EditorialTransportError();
+  }
+  const body = { schema_version: 1, org_id: request.org_id, task_id: request.task_id,
+    event_id: request.event_id, payload_sha256: request.payload_sha256 };
+  const parsed = await signedExchangeBody(EDITORIAL_REVISION_LOOKUP_PATH, body, config,
+    fetcher, nowMs, nonce, MAX_REVISION_RESPONSE);
+  if (!exact(parsed, ['schema_version','event_id','payload_sha256','found','proof']) ||
+      parsed.schema_version !== 1 || parsed.event_id !== request.event_id ||
+      parsed.payload_sha256 !== request.payload_sha256 || typeof parsed.found !== 'boolean') {
+    throw new EditorialTransportError();
+  }
+  if (parsed.found === false) {
+    if (parsed.proof !== null) throw new EditorialTransportError();
+    return null;
+  }
+  const p = parsed.proof;
+  if (!exact(p, ['install_event_id','install_payload_sha256','install_event','state','publishable','dispatch_authorized']) ||
+      typeof p.install_event_id !== 'string' || !p.install_event_id.trim() || p.install_event_id.length > 200 ||
+      typeof p.install_payload_sha256 !== 'string' || !SHA.test(p.install_payload_sha256) ||
+      !record(p.install_event) || !record(p.state) ||
+      p.publishable !== false || p.dispatch_authorized !== false ||
+      p.install_event.event_id !== p.install_event_id || p.install_event.producer !== 'operator' ||
+      p.install_event.action !== 'install_text' || p.install_event.request_id !== request.event_id ||
+      !record(p.install_event.binding) || p.install_event.binding.org_id !== request.org_id ||
+      p.install_event.binding.task_id !== request.task_id || p.install_event.binding.is_test !== true ||
+      p.state.publishable !== false || p.state.dispatch_authorized !== false ||
+      p.state.image_mode !== 'disabled' || p.state.text_status !== 'pending' ||
+      p.state.final_approved !== false || p.state.rejected !== false) {
+    throw new EditorialTransportError();
+  }
+  return p as EditorialRevisionProof;
 }

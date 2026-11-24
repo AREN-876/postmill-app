@@ -582,6 +582,7 @@ model EditorialDraftReceipt {
   post      Post     @relation(fields: [postId], references: [id], onDelete: Restrict)
   reviewAnchor EditorialReviewAnchor?
   textInstall EditorialTextInstall?
+  textRevisions EditorialTextRevision[]
 }
 
 // One-time immutable pre-review text installation. The original receipt is retained.
@@ -615,18 +616,43 @@ model EditorialDecisionOutbox {
   anchor      EditorialReviewAnchor @relation(fields: [postId], references: [postId], onDelete: Restrict)
   result      EditorialDecisionResult?
   deliveryReservation EditorialDeliveryReservation?
+  textRevision EditorialTextRevision?
 
   @@unique([postId, commandId])
   @@unique([postId, expectedSeq])
 }
 
 // Immutable verified Editorial-013 outcome; transient transport flags excluded.
-// One durable attempt per immutable editorial event. A reservation is committed
-// before the first HTTP submit; later work may perform signed lookup only.
+// Immutable primary reservation; separately bounded recovery attempts below.
 model EditorialDeliveryReservation {
   eventId     String   @id
   reservedAt  DateTime @default(now())
   event       EditorialDecisionOutbox @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
+  recoveries  EditorialDeliveryRecovery[]
+}
+
+model EditorialDeliveryRecovery {
+  eventId     String
+  attempt     Int
+  reservedAt  DateTime @default(now())
+  reservation EditorialDeliveryReservation @relation(fields: [eventId], references: [eventId], onDelete: Restrict)
+
+  @@id([eventId, attempt])
+}
+
+// Immutable signed install proof for an accepted return request.
+model EditorialTextRevision {
+  requestEventId String @id
+  postId String
+  revision Int
+  installEventId String @unique
+  proof Json
+  proofHash String
+  createdAt DateTime @default(now())
+  request EditorialDecisionOutbox @relation(fields: [requestEventId], references: [eventId], onDelete: Restrict)
+  draft EditorialDraftReceipt @relation(fields: [postId], references: [postId], onDelete: Restrict)
+
+  @@unique([postId, revision])
 }
 
 model EditorialDecisionResult {

@@ -1,9 +1,9 @@
 import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  EDITORIAL_LOOKUP_PATH, EDITORIAL_SUBMIT_PATH, EDITORIAL_LOOPBACK_ORIGIN,
+  EDITORIAL_LOOKUP_PATH, EDITORIAL_SUBMIT_PATH, EDITORIAL_LOOPBACK_ORIGIN, EDITORIAL_REVISION_LOOKUP_PATH,
   EditorialTransportError, editorialWireConfig, editorialPending,
-  editorialLoopbackFetch, signedEditorialRequest,
+  editorialLoopbackFetch, signedEditorialRequest, signedEditorialRevisionLookup,
   type EditorialWireConfig,
 } from './editorial-signed-transport';
 import { EditorialDeliveryService } from './editorial-delivery.service';
@@ -196,6 +196,57 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     expect((missingPeer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
+  it('recovery requires an authenticated missing lookup, committed claim and the identical envelope', async () => {
+    const repo = {
+      readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+      importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+      reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: false }),
+      reserveEditorialRecovery: vi.fn().mockResolvedValue(true),
+    } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const peer = mockedPeer({ lookupMissing: true });
+    const target = 'max:-73052031470103';
+    const opt = { ...cfg, allowMissingRecovery: true };
+    await expect(svc.deliverPending(scope, '42', target, opt, peer))
+      .resolves.toMatchObject({ status: 'recorded', operation: 'submit' });
+    expect(repo.reserveEditorialRecovery).toHaveBeenCalledWith(scope, '42', target, eid, row.payload_sha256);
+    expect(peer).toHaveBeenCalledTimes(2);
+    const calls = (peer as ReturnType<typeof vi.fn>).mock;
+    expect(calls.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+    expect(calls.calls[1][0]).toContain(EDITORIAL_SUBMIT_PATH);
+    const claimOrder = vi.mocked(repo.reserveEditorialRecovery).mock.invocationCallOrder[0];
+    expect(calls.invocationCallOrder[0]).toBeLessThan(claimOrder);
+    expect(claimOrder).toBeLessThan(calls.invocationCallOrder[1]);
+    expect(repo.importEditorialDecisionResult).toHaveBeenCalledWith(scope, '42', target, eid, row.payload_sha256, outcome);
+  });
+
+  it.each(['disabled', 'wrong_target', 'denied', 'bad_signature', 'known', 'claim_error', 'changed'])(
+    'does not recovery-submit when %s', async mode => {
+      const repo = {
+        readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
+        importEditorialDecisionResult: vi.fn().mockResolvedValue({ newly_recorded: true }),
+        reserveEditorialSubmit: vi.fn().mockResolvedValue({ event_id: eid, newly_reserved: false }),
+        reserveEditorialRecovery: vi.fn().mockResolvedValue(mode !== 'denied'),
+      } as unknown as PostsRepository;
+      const svc = new EditorialDeliveryService(repo);
+      const peer = mockedPeer({ lookupMissing: mode !== 'known', wrongSignature: mode === 'bad_signature' });
+      if (mode === 'claim_error') vi.mocked(repo.reserveEditorialRecovery).mockRejectedValueOnce(new Error('unknown claim'));
+      if (mode === 'changed') vi.mocked(repo.readPendingEditorialDelivery)
+        .mockResolvedValueOnce(row).mockResolvedValueOnce(row)
+        .mockResolvedValueOnce({ ...row, payload_sha256: 'd'.repeat(64) });
+      const call = svc.deliverPending(scope, '42',
+        mode === 'wrong_target' ? 'test-channel' : 'max:-73052031470103',
+        { ...cfg, allowMissingRecovery: mode !== 'disabled' }, peer);
+      if (['bad_signature', 'claim_error', 'changed'].includes(mode)) await expect(call).rejects.toThrow();
+      else await expect(call).resolves.toMatchObject({ status: mode === 'known' ? 'recorded' : 'unknown', operation: 'lookup' });
+      expect(peer).toHaveBeenCalledTimes(1);
+      expect((peer as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain(EDITORIAL_LOOKUP_PATH);
+      if (['disabled', 'wrong_target', 'bad_signature', 'known'].includes(mode))
+        expect(repo.reserveEditorialRecovery).not.toHaveBeenCalled();
+      if (mode !== 'known') expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
+    },
+  );
+
   it('imports only authenticated signed outcome and preserves exact event/hash', async () => {
     const repo = {
       readPendingEditorialDelivery: vi.fn().mockResolvedValue(row),
@@ -256,4 +307,67 @@ describe('06B-3C signed off-by-default editorial transport', () => {
     expect(repo.importEditorialDecisionResult).not.toHaveBeenCalled();
   });
 
+});
+
+
+describe('signed current revision reconciliation', () => {
+  const request = { org_id: scope.org_id, task_id: '42', event_id: eid, payload_sha256: row.payload_sha256 };
+  const content = { title: 'Revision', parts: ['a'.repeat(2900), 'b'.repeat(2900), 'c'.repeat(2900)] };
+  const digest = S('{"parts": [' + content.parts.map(p => JSON.stringify(p)).join(', ') +
+    '], "title": ' + JSON.stringify(content.title) + '}');
+  const installId = '22345678-1234-4234-8234-123456789abc';
+  const proof = {
+    install_event_id: installId, install_payload_sha256: 'e'.repeat(64),
+    install_event: { event_id: installId, producer: 'operator', action: 'install_text',
+      request_id: eid, binding: payload.binding, revision_content: content },
+    state: { seq: '2', image_mode: 'disabled', text_status: 'pending',
+      text: { revision: 2, sha256: digest }, final_approved: false, rejected: false,
+      publishable: false, dispatch_authorized: false },
+    publishable: false, dispatch_authorized: false,
+  };
+  function revisionPeer(value: unknown = proof, badSignature = false) {
+    return vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe(EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_REVISION_LOOKUP_PATH);
+      expect(init?.method).toBe('POST');
+      const headers = init?.headers as Record<string, string>;
+      const raw = init?.body as string;
+      const ts = headers['x-edx-timestamp'], nonce = headers['x-edx-nonce'];
+      expect(JSON.parse(raw)).toEqual({ schema_version: 1, ...request });
+      expect(headers['x-edx-signature']).toBe('sha256=' + hmac(cfg.requestKeyHex,
+        ['EDX1','REQ',EDITORIAL_REVISION_LOOKUP_PATH,ts,nonce,S(raw)].join('\n')));
+      const response = JSON.stringify({ schema_version: 1, event_id: eid,
+        payload_sha256: row.payload_sha256, found: value !== null, proof: value });
+      return new Response(response, { headers: {
+        'content-type': 'application/json', 'cache-control': 'no-store',
+        'x-edx-response-signature': 'sha256=' + (badSignature ? '0'.repeat(64) : hmac(cfg.responseKeyHex,
+          ['EDX1','RESP',EDITORIAL_REVISION_LOOKUP_PATH,ts,nonce,S(raw),S(response)].join('\n'))),
+      } });
+    }) as typeof editorialLoopbackFetch;
+  }
+  it('authenticates exact read-only proof and distinguishes missing revision', async () => {
+    await expect(signedEditorialRevisionLookup(request,cfg,revisionPeer())).resolves.toEqual(proof);
+    await expect(signedEditorialRevisionLookup(request,cfg,revisionPeer(null))).resolves.toBeNull();
+  });
+  it('refuses wrong HMAC or unauthorized proof', async () => {
+    await expect(signedEditorialRevisionLookup(request,cfg,revisionPeer(proof,true))).rejects.toThrow();
+    await expect(signedEditorialRevisionLookup(request,cfg,revisionPeer({ ...proof, publishable: true }))).rejects.toThrow();
+    await expect(signedEditorialRevisionLookup(request,cfg,revisionPeer({
+      ...proof, install_event: { ...proof.install_event, request_id: installId },
+    }))).rejects.toThrow();
+  });
+  it('imports only the signed and independently content-validated proof', async () => {
+    const repo = { importEditorialTextRevision: vi.fn().mockResolvedValue({ installed: true }) } as unknown as PostsRepository;
+    const svc = new EditorialDeliveryService(repo);
+    const target = 'max:-73052031470103';
+    await expect(svc.reconcileTextRevision(scope,'42',target,eid,row.payload_sha256,cfg,revisionPeer(null)))
+      .resolves.toEqual({ status: 'not_ready' });
+    expect(repo.importEditorialTextRevision).not.toHaveBeenCalled();
+    await expect(svc.reconcileTextRevision(scope,'42',target,eid,row.payload_sha256,cfg,revisionPeer()))
+      .resolves.toMatchObject({ status: 'recorded' });
+    expect(repo.importEditorialTextRevision).toHaveBeenCalledWith(scope,'42',target,eid,row.payload_sha256,proof);
+    await expect(svc.reconcileTextRevision(scope,'42',target,eid,row.payload_sha256,cfg,revisionPeer({
+      ...proof, install_event: { ...proof.install_event, revision_content: { ...content, title: 'Tampered' } },
+    }))).rejects.toThrow();
+    expect(repo.importEditorialTextRevision).toHaveBeenCalledTimes(1);
+  });
 });
