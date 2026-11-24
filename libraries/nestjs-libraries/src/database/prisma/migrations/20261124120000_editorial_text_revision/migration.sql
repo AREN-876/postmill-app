@@ -331,7 +331,7 @@ SET search_path=pg_catalog,public,pg_temp AS $fn$
 DECLARE verified jsonb; pid text; review jsonb; before_state jsonb; after_state jsonb;
  ev jsonb; body jsonb; newref jsonb; seq bigint; rev integer;
  prior "EditorialDecisionOutbox"%ROWTYPE; previous_proof jsonb; h text;
- receipt jsonb; part jsonb; title text;
+ receipt jsonb; part jsonb; revision_title text;
 BEGIN
  IF (s->'is_test'='true'::jsonb AND s->>'image_mode'='disabled'
    AND target='max:-73052031470103'
@@ -384,11 +384,11 @@ BEGIN
    AND body-ARRAY['title','parts']='{}'::jsonb
    AND jsonb_typeof(body->'title')='string' AND jsonb_typeof(body->'parts')='array') IS NOT TRUE
  THEN RAISE EXCEPTION 'EDITORIAL_REVISION_PROOF_INVALID' USING ERRCODE='22023'; END IF;
- title:=body->>'title';
- IF title<>btrim(title) OR title !~ '[^[:space:]]' OR length(title)>160 OR title ~ '[[:cntrl:]]'
+ revision_title:=body->>'title';
+ IF revision_title<>btrim(revision_title) OR revision_title !~ '[^[:space:]]' OR length(revision_title)>160 OR revision_title ~ '[[:cntrl:]]'
     OR jsonb_array_length(body->'parts')<>3
-    OR length(title||E'\n\n'||(body->'parts'->>0))>4000
-    OR title ~ '[<>]' OR position('────────────────────────' in title)>0
+    OR length(revision_title||E'\n\n'||(body->'parts'->>0))>4000
+    OR revision_title ~ '[<>]' OR position('────────────────────────' in revision_title)>0
  THEN RAISE EXCEPTION 'EDITORIAL_REVISION_CONTENT_INVALID' USING ERRCODE='22023'; END IF;
  FOR part IN SELECT value FROM jsonb_array_elements(body->'parts') LOOP
   IF (jsonb_typeof(part)='string' AND (part#>>'{}') ~ '[^[:space:]]'
@@ -409,7 +409,7 @@ BEGIN
  h:=encode(sha256(convert_to(p::text,'UTF8')),'hex');
  INSERT INTO "EditorialTextRevision"("requestEventId","postId",revision,"installEventId",proof,"proofHash")
  VALUES(req,pid,rev,p->>'install_event_id',p,h);
- UPDATE "Post" SET content=title||E'\n\n'||(body->'parts'->>0),
+ UPDATE "Post" SET content=revision_title||E'\n\n'||(body->'parts'->>0),
    settings=jsonb_build_object('__type','max','mode','story','continuationText',
        (body->'parts'->>1)||E'\n────────────────────────\n'||(body->'parts'->>2))::text,
    "updatedAt"=now() WHERE id=pid AND state='DRAFT';
