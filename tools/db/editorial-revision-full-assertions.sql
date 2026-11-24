@@ -83,7 +83,7 @@ BEGIN
        AND "approvalStatus"='pending' AND content=(body->>'title')||E'\n\n'||(body->'parts'->>0))
   THEN RAISE EXCEPTION 'revision history/native read mismatch'; END IF;
   BEGIN
-   UPDATE "EditorialTextRevision" SET proof=proof WHERE "requestEventId"=req;
+   UPDATE "EditorialTextRevision" x SET proof=x.proof WHERE x."requestEventId"=req;
    RAISE EXCEPTION 'mutable revision history';
   EXCEPTION WHEN object_not_in_prerequisite_state THEN
    IF SQLERRM<>'EDITORIAL_DECISION_LEDGER_IMMUTABLE' THEN RAISE; END IF;
