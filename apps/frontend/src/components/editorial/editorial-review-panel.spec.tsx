@@ -135,6 +135,21 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     }));
   });
 
+  it('shows explicit mock import and blocks repeating an unknown storage operation', async () => {
+    const onImportImage=vi.fn().mockRejectedValue(new Error('unknown'));
+    const data=snapshot({mock_image:{status:'waiting',can_import:true,asset:null},
+      review:{status:'idle',last_confirmed_state:{seq:'0',image_mode:'automatic'}}});
+    render(<EditorialReviewPanel snapshot={data} onCommand={onCommand} onRefresh={onRefresh} onImportImage={onImportImage}/>);
+    const button=screen.getByRole('button',{name:'Получить изображение'});
+    expect(onImportImage).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await screen.findByText(/Результат импорта неизвестен/);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onImportImage).toHaveBeenCalledExactlyOnceWith('0');
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
   it('fails closed on pending review, missing snapshot, incomplete parts or unsafe flags', () => {
     const scenarios: EditorialReviewSnapshot[] = [
       snapshot({ review: { status: 'pending', last_confirmed_state: { seq: '0' } } }),
