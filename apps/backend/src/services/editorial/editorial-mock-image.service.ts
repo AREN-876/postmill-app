@@ -1,6 +1,7 @@
 import { HttpException, Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { StorageProviderType } from '@prisma/client';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { StorageService } from '@postmill-ai/nestjs-libraries/database/prisma/storage/storage.service';
@@ -102,7 +103,9 @@ export class EditorialMockImageService {
       if (ctx.status === 'image_import_uncertain') return {status:'uncertain',publishable:false,dispatch_authorized:false};
       if (ctx.status !== 'idle' || ctx.state.image_compatible !== false ||
           typeof ctx.state.image_intent !== 'string') throw new HttpException('editorial_image_import_conflict',409);
-      const fetched = await fetchImage({org_id:org,task_id:task,channel_id:ctx.scope.channel_id,state:ctx.state},wire());
+      const request = {org_id:org,task_id:task,channel_id:ctx.scope.channel_id,state:ctx.state};
+      const config = wire();
+      const fetched = await fetchImage(request,config);
       if (!fetched) return {status:'not_ready',publishable:false,dispatch_authorized:false};
       if (!fetched.bytes.equals(PNG)) unavailable();
       const adapter = await this.adapter(org);
@@ -113,8 +116,19 @@ export class EditorialMockImageService {
       if (claim.status === 'recorded' || claim.status === 'uncertain') return {status:claim.status,publishable:false,dispatch_authorized:false};
       if (claim.status !== 'reserved' || typeof claim.import_id !== 'string' || !UUID.test(claim.import_id) ||
           typeof claim.token !== 'string' || !UUID.test(claim.token)) unavailable();
+      // The remote state can advance while a local reservation/storage write
+      // is in flight. Recheck the same authenticated proof before the only
+      // write and again after read-back. This narrows the race, not a
+      // distributed atomic commit. A mismatch leaves the reservation blocked.
+      const recheck = async () => {
+        const current = await fetchImage(request,config);
+        if (!current || !current.bytes.equals(fetched.bytes) ||
+            !isDeepStrictEqual(current.proof,fetched.proof)) unavailable();
+      };
+      await recheck();
       const path = await adapter.writeBuffer(fetched.bytes,'image/png');
       const verified = await this.readBytes(adapter,path);
+      await recheck();
       const receipt = await this.posts.finishMockImageImport(org,pid,task,target,claim.import_id,
         claim.token,path,digest(verified),verified.length);
       if (!record(receipt) || receipt.status !== 'recorded' || receipt.publishable !== false ||

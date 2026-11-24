@@ -51,6 +51,11 @@ describe('native fixture image import',()=>{
   expect(posts.reserveMockImageImport.mock.invocationCallOrder[0]).toBeLessThan(adapter.writeBuffer.mock.invocationCallOrder[0]);
   expect(adapter.readFileStream.mock.invocationCallOrder[0]).toBeLessThan(posts.finishMockImageImport.mock.invocationCallOrder[0]);
   expect(posts.finishMockImageImport).toHaveBeenCalledWith(org,pid,task,target,id,token,path,sha,png.length);
+  expect(fetchImage).toHaveBeenCalledTimes(3);
+  expect(fetchImage.mock.invocationCallOrder[1]).toBeGreaterThan(posts.reserveMockImageImport.mock.invocationCallOrder[0]);
+  expect(fetchImage.mock.invocationCallOrder[1]).toBeLessThan(adapter.writeBuffer.mock.invocationCallOrder[0]);
+  expect(fetchImage.mock.invocationCallOrder[2]).toBeGreaterThan(adapter.readFileStream.mock.invocationCallOrder[0]);
+  expect(fetchImage.mock.invocationCallOrder[2]).toBeLessThan(posts.finishMockImageImport.mock.invocationCallOrder[0]);
  });
  it('never writes on not-ready or unresolved reservation',async()=>{
   fetchImage.mockResolvedValueOnce(null);
@@ -67,6 +72,21 @@ describe('native fixture image import',()=>{
   posts.readMockImageContext.mockResolvedValueOnce({...ctx,status:'image_import_uncertain'});
   expect(await call()).toEqual({status:'uncertain',...flags});
   expect(adapter.writeBuffer).toHaveBeenCalledTimes(1);
+  expect(adapter.removeFile).not.toHaveBeenCalled();
+ });
+ it('blocks before writing when the signed proof has advanced after reservation',async()=>{
+  fetchImage.mockResolvedValueOnce({proof,bytes:png}).mockResolvedValueOnce(null);
+  await expect(call()).rejects.toThrow('editorial_image_import_outcome_unknown');
+  expect(posts.reserveMockImageImport).toHaveBeenCalledTimes(1);
+  expect(adapter.writeBuffer).not.toHaveBeenCalled();
+  expect(posts.finishMockImageImport).not.toHaveBeenCalled();
+ });
+ it('does not confirm storage when the signed proof changes after read-back',async()=>{
+  fetchImage.mockResolvedValueOnce({proof,bytes:png}).mockResolvedValueOnce({proof,bytes:png})
+    .mockResolvedValueOnce({proof:{fixture:'changed'},bytes:png});
+  await expect(call()).rejects.toThrow('editorial_image_import_outcome_unknown');
+  expect(adapter.writeBuffer).toHaveBeenCalledTimes(1);
+  expect(posts.finishMockImageImport).not.toHaveBeenCalled();
   expect(adapter.removeFile).not.toHaveBeenCalled();
  });
  it('does not reserve with an unsupported adapter or quota rejection',async()=>{
