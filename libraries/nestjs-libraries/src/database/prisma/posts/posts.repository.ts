@@ -138,6 +138,30 @@ export class PostsRepository {
     return row.result;
   }
 
+  async readMockImageContext(org: string, pid: string, task: string, target: string) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_mock_image_context_v1(${org}::text,${pid}::text,${task}::text,${target}::text) AS result
+    `;
+    return row.result;
+  }
+
+  async reserveMockImageImport(org: string, pid: string, task: string, target: string, proof: unknown) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_reserve_mock_image_import_v1(${org}::text,${pid}::text,${task}::text,
+        ${target}::text,${JSON.stringify(proof)}::jsonb) AS result
+    `;
+    return row.result;
+  }
+
+  async finishMockImageImport(org: string, pid: string, task: string, target: string,
+    importId: string, token: string, path: string, digest: string, size: number) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_finish_mock_image_import_v1(${org}::text,${pid}::text,${task}::text,
+        ${target}::text,${importId}::text,${token}::text,${path}::text,${digest}::text,${size}::integer) AS result
+    `;
+    return row.result;
+  }
+
   // One explicit release command turns a frozen three-part editorial DRAFT
   // into ONE ordinary, native MAX publishing Post with an immutable association.
   // The SQL function is the authoritative idempotency/revision/target fence;

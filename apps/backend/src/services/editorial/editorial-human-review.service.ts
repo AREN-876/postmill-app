@@ -1,8 +1,10 @@
-import { ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, HttpException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/roles/roles.service';
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
 import { isEditorialTaskId } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-ingress';
+
+import { EditorialMockImageService } from './editorial-mock-image.service';
 
 export const EDITORIAL_HUMAN_REVIEW_CONFIG = Symbol('EDITORIAL_HUMAN_REVIEW_CONFIG');
 export type EditorialHumanReviewConfig = {
@@ -55,6 +57,7 @@ export class EditorialHumanReviewService {
     @Inject(RolesService) private readonly roles: RolesService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(EDITORIAL_HUMAN_REVIEW_CONFIG) private readonly config: EditorialHumanReviewConfig | null,
+    @Optional() @Inject(EditorialMockImageService) private readonly images?: EditorialMockImageService,
   ) {}
 
   private configFor(orgId: string): EditorialHumanReviewConfig {
@@ -99,7 +102,24 @@ export class EditorialHumanReviewService {
       result = await this.posts.readEditorialHuman(orgId, postId, taskId, cfg.targetInternalId);
     } catch (e) { return fromDatabase(e); }
     if (result === null) throw new NotFoundException('editorial_review_not_found');
+    if (this.images && isRecord(result) && isRecord(result.review)) {
+      const image = await this.images.preview(orgId,postId,taskId,cfg.targetInternalId,result.review.last_confirmed_state);
+      if (image !== undefined) return {...result,mock_image:image};
+    }
     return result;
+  }
+
+  async importMockImage(orgId: string, userId: string, postId: string, taskId: string, body: unknown) {
+    const cfg = this.configFor(orgId);
+    this.validateIds(postId,taskId);
+    await this.authorize(orgId,userId,'update');
+    if (!this.images) throw new NotFoundException('editorial_image_import_disabled');
+    if (!isRecord(body) || Object.keys(body).length !== 1 ||
+        typeof body.expected_seq !== 'string' || !SEQ.test(body.expected_seq) ||
+        (body.expected_seq.length === 19 && body.expected_seq > '9223372036854775807')) {
+      throw new HttpException('editorial_invalid_command',400);
+    }
+    return this.images.import(orgId,postId,taskId,cfg.targetInternalId,body.expected_seq);
   }
 
   async queue(orgId: string, userId: string, postId: string, taskId: string, body: unknown) {

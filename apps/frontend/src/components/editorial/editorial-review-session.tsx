@@ -106,6 +106,7 @@ export function EditorialReviewSession({
         snapshot={loaded.snapshot}
         onCommand={queue}
         onRefresh={refresh}
+        onImportImage={(seq) => client.importImage(postId,taskId,seq)}
         mutationsBlocked={attempted?.identity === identity &&
           attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
       />

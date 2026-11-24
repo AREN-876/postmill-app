@@ -54,6 +54,9 @@ export class FileService {
       throw new HttpException('File not found', 404);
     }
 
+    if ((file.metadata as Record<string, unknown> | null)?.internal === 'editorial-mock') {
+      throw new HttpException('Editorial image is immutable', 409);
+    }
     const adapter = await this._storageService.resolveAdapterForFolder(
       file.folderId,
       org
@@ -407,6 +410,9 @@ export class FileService {
     if (!file) {
       throw new HttpException('File not found', 404);
     }
+    if ((file.metadata as Record<string, unknown> | null)?.internal === 'editorial-mock') {
+      throw new HttpException('Editorial image is immutable', 409);
+    }
 
     if (folderId) {
       const folder = await this._fileRepository.getFolder(org, folderId);
@@ -518,6 +524,7 @@ export class FileService {
         this._logger?.warn?.(`bulkMove: file ${id} not found, skipped`);
         continue;
       }
+      if ((file.metadata as Record<string, unknown> | null)?.internal === 'editorial-mock') continue;
       const source = await this._storageService.resolveAdapterForFolderWithConfigId(
         file.folderId,
         org

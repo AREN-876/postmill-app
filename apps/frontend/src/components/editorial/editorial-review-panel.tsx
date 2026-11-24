@@ -11,12 +11,17 @@ export type EditorialReviewSnapshot = {
   task_id: string;
   content: { title: string; parts: string[] };
   review_acknowledged: boolean;
+  mock_image?: {status:'waiting'|'recorded'|'uncertain'|'unavailable'; can_import:boolean;
+    asset: {file_id:string; revision:number; sha256:string; compatible:boolean; png_base64:string} | null};
   review: {
     status: string;
     last_confirmed_state?: {
       seq: string;
       text?: { revision: number; sha256: string };
       image_mode?: string;
+      image?: {revision:number;sha256:string}|null;
+      image_compatible?: boolean;
+      image_intent?: string|null;
       text_status?: string;
       final_approved?: boolean;
       rejected?: boolean;
@@ -50,16 +55,19 @@ type Props = {
   snapshot: EditorialReviewSnapshot;
   onCommand: (command: EditorialHumanCommand) => Promise<EditorialQueueReceipt>;
   onRefresh: () => Promise<void>;
+  onImportImage?: (seq: string) => Promise<{status:string}>;
   mutationsBlocked?: boolean;
 };
 
-export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutationsBlocked = false }: Props) {
+export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportImage, mutationsBlocked = false }: Props) {
   const [feedback, setFeedback] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [blockedAtSeq, setBlockedAtSeq] = useState<string | null>(null);
   const [confirmReject, setConfirmReject] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [importing,setImporting] = useState(false);
+  const [importBlocked,setImportBlocked] = useState<string|null>(null);
 
   const seq = snapshot.review?.last_confirmed_state?.seq;
   const validContent =
@@ -75,7 +83,8 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
     idle && !waitingRevision && state?.rejected !== true && state?.final_approved !== true &&
-    !busy && blockedAtSeq === null && !mutationsBlocked;
+    !busy && !importing && importBlocked !== seq && blockedAtSeq === null && !mutationsBlocked &&
+    snapshot.mock_image?.status !== 'uncertain' && snapshot.mock_image?.status !== 'unavailable';
   const imageManual = snapshot.review?.last_confirmed_state?.image_mode === 'manual';
 
   // Only a new, confirmed server revision can unlock commands. A refresh at
@@ -121,8 +130,23 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
     }
   }
 
+  async function importImage() {
+    if (!canDecide || !seq || !onImportImage || !snapshot.mock_image?.can_import || importing) return;
+    setImportBlocked(seq); setImporting(true);
+    try {
+      const result = await onImportImage(seq);
+      if (result.status === 'not_ready') {
+        setImportBlocked(null);
+        setNotice('Изображение пока не готово. Импорт не начинался.');
+      } else if (result.status === 'recorded') {
+        setNotice('Импорт подтверждён. Обнови состояние черновика.');
+      } else setNotice('Импорт не подтверждён. Повторная запись запрещена.');
+    } catch { setNotice('Результат импорта неизвестен. Проверь статус без повторной записи.'); }
+    finally { setImporting(false); }
+  }
+
   async function refresh() {
-    if (refreshing || busy) return;
+    if (refreshing || busy || importing) return;
     setRefreshing(true);
     try {
       await onRefresh();
@@ -155,6 +179,30 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
         </article>
       ) : (
         <p role="alert">Неполный или неподтверждённый текст. Решения недоступны.</p>
+      )}
+
+      {snapshot.mock_image && (
+        <section aria-label="Иллюстрация редакции" className="space-y-2">
+          <h3 className="font-semibold">Иллюстрация (тестовый режим)</h3>
+          {snapshot.mock_image.asset && (
+            <>
+              {/* Only the fixed, verified mock PNG is accepted by the session client. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img alt="Тестовая иллюстрация" className="w-32 h-32 object-contain"
+                src={'data:image/png;base64,'+snapshot.mock_image.asset.png_base64} />
+              <p>Редакция {snapshot.mock_image.asset.revision}; {snapshot.mock_image.asset.compatible ?
+                'соответствует тексту' : 'требуется подтверждение соответствия'}.</p>
+              <p className="break-all text-sm">SHA-256: {snapshot.mock_image.asset.sha256}</p>
+            </>
+          )}
+          {snapshot.mock_image.status === 'uncertain' && <p role="status">Запись не подтверждена. Повтор запрещён.</p>}
+          {snapshot.mock_image.status === 'unavailable' && <p role="alert">Не удалось проверить файл.</p>}
+          {snapshot.mock_image.can_import && onImportImage && (
+            <Button secondary type="button" disabled={!canDecide || importing} onClick={() => void importImage()}>
+              {importing ? 'Импорт…' : 'Получить изображение'}
+            </Button>
+          )}
+        </section>
       )}
 
       <div className="space-y-3">
@@ -197,7 +245,7 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, mutations
         )}
         {notice && <p role="status">{notice}</p>}
         {!canDecide && !notice && <p role="status">Новые решения сейчас недоступны.</p>}
-        <Button secondary type="button" disabled={refreshing || busy} onClick={() => void refresh()}>
+        <Button secondary type="button" disabled={refreshing || busy || importing} onClick={() => void refresh()}>
           {refreshing ? 'Проверка…' : 'Проверить статус (только чтение)'}
         </Button>
       </div>
