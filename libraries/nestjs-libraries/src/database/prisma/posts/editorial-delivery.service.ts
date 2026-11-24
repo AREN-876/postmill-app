@@ -7,9 +7,13 @@ import {
 } from './editorial-signed-transport';
 
 // Used by the isolated, default-off editorial Inngest activity. It reserves
-// an event durably before primary submit and only looks up any reserved event.
+// primary submit durably; recovery additionally requires signed absence and a separate reservation.
 // Human commands must first pass cookie/CSRF/RBAC and be persisted in Postmill;
 // this service cannot grant native publication or paid AI execution.
+export type EditorialDeliveryConfig = EditorialWireConfig & {
+  allowMissingRecovery?: boolean;
+};
+
 @Injectable()
 export class EditorialDeliveryService {
   constructor(@Inject(PostsRepository) private readonly posts: PostsRepository) {}
@@ -35,10 +39,10 @@ export class EditorialDeliveryService {
     );
     return { status: 'recorded' as const, receipt: recorded };
   }
-  // The committed SQL reservation exclusively determines primary submit or
-  // read-only lookup. There is no caller-selected submit/retry operation.
+  // A committed reservation is required for any submit. Recovery is test-only,
+  // opt-in, bounded, and never triggered by a timeout or unsigned response.
   async deliverPending(scope: EditorialScope, task: string, target: string,
-    config: EditorialWireConfig,
+    config: EditorialDeliveryConfig,
     fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
     const peer = editorialWireConfig(config);
     if (scope.org_id !== peer.orgId || scope.is_test !== true) {
@@ -59,7 +63,7 @@ export class EditorialDeliveryService {
         typeof reserved.newly_reserved !== 'boolean') {
       throw new EditorialTransportError();
     }
-    const operation = reserved.newly_reserved ? 'submit' as const : 'lookup' as const;
+    let operation: 'submit' | 'lookup' = reserved.newly_reserved ? 'submit' : 'lookup';
 
     // Re-read after reservation: a changed/confirmed event cannot borrow it.
     const current = await this.posts.readPendingEditorialDelivery(scope, task, target);
@@ -70,9 +74,27 @@ export class EditorialDeliveryService {
       throw new EditorialTransportError();
     }
 
-    const remote = await signedEditorialRequest(fresh, config, operation, fetcher);
-    if (operation === 'lookup' && (remote.found !== true || remote.outcome === null)) {
-      return { status: 'unknown' as const, operation };
+    let remote = await signedEditorialRequest(fresh, config, operation, fetcher);
+    if (operation === 'lookup' && remote.found === false && remote.outcome === null) {
+      if (config.allowMissingRecovery !== true || target !== 'max:-73052031470103') {
+        return { status: 'unknown' as const, operation };
+      }
+      // The SQL claim is committed before HTTP. A refused/exhausted/ambiguous
+      // claim cannot send. Existing primary and recovery rows are immutable.
+      const claimed = await this.posts.reserveEditorialRecovery(
+        scope, task, target, fresh.event_id, fresh.payload_sha256,
+      );
+      if (claimed !== true) return { status: 'unknown' as const, operation };
+      const afterClaim = await this.posts.readPendingEditorialDelivery(scope, task, target);
+      if (afterClaim === null) return { status: 'no_pending' as const, operation };
+      const same = editorialPending(afterClaim, peer.orgId, task);
+      if (same.event_id !== fresh.event_id || same.payload_sha256 !== fresh.payload_sha256) {
+        throw new EditorialTransportError();
+      }
+      // Same event, not a new human decision. The remote SQL reducer
+      // serializes the task and replays an existing exact-event receipt.
+      operation = 'submit';
+      remote = await signedEditorialRequest(same, config, operation, fetcher);
     }
     if (remote.outcome === null) throw new EditorialTransportError();
     const recorded = await this.posts.importEditorialDecisionResult(
