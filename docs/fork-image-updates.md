@@ -184,6 +184,8 @@ Deployment runs exactly a single-service `compose up -d --no-deps --no-build
 --pull never --wait --wait-timeout 300 postmill`. POSTMILL_WAIT_TIMEOUT can be
 set to 1..1800 seconds; POSTMILL_DIR defaults to /opt/postmill. Root invocations
 must preserve a chosen override explicitly, e.g. `sudo env POSTMILL_WAIT_TIMEOUT=600 ...`.
+If the exact Compose-managed `editorial-bridge` is declared with `network_mode: service:postmill`, the updater also stops that sidecar, recreates it after the application is healthy without pulling/building its image, verifies its unchanged image and declared runtime, compares live kernel network namespaces, and checks the loopback HTTP GET returns 501. GET is deliberately not a signed submit. An undeclared, ambiguous or changed bridge refuses the update. A failed sidecar rebind retains recovery state; rollback performs the same rebind. Do not update during active editorial decisions: an ambiguous previously reserved event remains lookup-only and needs separate audited recovery. The loopback probe does not certify HMAC or database access.
+
 It requires healthy plus backend readiness and frontend HTTP, verifies the final
 image ID and checks other project services did not restart/change. It never
 recreates PostgreSQL, Redis, Inngest or gpt2giga. There is a short application
