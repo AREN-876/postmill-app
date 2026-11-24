@@ -131,13 +131,13 @@ BEGIN
   PERFORM postmill_qualify_mock_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decode('ffd8ffd9','hex'));
   RAISE EXCEPTION 'wrong native bytes released';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_MOCK_RELEASE_IMAGE_MISMATCH'; END;
- SELECT to_jsonb(p) INTO source_before FROM "Post" p WHERE id=pid;
+ SELECT to_jsonb(native_source) INTO source_before FROM "Post" native_source WHERE native_source.id=pid;
  release_result:=postmill_qualify_mock_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,png);
  pubid:=release_result->>'publication_post_id';
  ASSERT release_result->>'status'='isolated_native_queue_fixture' AND release_result->>'created'='true';
  ASSERT release_result->'dispatch_authorized'='false'::jsonb AND release_result->'publishable'='false'::jsonb;
  ASSERT pubid<>pid;
- ASSERT (SELECT to_jsonb(p) FROM "Post" p WHERE id=pid)=source_before;
+ ASSERT (SELECT to_jsonb(native_source) FROM "Post" native_source WHERE native_source.id=pid)=source_before;
  ASSERT (SELECT state='QUEUE' AND "approvalStatus"='approved' AND "editorialTaskId" IS NULL AND image='[]'
   AND content=source_before->>'content'
   AND settings::jsonb=(source_before->>'settings')::jsonb||jsonb_build_object('storyImageId',fid,'storyImageSha256',digest)
