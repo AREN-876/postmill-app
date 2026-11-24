@@ -42,7 +42,7 @@ function runtime() {
     allowMissingRecovery: process.env.EDITORIAL_TEST_RECOVERY_ENABLED === 'true',
   };
   editorialWireConfig(wire);
-  return { ...gate, wire };
+  return { ...gate, wire, revisionsEnabled: process.env.EDITORIAL_TEST_REVISION_SYNC_ENABLED === 'true' };
 }
 
 @Injectable()
@@ -79,8 +79,25 @@ export class EditorialDeliveryActivity {
       if (result.status === 'recorded') confirmed++;
       if (result.status === 'unknown') unknown++;
     }
+    let revisionsRecorded = 0;
+    let revisionsWaiting = 0;
+    if (cfg.revisionsEnabled) {
+      const revisions = await this.posts.listPendingEditorialTextRevisions(cfg.orgId, cfg.target);
+      for (const item of revisions) {
+        if (!item.scope || item.scope.org_id !== cfg.orgId || item.scope.is_test !== true ||
+            item.scope.image_mode !== 'disabled' || typeof item.task !== 'string') {
+          throw new Error('editorial_revision_scope_mismatch');
+        }
+        const result = await this.delivery.reconcileTextRevision(
+          item.scope, item.task, cfg.target, item.eventId, item.digest, cfg.wire,
+        );
+        if (result.status === 'recorded') revisionsRecorded++;
+        else revisionsWaiting++;
+      }
+    }
     return {
       status: 'checked' as const,
+      revisionsRecorded, revisionsWaiting,
       considered: candidates.length, submitted, lookedUp, confirmed, unknown,
     };
   }
