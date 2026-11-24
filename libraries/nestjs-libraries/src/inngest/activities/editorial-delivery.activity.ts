@@ -39,6 +39,7 @@ function runtime() {
   const wire = {
     orgId: gate.orgId,
     requestKeyHex, responseKeyHex,
+    allowMissingRecovery: process.env.EDITORIAL_TEST_RECOVERY_ENABLED === 'true',
   };
   editorialWireConfig(wire);
   return { ...gate, wire };
