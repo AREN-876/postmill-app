@@ -29,8 +29,8 @@ SQL
 [[ "$(sql "$SOURCE" <<'SQL'
 SELECT COUNT(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;
 SQL
-)" == '59' ]] || {
-  echo 'FAIL: source must contain all 59 reviewed migrations before backup' >&2
+)" == '60' ]] || {
+  echo 'FAIL: source must contain all 60 reviewed migrations before backup' >&2
   exit 1
 }
 [[ "$(sql "$SOURCE" <<'SQL'
@@ -93,7 +93,7 @@ BEGIN
    JOIN "EditorialDraftReceipt" r ON r."postId"=p.id
    WHERE p.state<>'DRAFT' OR p."approvalStatus"<>'pending'
       OR p."editorialTaskId" IS NULL OR p."group"<>'editorial-v1-'||p.id;
-  IF migrations<>59 OR draft_count<>3 OR release_count<>2 OR install_count<>1
+  IF migrations<>60 OR draft_count<>3 OR release_count<>2 OR install_count<>1
     OR invalid<>0 OR invalid_releases<>0 OR invalid_installs<>0
     OR to_regclass('public."EditorialDecisionOutbox"') IS NULL
     OR to_regclass('public."EditorialDecisionResult"') IS NULL
@@ -113,4 +113,5 @@ END $ci$;
 SQL
 sql "$RESTORE" < tools/db/editorial-revision-full-assertions.sql
 sql "$RESTORE" < tools/db/editorial-image-full-assertions.sql
+sql "$RESTORE" < tools/db/editorial-live-image-full-assertions.sql
 echo 'POSTMILL_FULL_PRISMA_BACKUP_AND_RESTORE_CI_OK'
