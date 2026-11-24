@@ -1,12 +1,13 @@
 \set ON_ERROR_STOP on
 -- Disposable fixture only: age synthetic reservations by inserting historical
 -- timestamps; production never edits/deletes either immutable reservation.
-DO $$
+BEGIN;
+DO $
 DECLARE task text; p jsonb; s jsonb; snap jsonb; ev jsonb; eid text; digest text;
  target text:='max:-73052031470103'; pid text;
 BEGIN
  UPDATE "Integration" SET "internalId"=target WHERE id='max-a';
- FOREACH task IN ARRAY ARRAY['197','198','199','200'] LOOP
+ FOREACH task IN ARRAY ARRAY['2961','2962','2963','2964'] LOOP
   p:=pg_temp.prepared_draft(task); s:=p->'scope';
   snap:=pg_temp.initial_review(postmill_exchange_create_v1(p,target));
   pid:=snap->'binding'->>'post_id';
@@ -16,7 +17,7 @@ BEGIN
   eid:=ev->'event'->>'event_id'; digest:=ev->>'payload_sha256';
   IF postmill_reserve_editorial_recovery_v1(s,task,target,eid,digest) IS DISTINCT FROM false
   THEN RAISE EXCEPTION 'recovery without primary reservation'; END IF;
-  IF task='200' THEN
+  IF task='2964' THEN
     PERFORM postmill_reserve_editorial_delivery_v1(s,task,target,eid);
     IF postmill_reserve_editorial_recovery_v1(s,task,target,eid,digest) IS DISTINCT FROM false
     THEN RAISE EXCEPTION 'primary cooldown bypassed'; END IF;
@@ -24,11 +25,11 @@ BEGIN
   END IF;
   INSERT INTO "EditorialDeliveryReservation"("eventId","reservedAt")
     VALUES (eid,clock_timestamp()::timestamp-interval '40 minutes');
-  IF task='198' OR task='199' THEN
+  IF task='2962' OR task='2963' THEN
    INSERT INTO "EditorialDeliveryRecovery"("eventId",attempt,"reservedAt")
      VALUES (eid,1,clock_timestamp()::timestamp-interval '25 minutes');
   END IF;
-  IF task='199' THEN
+  IF task='2963' THEN
    INSERT INTO "EditorialDeliveryRecovery"("eventId",attempt,"reservedAt")
      VALUES (eid,2,clock_timestamp()::timestamp-interval '15 minutes');
    IF postmill_reserve_editorial_recovery_v1(s,task,target,eid,digest) IS DISTINCT FROM false
@@ -49,7 +50,7 @@ BEGIN
   THEN RAISE EXCEPTION 'recovery cooldown/limit bypassed'; END IF;
   IF (SELECT count(*) FROM "EditorialDeliveryReservation" WHERE "eventId"=eid)<>1
     OR (SELECT count(*) FROM "EditorialDeliveryRecovery" WHERE "eventId"=eid)
-       <>(CASE WHEN task='197' THEN 1 ELSE 2 END)
+       <>(CASE WHEN task='2961' THEN 1 ELSE 2 END)
     OR (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)<>1
     OR NOT EXISTS(SELECT 1 FROM "Post" WHERE id=pid AND state='DRAFT')
   THEN RAISE EXCEPTION 'recovery ledger/native draft mismatch'; END IF;
@@ -67,5 +68,6 @@ BEGIN
   END;
  END LOOP;
  UPDATE "Integration" SET "internalId"='test-channel' WHERE id='max-a';
-END $$;
+END $;
+ROLLBACK;
 SELECT 'POSTMILL_EDITORIAL_BOUNDED_RECOVERY_OK';
