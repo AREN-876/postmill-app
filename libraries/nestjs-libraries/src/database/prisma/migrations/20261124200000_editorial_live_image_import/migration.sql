@@ -26,7 +26,7 @@ BEGIN
    JOIN "File" f ON f.id=b."fileId"
   WHERE a."postId"=pid AND a.proof->'state'->'image'=state->'image'
    AND f."organizationId"=org AND f."deletedAt" IS NULL AND f."folderId" IS NULL
-   AND f.path=b."storagePath" AND f."fileSize"=(a.proof->'manifest'->0->>'size_bytes')::int
+   AND f.path=b."storagePath" AND f.path='editorial-private:v1:'||a.id||'.jpg' AND f."fileSize"=(a.proof->'manifest'->0->>'size_bytes')::int
    AND b."assetSha256"=a.proof->'manifest'->0->>'sha256'
    AND f.metadata->>'internal'='editorial-live'
    AND f.metadata->>'mimeType'='image/jpeg' AND f.metadata->>'sha256'=b."assetSha256"
@@ -128,7 +128,7 @@ BEGIN
  IF a->>'mime' IS DISTINCT FROM 'image/jpeg' OR tok IS DISTINCT FROM imp.token OR actual_sha IS DISTINCT FROM a->>'sha256'
   OR actual_size IS DISTINCT FROM (a->>'size_bytes')::int
   OR storage_path IS NULL OR length(storage_path)>2048
-  OR storage_path !~ '^((https?://[^/?#[:space:]]+)?/uploads/org-modes/[0-9]{4}/[0-9]{2}/[0-9]{2}/[0-9a-f]{32}[.]jpg)$'
+  OR storage_path IS DISTINCT FROM 'editorial-private:v1:'||imp.id||'.jpg'
  THEN RAISE EXCEPTION 'EDITORIAL_IMAGE_STORAGE_INVALID' USING ERRCODE='22023'; END IF;
  SELECT * INTO prior FROM "EditorialImageImportReceipt" WHERE "importId"=iid;
  IF FOUND THEN

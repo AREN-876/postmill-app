@@ -5,7 +5,7 @@ DO $test$
 DECLARE s jsonb; task text:='9071'; target text:='max:-73052031470103'; pid text;
  body jsonb; p jsonb; st jsonb; ev jsonb; a jsonb; proof jsonb; claim jsonb; res jsonb; ctx jsonb;
   png bytea:=decode('ffd8ffd9','hex'); -- metadata-only SQL fixture; decoder tested separately
- digest text; path text:='/uploads/org-modes/2026/11/24/'||repeat('a',32)||'.jpg';
+ digest text; path text;
  fid text; i int; queued jsonb; decision jsonb; next_state jsonb; reply jsonb;
  final_state jsonb; command jsonb; release_result jsonb; pubid text; source_before jsonb;
  action text; bad jsonb;
@@ -54,6 +54,7 @@ BEGIN
  EXCEPTION WHEN invalid_parameter_value THEN ASSERT SQLERRM='EDITORIAL_IMAGE_PROOF_INVALID'; END;
  claim:=postmill_reserve_live_image_import_v1('org-modes',pid,task,target,proof);
  ASSERT claim->>'status'='reserved';
+ path:='editorial-private:v1:'||(claim->>'import_id')||'.jpg';
  ASSERT postmill_editorial_confirmed_v1(pid)->>'status'='image_import_uncertain';
  ASSERT postmill_reserve_live_image_import_v1('org-modes',pid,task,target,proof)->>'status'='uncertain';
  ASSERT NOT(postmill_reserve_live_image_import_v1('org-modes',pid,task,target,proof) ? 'token');
@@ -69,6 +70,16 @@ BEGIN
  BEGIN
   PERFORM postmill_finish_live_image_import_v1('org-modes',pid,task,target,claim->>'import_id',claim->>'token',path,repeat('0',64),octet_length(png));
   RAISE EXCEPTION 'wrong digest accepted';
+ EXCEPTION WHEN invalid_parameter_value THEN ASSERT SQLERRM='EDITORIAL_IMAGE_STORAGE_INVALID'; END;
+ BEGIN
+  PERFORM postmill_finish_live_image_import_v1('org-modes',pid,task,target,claim->>'import_id',claim->>'token',
+    '/uploads/org-modes/2026/11/24/'||repeat('a',32)||'.jpg',digest,octet_length(png));
+  RAISE EXCEPTION 'public path accepted';
+ EXCEPTION WHEN invalid_parameter_value THEN ASSERT SQLERRM='EDITORIAL_IMAGE_STORAGE_INVALID'; END;
+ BEGIN
+  PERFORM postmill_finish_live_image_import_v1('org-modes',pid,task,target,claim->>'import_id',claim->>'token',
+    'editorial-private:v1:'||gen_random_uuid()::text||'.jpg',digest,octet_length(png));
+  RAISE EXCEPTION 'foreign private key accepted';
  EXCEPTION WHEN invalid_parameter_value THEN ASSERT SQLERRM='EDITORIAL_IMAGE_STORAGE_INVALID'; END;
  ASSERT (SELECT count(*) FROM "File" WHERE "organizationId"='org-modes')=0;
  res:=postmill_finish_live_image_import_v1('org-modes',pid,task,target,claim->>'import_id',claim->>'token',path,digest,octet_length(png));
