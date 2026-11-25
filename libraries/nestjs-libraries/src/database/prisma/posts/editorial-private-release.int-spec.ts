@@ -47,9 +47,9 @@ beforeAll(async()=>{
  });
  await pg.connect();pgConnected=true;
  expect((await pg.query('SELECT current_database() AS name')).rows[0].name).toBe(name);
- expect(Number((await pg.query('SELECT count(*) AS n FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')).rows[0].n)).toBe(60);
+ expect(Number((await pg.query('SELECT count(*) AS n FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')).rows[0].n)).toBe(61);
  bytes=await makeLiveJpegFixture();
- // Reuse exact qualified SQL functions and setup through immutable release.
+ // Reuse the fixture setup through immutable release; exercise installed migration 61.
  // Substitute only generated test DB allowlist + actual JPEG bytes; omit
  // synthetic occurrence/journal tail and commit the disposable fixture.
  const fixture=readFileSync(new URL('../../../../../../tools/db/editorial-live-image-full-assertions.sql',import.meta.url),'utf8');
@@ -61,6 +61,7 @@ beforeAll(async()=>{
  if(seed.split(allow).length!==3||seed.split("decode('ffd8ffd9','hex')").length!==2)throw Error('fixture identity changed');
  seed=seed.replaceAll(allow,"'"+name+"'").replace("decode('ffd8ffd9','hex')","decode('"+bytes.toString('hex')+"','hex')");
  await pg.query(seed+'\nEND $test$;\nCOMMIT;');
+ await pg.query("SELECT set_config('postmill.editorial_live_release_worker_enabled','on',false)");
  const rows=await pg.query('SELECT "sourcePostId","publicationPostId" FROM "EditorialRelease"');
  expect(rows.rowCount).toBe(1);
  sourceId=rows.rows[0].sourcePostId;publicationId=rows.rows[0].publicationPostId;
@@ -91,7 +92,7 @@ describe('028B.3A migrated native release to real adapter (synthetic peers)',()=
   expect(initial.id).toMatch(/^max_[a-f0-9]{64}$/);
   await native.plan(publicationId,org,initial.id);
   const identity={orgId:org,publicationPostId:publicationId,occurrenceId:initial.id,attempt:1 as const};
-  const read=async()=> (await pg.query('SELECT pg_temp.qualify_live_release_photo_v1($1,$2,$3) AS p',[org,publicationId,initial.id])).rows[0].p;
+  const read=async()=> (await pg.query('SELECT public.postmill_read_live_release_photo_v1($1,$2,$3) AS p',[org,publicationId,initial.id])).rows[0].p;
   const snapshot=await read();
   expect(snapshot?.media.sha256).toBe(sha(bytes));
   expect(snapshot?.fingerprint).toBe(initial.fingerprint);
@@ -121,7 +122,7 @@ describe('028B.3A migrated native release to real adapter (synthetic peers)',()=
   const readStarted=async(_id:typeof identity,operationId:string)=>{
    const j=await db.maxDeliveryAttempt.findUnique({where:{occurrenceId_number:{occurrenceId:initial.id,number:1}}});
    if((j?.target as any)?.storyPartsSha256!==storyPartsSha256)return null;
-   return (await pg.query('SELECT pg_temp.qualify_live_release_photo_v1($1,$2,$3,true,$4) AS p',[org,publicationId,initial.id,operationId])).rows[0].p;
+   return (await pg.query('SELECT public.postmill_read_live_release_photo_v1($1,$2,$3,true,$4) AS p',[org,publicationId,initial.id,operationId])).rows[0].p;
   };
   vi.stubEnv('STORYGO_GATEWAY_ENABLED','1');
   vi.stubEnv('STORYGO_GATEWAY_BASE_URL','https://gateway.example.invalid');

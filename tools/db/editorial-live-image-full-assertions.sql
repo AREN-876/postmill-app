@@ -419,8 +419,20 @@ BEGIN
  ASSERT NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid);
  -- 028B.1: final approval, exact pin, digest, one immutable copy.
  command:=jsonb_build_object('command_id',gen_random_uuid()::text,'action','publish_now','publish_at',NULL);
+ -- Installed functions deny use by default; GUCs are local to this
+ -- disposable rollback transaction, never production configuration.
+ ASSERT NOT EXISTS(SELECT 1 FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+  WHERE p.oid IN ('public.postmill_release_live_editorial_story_v1(text,text,text,text,text,jsonb,jsonb,jsonb,bytea)'::regprocedure,
+   'public.postmill_read_live_release_photo_v1(text,text,text,boolean,text)'::regprocedure)
+   AND a.grantee=0 AND a.privilege_type='EXECUTE');
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
+  RAISE EXCEPTION 'default-off release accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_DISABLED'; END;
+ PERFORM set_config('postmill.editorial_live_release_enabled','on',true);
+
+ BEGIN
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
   RAISE EXCEPTION 'release before final approval accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_NOT_APPROVED'; END;
  final_state:=next_state;
@@ -429,7 +441,7 @@ BEGIN
  decision:=postmill_read_editorial_delivery_v1(s,task,target);
  ASSERT decision->'native_pin'=jsonb_build_object('plan_id',a->>'plan_id','native_file_id',fid,'asset_sha256',digest);
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
   RAISE EXCEPTION 'release overtook pending approval';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
  ASSERT postmill_reserve_editorial_delivery_v1(s,task,target,queued->>'event_id')->'newly_reserved'='true'::jsonb;
@@ -443,21 +455,21 @@ BEGIN
   RAISE EXCEPTION 'legacy release accepted JPEG';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_NOT_APPROVED'; END;
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
   RAISE EXCEPTION 'stale release accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,
     jsonb_set(decision->'native_pin','{native_file_id}',to_jsonb(gen_random_uuid()::text)),png);
   RAISE EXCEPTION 'wrong pin accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',decode('ffd8ffd8','hex'));
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',decode('ffd8ffd8','hex'));
   RAISE EXCEPTION 'wrong digest accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
  ASSERT NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid);
  SELECT to_jsonb(srcrow) INTO source_before FROM "Post" srcrow WHERE id=pid;
- release_result:=pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
+ release_result:=public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
  ASSERT release_result->'created'='true'::jsonb AND release_result->'publishable'='false'::jsonb AND release_result->'dispatch_authorized'='false'::jsonb;
  pubid:=release_result->>'publication_post_id';
  ASSERT (SELECT to_jsonb(srcrow)=source_before FROM "Post" srcrow WHERE id=pid);
@@ -466,9 +478,9 @@ BEGIN
    AND settings::jsonb - ARRAY['storyImageId','storyImageSha256']=(source_before->>'settings')::jsonb
    AND content=source_before->>'content' FROM "Post" WHERE id=pubid);
  ASSERT (SELECT "publicationPostId"=pubid AND "confirmedSeq"=next_state->>'seq' FROM "EditorialRelease" WHERE "sourcePostId"=pid);
- ASSERT pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png)->'created'='false'::jsonb;
+ ASSERT public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png)->'created'='false'::jsonb;
  BEGIN
-  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',
+  PERFORM public.postmill_release_live_editorial_story_v1('org-modes',pid,task,target,'ci-editor',
     jsonb_set(command,'{command_id}',to_jsonb(gen_random_uuid()::text)),next_state,decision->'native_pin',png);
   RAISE EXCEPTION 'second release accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_ALREADY_EXISTS'; END;
@@ -478,24 +490,26 @@ BEGIN
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_PUBLICATION_IMMUTABLE'; END;
  ASSERT (SELECT count(*) FROM "EditorialRelease" WHERE "sourcePostId"=pid)=1;
  -- 028B.2A: read projection of a due initial occurrence; no send authority.
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
  INSERT INTO "MaxDeliveryOccurrence"(id,"postId","organizationId","scheduledAt",fingerprint,"updatedAt")
  SELECT occurrence,pubid,'org-modes',"publishDate",repeat('c',64),now() FROM "Post" WHERE id=pubid;
- projection:=pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence);
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
+ PERFORM set_config('postmill.editorial_live_release_worker_enabled','on',true);
+ projection:=public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence);
  ASSERT projection IS NOT NULL AND projection->'request'->'state'=next_state
  AND projection->'pin'=decision->'native_pin' AND projection->'media'->>'path'=path
  AND projection->>'confirmed_seq'=next_state->>'seq'
  AND projection->'dispatch_authorized'='false'::jsonb;
- ASSERT pg_temp.qualify_live_release_photo_v1('other',pubid,occurrence) IS NULL;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pid,occurrence) IS NULL;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,gen_random_uuid()::text) IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('other',pubid,occurrence) IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pid,occurrence) IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,gen_random_uuid()::text) IS NULL;
  UPDATE "MaxDeliveryOccurrence" SET continued=true WHERE id=occurrence;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence)=projection;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence)=projection;
  UPDATE "MaxDeliveryOccurrence" SET state='STARTED',attempt=1 WHERE id=occurrence;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
  ASSERT (SELECT state='QUEUE' FROM "Post" WHERE id=pubid);
  -- A STARTED row alone is not a new grant, even with the right occurrence.
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
  UPDATE "Post" SET state='PUBLISHING',"maxDelivery"=jsonb_build_object('occurrenceId',occurrence,'state','STARTED','attempt',1) WHERE id=pubid;
  INSERT INTO "MaxDeliveryAttempt"(id,"occurrenceId",number,state,target)
  SELECT gen_random_uuid()::text,occurrence,1,'STARTED',jsonb_build_object(
@@ -504,12 +518,15 @@ BEGIN
   'integrationId',"integrationId",'chatId',"maxTarget"->>'internalId','version',"maxTarget"->>'version',
   'providerConfigId',"maxTarget"->'providerConfigId','tokenHash',"maxTarget"->>'tokenHash')
  FROM "Post" WHERE id=pubid;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548')=projection;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d549') IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548')=projection;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d549') IS NULL;
  UPDATE "MaxDeliveryAttempt" SET target=jsonb_set("MaxDeliveryAttempt".target,'{storyPhotoSha256}',to_jsonb(repeat('0',64))) WHERE "occurrenceId"=occurrence;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
  UPDATE "MaxDeliveryOccurrence" SET state='REVIEW' WHERE id=occurrence;
- ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ PERFORM set_config('postmill.editorial_live_release_enabled','off',true);
+ PERFORM set_config('postmill.editorial_live_release_worker_enabled','off',true);
+ ASSERT public.postmill_read_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
 END $test$;
 ROLLBACK;
 SELECT 'POSTMILL_LIVE_IMAGE_IMPORT_SQL_OK';
@@ -518,3 +535,5 @@ SELECT 'POSTMILL_028B1_LIVE_IMAGE_RELEASE_SQL_OK';
 SELECT 'POSTMILL_028B2A_PRIVATE_PHOTO_PROJECTION_SQL_OK';
 
 SELECT 'POSTMILL_028B2B2_POST_CLAIM_SQL_OK';
+
+SELECT 'POSTMILL_028B4A_NATIVE_LIVE_RELEASE_SQL_OK';
