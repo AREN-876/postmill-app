@@ -431,7 +431,8 @@ export class FileRepository {
       deletedAt: null as null,
     };
 
-    const and: any[] = [{ NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } } }];
+    where.NOT = { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } };
+    const and: any[] = [];
     if (!includeAiDesigner) {
       // "metadata->>'aiDesigner' is unset" — AnyNull covers both a missing key
       // and a JSON null value at the path.
