@@ -207,6 +207,62 @@ BEGIN
   'provider_version',coalesce(i."providerVersion",'v1'));
 END $fn$;
 
+-- 028B.2A: temporary native preflight projection, not a send grant.
+CREATE FUNCTION pg_temp.qualify_live_release_photo_v1(org text,pub text,occ text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,public,pg_temp AS $fn$
+DECLARE r "EditorialRelease"%ROWTYPE; src "Post"%ROWTYPE; dst "Post"%ROWTYPE;
+ o "MaxDeliveryOccurrence"%ROWTYPE; ctx jsonb; st jsonb; media jsonb; pin jsonb;
+ integ "Integration"%ROWTYPE; target constant text:='max:-73052031470103';
+BEGIN
+ IF current_database() NOT IN ('postmill_image_ci','edx_upgrade_restored_44','postmill-editorial-restore-ci')
+ OR org IS DISTINCT FROM 'org-modes' THEN RETURN NULL; END IF;
+ SELECT * INTO r FROM "EditorialRelease" WHERE "publicationPostId"=pub;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT * INTO src FROM "Post" WHERE id=r."sourcePostId" AND "organizationId"=org;
+ IF NOT FOUND OR src."editorialTaskId" IS NULL THEN RETURN NULL; END IF;
+ -- Separate READ COMMITTED query, never under the worker's Post row lock.
+ ctx:=postmill_live_image_context_v1(org,src.id,src."editorialTaskId",target);
+ IF ctx IS NULL OR ctx->>'status' IS DISTINCT FROM 'idle' THEN RETURN NULL; END IF;
+ st:=ctx->'state'; media:=ctx->'media'; pin:=postmill_live_image_pin_v1(src.id,st->'image');
+ IF (st->>'seq'=r."confirmedSeq" AND st->'final_approved'='true'::jsonb
+ AND st->'rejected'='false'::jsonb AND st->'image_compatible'='true'::jsonb
+ AND st->>'text_status'='approved' AND st->'image_intent'='null'::jsonb
+ AND st->'text_request_id'='null'::jsonb AND pin IS NOT NULL
+ AND jsonb_typeof(media)='object') IS NOT TRUE THEN RETURN NULL; END IF;
+ SELECT * INTO dst FROM "Post" WHERE id=pub AND "organizationId"=org;
+ IF NOT FOUND OR (dst.state='QUEUE' AND dst."deletedAt" IS NULL
+ AND dst."editorialTaskId" IS NULL AND dst."editorialProfileRef" IS NULL
+ AND dst."integrationId"=src."integrationId" AND dst."campaignId"=src."campaignId"
+ AND dst."parentPostId" IS NULL AND dst."intervalInDays" IS NULL
+ AND dst."publishDate"=r."publishAt" AND dst."maxScheduleRevision"=1
+ AND dst."approvalStatus"='approved' AND dst."approvedById"=r."actorId"
+ AND dst.content=src.content AND dst.image='[]'
+ AND dst.settings::jsonb=(src.settings::jsonb||jsonb_build_object(
+  'storyImageId',media->>'file_id','storyImageSha256',media->>'sha256'))
+ AND NOT EXISTS(SELECT 1 FROM "Post" child WHERE child."parentPostId"=dst.id)) IS NOT TRUE THEN RETURN NULL; END IF;
+ SELECT * INTO integ FROM "Integration" WHERE id=dst."integrationId" AND "organizationId"=org
+ AND "internalId"=target AND "providerIdentifier"='max' AND NOT disabled
+ AND NOT "refreshNeeded" AND NOT "inBetweenSteps" AND "deletedAt" IS NULL;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ IF dst."maxTarget" IS DISTINCT FROM jsonb_build_object(
+  'integrationId',integ.id,'internalId',integ."internalId",
+  'providerConfigId',integ."providerConfigId",'version',coalesce(integ."providerVersion",'v1'),
+  'tokenHash',postmill_check_editorial_target_v1(ctx->'scope',target)->>'tokenHash')
+ THEN RETURN NULL; END IF;
+ SELECT * INTO o FROM "MaxDeliveryOccurrence" WHERE id=occ AND "postId"=pub AND "organizationId"=org;
+ IF NOT FOUND OR (o.state='READY' AND o.attempt=0 AND o."parentId" IS NULL
+ AND NOT o.continued AND o."scheduledAt"=dst."publishDate"
+ AND o."scheduledAt"<=clock_timestamp() AND o.fingerprint ~ '^[0-9a-f]{64}$') IS NOT TRUE
+ THEN RETURN NULL; END IF;
+ -- Fingerprint equality is the existing native begin() responsibility.
+ RETURN jsonb_build_object('publication_post_id',pub,'source_post_id',src.id,
+  'occurrence_id',occ,'attempt',1,'confirmed_seq',r."confirmedSeq",
+  'target',target,'request',jsonb_build_object('org_id',org,'task_id',src."editorialTaskId",
+    'channel_id',ctx->'scope'->>'channel_id','state',st),
+  'pin',pin,'media',media,'dispatch_authorized',false,'publishable',false);
+END $fn$;
+
 DO $test$
 DECLARE s jsonb; task text:='9071'; target text:='max:-73052031470103'; pid text;
  body jsonb; p jsonb; st jsonb; ev jsonb; a jsonb; proof jsonb; claim jsonb; res jsonb; ctx jsonb;
@@ -214,7 +270,7 @@ DECLARE s jsonb; task text:='9071'; target text:='max:-73052031470103'; pid text
  digest text; path text;
  fid text; i int; queued jsonb; decision jsonb; next_state jsonb; reply jsonb;
  final_state jsonb; command jsonb; release_result jsonb; pubid text; source_before jsonb;
- action text; bad jsonb;
+ action text; bad jsonb; occurrence text:=gen_random_uuid()::text; projection jsonb;
 BEGIN
  INSERT INTO "Organization"(id,name,"updatedAt") VALUES('org-modes','Mock image CI',now());
  INSERT INTO "Integration"(id,"organizationId","internalId",name,"providerIdentifier",type,token)
@@ -404,7 +460,24 @@ BEGIN
   RAISE EXCEPTION 'publication digest mutable';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_PUBLICATION_IMMUTABLE'; END;
  ASSERT (SELECT count(*) FROM "EditorialRelease" WHERE "sourcePostId"=pid)=1;
+ -- 028B.2A: read projection of a due initial occurrence; no send authority.
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
+ INSERT INTO "MaxDeliveryOccurrence"(id,"postId","organizationId","scheduledAt",fingerprint,"updatedAt")
+ SELECT occurrence,pubid,'org-modes',"publishDate",repeat('c',64),now() FROM "Post" WHERE id=pubid;
+ projection:=pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence);
+ ASSERT projection IS NOT NULL AND projection->'request'->'state'=next_state
+ AND projection->'pin'=decision->'native_pin' AND projection->'media'->>'path'=path
+ AND projection->>'confirmed_seq'=next_state->>'seq'
+ AND projection->'dispatch_authorized'='false'::jsonb;
+ ASSERT pg_temp.qualify_live_release_photo_v1('other',pubid,occurrence) IS NULL;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pid,occurrence) IS NULL;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,gen_random_uuid()::text) IS NULL;
+ UPDATE "MaxDeliveryOccurrence" SET state='STARTED',attempt=1 WHERE id=occurrence;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
+ ASSERT (SELECT state='QUEUE' FROM "Post" WHERE id=pubid);
 END $test$;
 ROLLBACK;
 SELECT 'POSTMILL_LIVE_IMAGE_IMPORT_SQL_OK';
 SELECT 'POSTMILL_028B1_LIVE_IMAGE_RELEASE_SQL_OK';
+
+SELECT 'POSTMILL_028B2A_PRIVATE_PHOTO_PROJECTION_SQL_OK';
