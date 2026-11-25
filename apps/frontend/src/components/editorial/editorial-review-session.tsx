@@ -127,7 +127,7 @@ export function EditorialReviewSession({
         onCommand={queue}
         onRefresh={refresh}
         onImportImage={importImage}
-        onPreviewLiveImage={previewLiveImage}
+        onPreviewLiveImage={reading ? undefined : previewLiveImage}
         mutationsBlocked={attempted?.identity === identity &&
           attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
       />

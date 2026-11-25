@@ -218,7 +218,7 @@ describe('live JPEG preview UI boundary', () => {
       static createObjectURL = create;
       static revokeObjectURL = revoke;
     });
-    const load = vi.fn().mockResolvedValue(new Blob(['jpeg'], { type: 'image/jpeg' }));
+    const load = vi.fn().mockResolvedValueOnce(new Blob(['jpeg'], { type: 'image/jpeg' })).mockImplementation(() => new Promise<Blob>(() => undefined));
     const data = (seq: string) => snapshot({
       live_image_preview_enabled: true,
       review: { status: 'idle', last_confirmed_state: {
@@ -228,18 +228,17 @@ describe('live JPEG preview UI boundary', () => {
     const props = { onCommand, onRefresh, onPreviewLiveImage: load };
     try {
       const view = render(<EditorialReviewPanel {...props} snapshot={data('8')} />);
-      fireEvent.click(screen.getByRole('button', { name: 'Показать изображение' }));
       const image = await screen.findByRole('img', { name: 'Иллюстрация редакции' });
       expect(image.getAttribute('src')).toBe('blob:editorial-preview');
       view.rerender(<EditorialReviewPanel {...props} snapshot={data('9')} />);
       expect(screen.queryByRole('img', { name: 'Иллюстрация редакции' })).toBeNull();
       expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:editorial-preview');
-      expect(load).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
       view.unmount();
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it('only invokes the preview callback on explicit click for a current opted-in image', async () => {
+  it('automatically loads only a current opted-in image', async () => {
     const load = vi.fn().mockRejectedValue(new Error('revoked'));
     const data = snapshot({
       live_image_preview_enabled: true,
@@ -249,16 +248,15 @@ describe('live JPEG preview UI boundary', () => {
     });
     const props = { onCommand, onRefresh, onPreviewLiveImage: load };
     const view = render(<EditorialReviewPanel {...props} snapshot={snapshot()} />);
-    expect(screen.queryByRole('button', { name: 'Показать изображение' })).toBeNull();
-    view.rerender(<EditorialReviewPanel {...props} snapshot={data} />);
+    expect(screen.queryByRole('region', { name: 'Предпросмотр реальной иллюстрации' })).toBeNull();
     expect(load).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Показать изображение' }));
-    await screen.findByText('Не удалось подтвердить доступ к изображению.');
+    view.rerender(<EditorialReviewPanel {...props} snapshot={data} />);
+    await screen.findByText('Не удалось подтвердить доступ к изображению. Проверь статус.');
     expect(load).toHaveBeenCalledTimes(1);
     expect(load.mock.calls[0][0]).toBe('8');
     expect(screen.queryByRole('img', { name: 'Иллюстрация редакции' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Утвердить текст и изображение' })).toBeNull();
     view.rerender(<EditorialReviewPanel {...props} snapshot={data} mutationsBlocked />);
-    expect(screen.queryByRole('button', { name: 'Показать изображение' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Предпросмотр реальной иллюстрации' })).toBeNull();
   });
 });

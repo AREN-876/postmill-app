@@ -64,55 +64,42 @@ type Props = {
   mutationsBlocked?: boolean;
 };
 
-// Mounted only for the current confirmed snapshot. Unmount on refresh,
- // identity/revision change or a local mutation; never persist bytes or URLs.
+// Mounted only for the current confirmed snapshot. A new mount fetches
+// read-only bytes automatically; no import or decision is triggered.
 function LiveImagePreview({ seq, load }: {
   seq: string;
   load: (seq: string, signal: AbortSignal) => Promise<Blob>;
 }) {
-  const request = useRef<AbortController | null>(null);
   const objectUrl = useRef<string | null>(null);
   const [src, setSrc] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  useEffect(() => () => {
-    request.current?.abort();
-    request.current = null;
-    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    objectUrl.current = null;
-  }, []);
 
-  async function preview() {
-    if (request.current) return;
-    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    objectUrl.current = null;
-    setSrc(null);
-    setError(false);
-    setBusy(true);
+  useEffect(() => {
     const controller = new AbortController();
-    request.current = controller;
-    try {
-      const blob = await load(seq, controller.signal);
-      if (request.current !== controller || controller.signal.aborted) return;
-      objectUrl.current = URL.createObjectURL(blob);
-      setSrc(objectUrl.current);
-    } catch {
-      if (request.current === controller) setError(true);
-    } finally {
-      if (request.current === controller) {
-        request.current = null;
-        setBusy(false);
+    async function preview() {
+      try {
+        const blob = await load(seq, controller.signal);
+        if (controller.signal.aborted) return;
+        objectUrl.current = URL.createObjectURL(blob);
+        setSrc(objectUrl.current);
+      } catch {
+        if (!controller.signal.aborted) setError(true);
       }
     }
-  }
+    void preview();
+    return () => {
+      controller.abort();
+      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+      objectUrl.current = null;
+    };
+  }, [seq, load]);
+
   return (
     <section aria-label="Предпросмотр реальной иллюстрации" className="space-y-2">
       <h3 className="font-semibold">Иллюстрация (закрытый предпросмотр)</h3>
-      <Button secondary type="button" disabled={busy} onClick={() => void preview()}>
-        {busy ? 'Проверка изображения…' : 'Показать изображение'}
-      </Button>
-      {error && <p role="alert">Не удалось подтвердить доступ к изображению.</p>}
-      {src && (
+      {!src && !error && <p role="status">Проверка изображения…</p>}
+      {error && <p role="alert">Не удалось подтвердить доступ к изображению. Проверь статус.</p>}
+      {src && !error && (
         <>
           {/* Object URL for the verified binary response, never a storage URL. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
