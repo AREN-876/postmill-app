@@ -375,3 +375,24 @@ describe('StorageRepository', () => {
     });
   });
 });
+
+describe('private editorial images never migrate through generic storage',()=>{
+  it('excludes private namespace from both LOCAL and cloud provider pages and counts',async()=>{
+    mockModel.file.count.mockResolvedValue(0);
+    mockModel.file.aggregate.mockResolvedValue({_sum:{fileSize:0}});
+    mockModel.file.findMany.mockResolvedValue([]);
+    const repo=makeRepo();
+    for(const type of [StorageProviderType.LOCAL,StorageProviderType.S3]){
+      const source={id:'src',type};
+      await repo.countSourceMedia('org-1',source);
+      await repo.findSourceMediaPage('org-1',source,undefined,25);
+    }
+    const filter={path:{startsWith:'editorial-private:v1:'}};
+    for(const mock of [mockModel.file.count,mockModel.file.aggregate,mockModel.file.findMany]){
+      expect(mock).toHaveBeenCalledTimes(2);
+      for(const [args] of mock.mock.calls) {
+        expect(args.where).toEqual(expect.objectContaining({organizationId:'org-1',NOT:filter}));
+      }
+    }
+  });
+});

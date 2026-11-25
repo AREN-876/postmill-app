@@ -448,3 +448,28 @@ describe('FileRepository — generated media type', () => {
     expect(model.file.create.mock.calls[0][0].data.type).toBe('video');
   });
 });
+
+describe('private editorial images are not ordinary media',()=>{
+  it('filters the private namespace on direct, batch, search and folder lookups',async()=>{
+    const {repo,model}=makeRepo();
+    const filter={path:{startsWith:'editorial-private:v1:'}};
+    model.file.count.mockResolvedValue(0);
+    model.file.findMany.mockResolvedValue([]);
+    await repo.getFileById('org-1','file-1');
+    await repo.getFileByPath('org-1','editorial-private:v1:example.jpg');
+    await repo.getFilesByPaths('org-1',['editorial-private:v1:example.jpg']);
+    await repo.getByIds('org-1',['file-1']);
+    await repo.searchFiles('org-1','editorial');
+    await repo.getFilesByFolder('org-1','folder-1',1);
+    expect(model.file.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where:expect.objectContaining({organizationId:'org-1',NOT:filter})}));
+    expect(model.file.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where:expect.objectContaining({organizationId:'org-1',NOT:filter})}));
+    expect(model.file.findMany).toHaveBeenCalledTimes(4);
+    for(const [args] of model.file.findMany.mock.calls){
+      expect(args.where).toEqual(expect.objectContaining({organizationId:'org-1',NOT:filter}));
+    }
+    expect(model.file.count).toHaveBeenCalledWith(expect.objectContaining({
+      where:expect.objectContaining({NOT:filter})}));
+  });
+});
