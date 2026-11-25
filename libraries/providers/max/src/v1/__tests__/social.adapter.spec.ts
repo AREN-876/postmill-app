@@ -629,6 +629,44 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
     });
   });
 
+  it.each(['success','upload_timeout','upload_wrong_digest','publish_timeout'] as const)(
+    'keeps JPEG upload and publication one-shot: %s', async (scenario) => {
+      await withGatewayEnv(async () => {
+        // Transport-only fixture; full decode is tested in the private reader.
+        const bytes=Buffer.from('ffd8ffd9','hex');
+        const sha256=createHash('sha256').update(bytes).digest('hex');
+        const uploadId='a8db6639-7ba0-42b7-8587-dd39d630c91b';
+        if(scenario==='upload_timeout') wire.mockRejectedValueOnce(new Error('ambiguous upload'));
+        else {
+          wire.mockResolvedValueOnce(response({upload_id:uploadId,
+            sha256:scenario==='upload_wrong_digest'?'0'.repeat(64):sha256,
+            mime_type:'image/jpeg',bytes:bytes.length},201));
+          if(scenario==='publish_timeout') wire.mockRejectedValueOnce(new Error('ambiguous publish'))
+            .mockResolvedValueOnce(response(receipt('NEEDS_REVIEW')));
+          else wire.mockResolvedValueOnce(response(receipt('PUBLISHED','mid.jpeg')));
+        }
+        const call=provider.post(chatId,token,[{...post,message:'Заголовок',
+          settings:{...settings(),__gateway:{...settings().__gateway,
+            image:{base64:bytes.toString('base64'),mimeType:'image/jpeg',sha256}}}}]);
+        if(scenario==='success') expect((await call)[0].postId).toBe('mid.jpeg');
+        else await expect(call).rejects.toThrow('operator review');
+        const urls=wire.mock.calls.map(([url,init])=>[url,init.method]);
+        const media='https://gateway.example.invalid/gateway/v1/media';
+        const publication='https://gateway.example.invalid/gateway/v1/publications';
+        expect(urls).toEqual(scenario==='success'?[[media,'POST'],[publication,'POST']]:
+          scenario==='publish_timeout'?[[media,'POST'],[publication,'POST'],[publication+'/'+operationId,'GET']]:
+          [[media,'POST']]);
+        expect(wire.mock.calls[0][1].body.toString()).toContain('filename="story.jpg"');
+        expect(wire.mock.calls[0][1].body.includes(bytes)).toBe(true);
+        if(scenario==='success'||scenario==='publish_timeout'){
+          const payload=JSON.parse(wire.mock.calls[1][1].body);
+          expect(payload.upload_id).toBe(uploadId);
+          expect(payload.operation_id).toBe(operationId);
+          expect(JSON.stringify(payload)).not.toContain(bytes.toString('base64'));
+        }
+      });
+    });
+
   it('rejects photo content changes before any HTTP request', async () => {
     await withGatewayEnv(async () => {
       const err = await provider.post(chatId, token, [{

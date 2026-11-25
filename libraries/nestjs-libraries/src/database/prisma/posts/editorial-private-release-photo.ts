@@ -5,6 +5,7 @@ import { checkEditorialLivePreview, type EditorialWireConfig, type EditorialLive
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const POST=/^[0-9a-f]{32}$/;
+const OCCURRENCE=/^max_[0-9a-f]{64}$/;
 const SHA=/^[0-9a-f]{64}$/;
 function record(x:unknown): x is Record<string,unknown> {
   return x!==null && typeof x==='object' && !Array.isArray(x);
@@ -32,7 +33,7 @@ type Dependencies = {
 export async function prepareEditorialPrivateReleasePhoto(identity:PrivateReleasePhotoIdentity,deps:Dependencies) {
   try {
     if (identity.orgId!=='org-modes' || !POST.test(identity.publicationPostId) ||
-        !uuid(identity.occurrenceId) || identity.attempt!==1) denied();
+        !OCCURRENCE.test(identity.occurrenceId) || identity.attempt!==1) denied();
     const p=await deps.read(identity);
     if (!record(p) || p.publication_post_id!==identity.publicationPostId ||
         typeof p.source_post_id!=='string' || !POST.test(p.source_post_id) ||

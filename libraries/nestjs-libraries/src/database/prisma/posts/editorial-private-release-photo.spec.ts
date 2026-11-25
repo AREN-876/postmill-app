@@ -6,7 +6,8 @@ const id='11111111-1111-4111-8111-111111111111';
 const file='22222222-2222-4222-8222-222222222222';
 const plan='33333333-3333-4333-8333-333333333333';
 const org='org-modes',source='a'.repeat(32),publication='b'.repeat(32);
-const identity={orgId:org,publicationPostId:publication,occurrenceId:id,attempt:1 as const};
+const occurrence='max_'+'d'.repeat(64);
+const identity={orgId:org,publicationPostId:publication,occurrenceId:occurrence,attempt:1 as const};
 const wire={orgId:org,requestKeyHex:'a'.repeat(64),responseKeyHex:'b'.repeat(64),allowLiveImageReview:true,allowLiveImagePreview:true};
 const read=vi.fn(),check=vi.fn(),open=vi.fn(),readBytes=vi.fn();
 let bytes:Buffer,projection:any;
@@ -16,7 +17,7 @@ describe('inactive private release photo preflight',()=>{
   vi.resetAllMocks();
   bytes=await makeLiveJpegFixture();
   const sha256=createHash('sha256').update(bytes).digest('hex');
-  projection={publication_post_id:publication,source_post_id:source,occurrence_id:id,attempt:1,
+  projection={publication_post_id:publication,source_post_id:source,occurrence_id:occurrence,attempt:1,
     confirmed_seq:'3',target:'max:-73052031470103',publishable:false,dispatch_authorized:false,
     request:{org_id:org,task_id:'42',channel_id:'1',state:{seq:'3',final_approved:true,rejected:false,
       text_status:'approved',image_compatible:true,image_intent:null,text_request_id:null,
@@ -46,6 +47,7 @@ describe('inactive private release photo preflight',()=>{
     read.mockResolvedValueOnce(bad);
     await expect(invoke()).rejects.toThrow('editorial_release_photo_unavailable');
   }
+  await expect(prepareEditorialPrivateReleasePhoto({...identity,occurrenceId:id},{read,check,open,wire})).rejects.toThrow();
   expect(open).not.toHaveBeenCalled();expect(check).not.toHaveBeenCalled();
  });
  it('rejects revocation before or after reading, without fallback',async()=>{

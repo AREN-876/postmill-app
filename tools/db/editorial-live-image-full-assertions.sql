@@ -216,7 +216,7 @@ DECLARE r "EditorialRelease"%ROWTYPE; src "Post"%ROWTYPE; dst "Post"%ROWTYPE;
  integ "Integration"%ROWTYPE; target constant text:='max:-73052031470103';
 BEGIN
  IF current_database() NOT IN ('postmill_image_ci','edx_upgrade_restored_44','postmill-editorial-restore-ci')
- OR org IS DISTINCT FROM 'org-modes' THEN RETURN NULL; END IF;
+ OR org IS DISTINCT FROM 'org-modes' OR occ !~ '^max_[0-9a-f]{64}$' THEN RETURN NULL; END IF;
  SELECT * INTO r FROM "EditorialRelease" WHERE "publicationPostId"=pub;
  IF NOT FOUND THEN RETURN NULL; END IF;
  SELECT * INTO src FROM "Post" WHERE id=r."sourcePostId" AND "organizationId"=org;
@@ -252,7 +252,7 @@ BEGIN
  THEN RETURN NULL; END IF;
  SELECT * INTO o FROM "MaxDeliveryOccurrence" WHERE id=occ AND "postId"=pub AND "organizationId"=org;
  IF NOT FOUND OR (o.state='READY' AND o.attempt=0 AND o."parentId" IS NULL
- AND NOT o.continued AND o."scheduledAt"=dst."publishDate"
+ AND o."scheduledAt"=dst."publishDate"
  AND o."scheduledAt"<=clock_timestamp() AND o.fingerprint ~ '^[0-9a-f]{64}$') IS NOT TRUE
  THEN RETURN NULL; END IF;
  -- Fingerprint equality is the existing native begin() responsibility.
@@ -270,7 +270,7 @@ DECLARE s jsonb; task text:='9071'; target text:='max:-73052031470103'; pid text
  digest text; path text;
  fid text; i int; queued jsonb; decision jsonb; next_state jsonb; reply jsonb;
  final_state jsonb; command jsonb; release_result jsonb; pubid text; source_before jsonb;
- action text; bad jsonb; occurrence text:=gen_random_uuid()::text; projection jsonb;
+ action text; bad jsonb; occurrence text:='max_'||repeat('d',64); projection jsonb;
 BEGIN
  INSERT INTO "Organization"(id,name,"updatedAt") VALUES('org-modes','Mock image CI',now());
  INSERT INTO "Integration"(id,"organizationId","internalId",name,"providerIdentifier",type,token)
@@ -472,6 +472,8 @@ BEGIN
  ASSERT pg_temp.qualify_live_release_photo_v1('other',pubid,occurrence) IS NULL;
  ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pid,occurrence) IS NULL;
  ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,gen_random_uuid()::text) IS NULL;
+ UPDATE "MaxDeliveryOccurrence" SET continued=true WHERE id=occurrence;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence)=projection;
  UPDATE "MaxDeliveryOccurrence" SET state='STARTED',attempt=1 WHERE id=occurrence;
  ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
  ASSERT (SELECT state='QUEUE' FROM "Post" WHERE id=pubid);
