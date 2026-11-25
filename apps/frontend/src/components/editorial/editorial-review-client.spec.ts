@@ -4,7 +4,7 @@ import { editorialReviewClient } from './editorial-review-client';
 const postId = 'a'.repeat(32);
 const jpeg = new Uint8Array([255, 216, 255, 217]);
 const response = (body: Uint8Array, headers: Record<string,string> = {}) =>
-  new Response(body, { headers: { 'content-type': 'image/jpeg', ...headers } });
+  new Response(new Uint8Array(body).buffer, { headers: { 'content-type': 'image/jpeg', ...headers } });
 
 describe('session live JPEG preview client', () => {
   it('uses the scoped POST, expected sequence and no-store request', async () => {

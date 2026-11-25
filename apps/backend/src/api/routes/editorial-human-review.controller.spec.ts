@@ -212,6 +212,24 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect(Buffer.from(await result.arrayBuffer())).toEqual(jpeg);
     expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
   });
+  it('advertises live preview capability only for the explicitly opted-in non-mock target', async () => {
+    expect((await (await read()).json()).live_image_preview_enabled).toBeUndefined();
+    config.testOrgId='org-modes';config.targetInternalId='max:-73052031470103';
+    for (const name of ['SESSION','LIVE_IMAGE_IMPORT','LIVE_IMAGE_REVIEW','LIVE_IMAGE_PREVIEW'])
+      vi.stubEnv('EDITORIAL_TEST_'+name+'_ENABLED','true');
+    vi.stubEnv('EDITORIAL_TEST_ORG_ID',config.testOrgId);
+    vi.stubEnv('EDITORIAL_TEST_MAX_TARGET',config.targetInternalId);
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','false');
+    const enabled = await (await read()).json();
+    expect(enabled.live_image_preview_enabled).toBe(true);
+    expect(enabled.remote_current_verified).toBe(false);
+    expect(enabled.publishable).toBe(false);
+    expect(enabled.dispatch_authorized).toBe(false);
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','true');
+    expect((await (await read()).json()).live_image_preview_enabled).toBeUndefined();
+    expect(liveImages.preview).not.toHaveBeenCalled();
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+  });
   it('denies viewer mutation through real OrgRbacGuard', async () => {
     const d = await decision(command, {}, 'auth=viewer; csrf_token=' + csrf);
     expect(d.status).toBe(403);

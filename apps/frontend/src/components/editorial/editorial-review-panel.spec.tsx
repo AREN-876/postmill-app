@@ -210,6 +210,35 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
 
 
 describe('live JPEG preview UI boundary', () => {
+  it('revokes the local object URL when the confirmed sequence changes', async () => {
+    const create = vi.fn().mockReturnValue('blob:editorial-preview');
+    const revoke = vi.fn();
+    const OriginalURL = URL;
+    vi.stubGlobal('URL', class extends OriginalURL {
+      static createObjectURL = create;
+      static revokeObjectURL = revoke;
+    });
+    const load = vi.fn().mockResolvedValue(new Blob(['jpeg'], { type: 'image/jpeg' }));
+    const data = (seq: string) => snapshot({
+      live_image_preview_enabled: true,
+      review: { status: 'idle', last_confirmed_state: {
+        seq, rejected: false, image: { revision: 1, sha256: 'a'.repeat(64) },
+      } },
+    });
+    const props = { onCommand, onRefresh, onPreviewLiveImage: load };
+    try {
+      const view = render(<EditorialReviewPanel {...props} snapshot={data('8')} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Показать изображение' }));
+      const image = await screen.findByRole('img', { name: 'Иллюстрация редакции' });
+      expect(image.getAttribute('src')).toBe('blob:editorial-preview');
+      view.rerender(<EditorialReviewPanel {...props} snapshot={data('9')} />);
+      expect(screen.queryByRole('img', { name: 'Иллюстрация редакции' })).toBeNull();
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:editorial-preview');
+      expect(load).toHaveBeenCalledTimes(1);
+      view.unmount();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('only invokes the preview callback on explicit click for a current opted-in image', async () => {
     const load = vi.fn().mockRejectedValue(new Error('revoked'));
     const data = snapshot({
