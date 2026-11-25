@@ -68,6 +68,45 @@ export class EditorialLiveImageService {
     return bytes;
   }
 
+  // Internal only; a future cookie+RBAC authorized binary endpoint must
+  // enforce the exact native review grant and must not expose storage URLs.
+  // This is a locally confirmed preview, NOT a remote-current proof.
+  async preview(org: string, pid: string, task: string, target: string, currentState: unknown) {
+    if (!liveImageImportEnabled(org,target) ||
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED !== 'true') return undefined;
+    try {
+      const ctx = await this.posts.readLiveImageContext(org,pid,task,target);
+      if (!record(ctx) || !record(ctx.state) || !record(ctx.scope) ||
+          ctx.scope.org_id !== org || ctx.status !== 'idle' ||
+          !record(currentState) || !isDeepStrictEqual(ctx.state,currentState) ||
+          ctx.state.rejected !== false || !record(ctx.state.image) ||
+          !record(ctx.media)) unavailable();
+      const m = ctx.media;
+      const a = m.asset;
+      if (!record(a) || typeof m.path !== 'string' || typeof m.file_id !== 'string' ||
+          !UUID.test(m.file_id) || typeof a.asset_id !== 'string' || !UUID.test(a.asset_id) ||
+          typeof a.plan_id !== 'string' || !UUID.test(a.plan_id) ||
+          typeof a.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(a.sha256) ||
+          typeof a.size_bytes !== 'number' || !Number.isSafeInteger(a.size_bytes) ||
+          a.size_bytes < 4 || a.size_bytes > 8*1024*1024 ||
+          m.sha256 !== a.sha256 || m.size_bytes !== a.size_bytes || m.mime !== 'image/jpeg' ||
+          m.revision !== ctx.state.image.revision || typeof m.revision !== 'number' ||
+          !Number.isSafeInteger(m.revision) || m.revision < 1 ||
+          typeof ctx.state.image_compatible !== 'boolean') unavailable();
+      const bytes=await this.readBytes(await this.adapter(org),m.path,a as unknown as EditorialLiveImageAsset);
+      // Verify the entire DB snapshot and native receipt again after IO.
+      // No database lock is held across read/decode.
+      const latest=await this.posts.readLiveImageContext(org,pid,task,target);
+      if (!isDeepStrictEqual(ctx,latest)) unavailable();
+      return {bytes,mime:'image/jpeg' as const,file_id:m.file_id,revision:m.revision,
+        sha256:a.sha256,compatible:ctx.state.image_compatible,
+        remote_current_verified:false as const,publishable:false as const,dispatch_authorized:false as const};
+    } catch {
+      // Never include paths or raw storage exceptions in preview failures.
+      throw new HttpException('editorial_image_preview_unavailable',503);
+    }
+  }
+
   async import(org: string, pid: string, task: string, target: string, seq: string,
     wire: () => EditorialWireConfig = wireConfig, fetchImage = fetchEditorialLiveImage) {
     if (!liveImageImportEnabled(org,target)) throw new HttpException('editorial_image_import_disabled',404);

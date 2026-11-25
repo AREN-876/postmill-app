@@ -21,7 +21,7 @@ BEGIN
   OR state->'text' IS DISTINCT FROM verified->'receipt'->'text' THEN RETURN NULL; END IF;
  IF jsonb_typeof(state->'image')='object' THEN
   SELECT jsonb_build_object('file_id',f.id,'path',f.path,'sha256',b."assetSha256",
-    'revision',a.revision,'size_bytes',f."fileSize",'mime','image/jpeg')
+    'revision',a.revision,'size_bytes',f."fileSize",'mime','image/jpeg','asset',a.proof->'manifest'->0)
   INTO media FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
    JOIN "File" f ON f.id=b."fileId"
   WHERE a."postId"=pid AND a.proof->'state'->'image'=state->'image'
