@@ -8,6 +8,8 @@ export const EDITORIAL_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/images/lookup
 export const EDITORIAL_IMAGE_READ_PATH = '/internal/editorial/v1/images/read';
 export const EDITORIAL_LIVE_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/live-images/lookup';
 export const EDITORIAL_LIVE_IMAGE_READ_PATH = '/internal/editorial/v1/live-images/read';
+export const EDITORIAL_LIVE_REVIEW_SUBMIT_PATH = '/internal/editorial/v1/live-events/submit';
+export const EDITORIAL_LIVE_REVIEW_LOOKUP_PATH = '/internal/editorial/v1/live-events/lookup';
 const MAX_IMAGE_RESPONSE = 8 * 1024 * 1024;
 const MAX_REVISION_RESPONSE = 100_000;
 // Fixed numeric loopback only. No DNS, configurable URL, public origin or TLS
@@ -37,6 +39,7 @@ export type EditorialWireConfig = {
   orgId: string;
   allowMockImageReview?: boolean;
   allowLiveImageRead?: boolean;
+  allowLiveImageReview?: boolean;
 };
 export type EditorialPending = {
   schema_version: 1;
@@ -104,7 +107,9 @@ export async function editorialLoopbackFetch(url: string, init?: RequestInit): P
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_READ_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_LOOKUP_PATH &&
-       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_READ_PATH) ||
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_READ_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVIEW_SUBMIT_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVIEW_LOOKUP_PATH) ||
       init?.method !== 'POST' || init.redirect !== 'error') {
     throw new EditorialTransportError();
   }
@@ -150,7 +155,8 @@ function responseMessage(path: string, timestamp: string, nonce: string,
 // Shared bounded signed round-trip; request and response limits remain separate.
 type EditorialPath = typeof EDITORIAL_SUBMIT_PATH | typeof EDITORIAL_LOOKUP_PATH |
   typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH |
-  typeof EDITORIAL_LIVE_IMAGE_LOOKUP_PATH | typeof EDITORIAL_LIVE_IMAGE_READ_PATH;
+  typeof EDITORIAL_LIVE_IMAGE_LOOKUP_PATH | typeof EDITORIAL_LIVE_IMAGE_READ_PATH |
+  typeof EDITORIAL_LIVE_REVIEW_SUBMIT_PATH | typeof EDITORIAL_LIVE_REVIEW_LOOKUP_PATH;
 
 async function signedExchangeRaw(
   path: EditorialPath, body: JsonRecord, config: EditorialWireConfig,
@@ -279,6 +285,48 @@ export async function signedEditorialRequest(
   }
 }
 
+
+// Native receipt pin, not a caller-selected path or provider credential.
+// The outbox integration must derive this from the exact frozen native receipt.
+export type EditorialLiveReviewPin = {plan_id:string; native_file_id:string; asset_sha256:string};
+export async function signedEditorialLiveReviewRequest(
+  pending: EditorialPending, pin: EditorialLiveReviewPin, config: EditorialWireConfig,
+  operation: 'submit' | 'lookup',
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs: number = Date.now(), nonce: string = randomBytes(16).toString('hex'),
+): Promise<EditorialWireResponse> {
+  const peer=editorialWireConfig(config);
+  editorialPending(pending,peer.orgId,pending.task_id);
+  if (config.allowLiveImageReview !== true || peer.orgId !== 'org-modes' ||
+      !record(pending.event.binding) || typeof pending.event.binding.integration_id !== 'string' ||
+      !pending.event.binding.integration_id.startsWith('mock-review-') ||
+      !artifactRef(pending.event.image) ||
+      !['approve_text','request_text_changes','reject','request_image','request_image_changes','confirm_image_reuse','approve_final'].includes(pending.event.action as string) ||
+      !exact(pin,['plan_id','native_file_id','asset_sha256']) ||
+      typeof pin.plan_id !== 'string' || !UUID.test(pin.plan_id) ||
+      typeof pin.native_file_id !== 'string' || !UUID.test(pin.native_file_id) ||
+      typeof pin.asset_sha256 !== 'string' || !SHA.test(pin.asset_sha256)) throw new EditorialTransportError();
+  const path=operation==='submit'?EDITORIAL_LIVE_REVIEW_SUBMIT_PATH:EDITORIAL_LIVE_REVIEW_LOOKUP_PATH;
+  const body:JsonRecord={schema_version:1,org_id:pending.org_id,task_id:pending.task_id,
+    event_id:pending.event_id,payload_sha256:pending.payload_sha256};
+  if (operation==='submit') {body.event=pending.event;body.native_pin=pin;}
+  try {
+    const parsed=await signedExchangeBody(path,body,config,fetcher,nowMs,nonce,MAX_BODY);
+    const keys=operation==='submit'?['schema_version','event_id','payload_sha256','outcome']:
+      ['schema_version','event_id','payload_sha256','found','outcome'];
+    if (!exact(parsed,keys) || parsed.schema_version!==1 || parsed.event_id!==pending.event_id ||
+        parsed.payload_sha256!==pending.payload_sha256) throw new EditorialTransportError();
+    if (operation==='lookup') {
+      if (typeof parsed.found!=='boolean') throw new EditorialTransportError();
+      if (!parsed.found) {
+        if (parsed.outcome!==null) throw new EditorialTransportError();
+        return parsed as EditorialWireResponse;
+      }
+    }
+    checkedOutcome(parsed.outcome);
+    return parsed as EditorialWireResponse;
+  } catch { throw new EditorialTransportError(); }
+}
 
 export type EditorialRevisionRequest = {
   org_id: string; task_id: string; event_id: string; payload_sha256: string;
