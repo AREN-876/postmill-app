@@ -260,3 +260,51 @@ describe('live JPEG preview UI boundary', () => {
     expect(screen.queryByRole('region', { name: 'Предпросмотр реальной иллюстрации' })).toBeNull();
   });
 });
+
+
+describe('live JPEG import and approval controls', () => {
+  it('never imports on mount and blocks an uncertain import from repeating', async () => {
+    const load=vi.fn().mockRejectedValue(new Error('unexpected preview'));
+    const importImage=vi.fn().mockRejectedValue(new Error('unknown'));
+    const data=snapshot({live_image_preview_enabled:true,live_image_mutations_enabled:true,
+      review:{status:'idle',last_confirmed_state:{seq:'8',rejected:false,final_approved:false,
+        image_mode:'automatic',text_status:'approved',image_compatible:false,image_intent:'request-1'}}});
+    render(<EditorialReviewPanel snapshot={data} onCommand={onCommand} onRefresh={onRefresh}
+      onPreviewLiveImage={load} onImportImage={importImage}/>);
+    expect(importImage).not.toHaveBeenCalled();
+    const button=screen.getByRole('button',{name:'Получить изображение'});
+    fireEvent.click(button);
+    await screen.findByText(/Результат импорта неизвестен/);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(importImage).toHaveBeenCalledExactlyOnceWith('8');
+    expect(load).not.toHaveBeenCalled();
+  });
+  it('offers final approval only after the automatically loaded image decodes', async () => {
+    const OriginalURL=URL;
+    vi.stubGlobal('URL',class extends OriginalURL {
+      static createObjectURL=vi.fn().mockReturnValue('blob:editorial-live');
+      static revokeObjectURL=vi.fn();
+    });
+    vi.stubGlobal('crypto',{randomUUID:()=>commandId});
+    const command=vi.fn().mockResolvedValue(receipt);
+    const load=vi.fn().mockResolvedValue(new Blob(['jpeg'],{type:'image/jpeg'}));
+    const data=snapshot({live_image_preview_enabled:true,live_image_mutations_enabled:true,
+      review:{status:'idle',last_confirmed_state:{seq:'9',rejected:false,final_approved:false,
+        image_mode:'automatic',text_status:'approved',image_compatible:true,image_intent:null,
+        image:{revision:1,sha256:'a'.repeat(64)}}}});
+    try {
+      const view=render(<EditorialReviewPanel snapshot={data} onCommand={command} onRefresh={onRefresh}
+        onPreviewLiveImage={load}/>);
+      const img=await screen.findByRole('img',{name:'Иллюстрация редакции'});
+      expect(screen.queryByRole('button',{name:'Утвердить текст и изображение'})).toBeNull();
+      fireEvent.load(img);
+      const approve=screen.getByRole('button',{name:'Утвердить текст и изображение'});
+      fireEvent.click(approve);
+      await waitFor(()=>expect(command).toHaveBeenCalledExactlyOnceWith({
+        command_id:commandId,expected_seq:'9',action:'approve_final',feedback:'',
+      }));
+      view.unmount();
+    } finally {vi.unstubAllGlobals();}
+  });
+});

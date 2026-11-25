@@ -35,3 +35,23 @@ describe('session live JPEG preview client', () => {
     }
   });
 });
+
+
+describe('separate live image mutation routes', () => {
+  it('sends exact sequence only and refuses unknown result without fallback', async () => {
+    const fetcher=vi.fn().mockResolvedValue(new Response(null,{status:503}));
+    await expect(editorialReviewClient(fetcher).importImage(postId,'42','8',true)).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith('/editorial/review/'+postId+'/42/live-image/import',
+      expect.objectContaining({method:'POST',redirect:'error',body:'{"expected_seq":"8"}'}));
+  });
+  it('routes live approval through native-specific endpoint without a client pin', async () => {
+    const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status:'queued/unconfirmed',event_id:'22222222-2222-4222-8222-222222222222',
+      publishable:false,dispatch_authorized:false,
+    })));
+    const command={command_id:'11111111-1111-4111-8111-111111111111',expected_seq:'8',action:'approve_final' as const,feedback:''};
+    await editorialReviewClient(fetcher).queue(postId,'42',command,true);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith('/editorial/review/'+postId+'/42/live-image/decisions',
+      expect.objectContaining({method:'POST',redirect:'error',body:JSON.stringify(command)}));
+  });
+});

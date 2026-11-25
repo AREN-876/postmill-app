@@ -74,7 +74,10 @@ export function EditorialReviewSession({
   }, [enabled, refresh]);
 
   const queue = useCallback(async (command: EditorialHumanCommand) => {
-    if (!enabled || (attemptedRef.current?.identity === identity &&
+    const snapshot=loaded?.identity === identity ? loaded.snapshot : undefined;
+    if (!enabled || reading || !snapshot || snapshot.review?.status !== 'idle' ||
+        snapshot.review.last_confirmed_state?.seq !== command.expected_seq ||
+        (attemptedRef.current?.identity === identity &&
         attemptedRef.current.seq === command.expected_seq)) {
       throw new Error('editorial_decision_outcome_unknown');
     }
@@ -83,23 +86,31 @@ export function EditorialReviewSession({
     const lock = { identity, seq: command.expected_seq };
     attemptedRef.current = lock;
     setAttempted(lock);
-    return client.queue(postId, taskId, command);
-  }, [client, enabled, identity, postId, taskId]);
+    const live=snapshot.live_image_mutations_enabled === true && !!snapshot.review.last_confirmed_state?.image;
+    return client.queue(postId, taskId, command, live);
+  }, [client, enabled, identity, postId, taskId, loaded, reading]);
 
   const importImage = useCallback(async (seq: string) => {
-    if (!enabled || (attemptedRef.current?.identity === identity && attemptedRef.current.seq === seq)) {
+    const snapshot=loaded?.identity === identity ? loaded.snapshot : undefined;
+    if (!enabled || reading || !snapshot || snapshot.review?.status !== 'idle' ||
+        snapshot.review.last_confirmed_state?.seq !== seq ||
+        (attemptedRef.current?.identity === identity && attemptedRef.current.seq === seq)) {
       throw new Error('editorial_image_outcome_unknown');
     }
     const lock = {identity,seq};
     attemptedRef.current = lock;
     setAttempted(lock);
-    const result = await client.importImage(postId,taskId,seq);
+    const result = await client.importImage(postId,taskId,seq,snapshot.live_image_mutations_enabled === true);
+    if (result.status === 'recorded') {
+      // Read only: display the newly installed JPEG immediately, no extra click.
+      await refresh().catch(() => undefined);
+    }
     if (result.status === 'not_ready' && attemptedRef.current === lock) {
       attemptedRef.current = null;
       setAttempted(null);
     }
     return result;
-  }, [client,enabled,identity,postId,taskId]);
+  }, [client,enabled,identity,postId,taskId,loaded,reading,refresh]);
 
   const previewLiveImage = useCallback((seq: string, signal: AbortSignal) => {
     if (!enabled) throw new Error('editorial_review_disabled');
@@ -128,8 +139,8 @@ export function EditorialReviewSession({
         onRefresh={refresh}
         onImportImage={importImage}
         onPreviewLiveImage={reading ? undefined : previewLiveImage}
-        mutationsBlocked={attempted?.identity === identity &&
-          attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
+        mutationsBlocked={reading || (attempted?.identity === identity &&
+          attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq)}
       />
       <EditorialReleaseControls
         postId={postId}

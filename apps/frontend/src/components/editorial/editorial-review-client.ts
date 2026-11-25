@@ -74,6 +74,9 @@ function checkedSnapshot(x: unknown, postId: string, taskId: string): EditorialR
       (x.live_image_preview_enabled !== true || x.mock_image !== undefined)) {
     throw new Error('editorial_untrusted_image_capability');
   }
+  if (x.live_image_mutations_enabled !== undefined &&
+      (x.live_image_mutations_enabled !== true || x.live_image_preview_enabled !== true || x.mock_image !== undefined))
+    throw new Error('editorial_untrusted_image_capability');
   return x as EditorialReviewSnapshot;
 }
 
@@ -136,10 +139,12 @@ export function editorialReviewClient(fetcher: Fetcher) {
         reader.releaseLock();
       }
     },
-    async importImage(postId:string,taskId:string,seq:string): Promise<{status:string}> {
+    async importImage(postId:string,taskId:string,seq:string,live=false): Promise<{status:string}> {
       const url=path(postId,taskId);
-      if (!/^(0|[1-9][0-9]{0,18})$/.test(seq)) throw new Error('editorial_invalid_identity');
-      const res=await fetcher(url+'/image/import',{method:'POST',cache:'no-store',body:JSON.stringify({expected_seq:seq})});
+      if (!/^(0|[1-9][0-9]{0,18})$/.test(seq) ||
+          (seq.length === 19 && seq > MAX_TASK)) throw new Error('editorial_invalid_identity');
+      const res=await fetcher(url+(live ? '/live-image/import' : '/image/import'),{
+        method:'POST',cache:'no-store',redirect:'error',body:JSON.stringify({expected_seq:seq})});
       if (!res.ok) throw new Error('editorial_image_outcome_unknown');
       const x:unknown=await res.json();
       if (!record(x) || !['recorded','not_ready','uncertain'].includes(x.status as string) ||
@@ -147,14 +152,14 @@ export function editorialReviewClient(fetcher: Fetcher) {
       return {status:x.status as string};
     },
     async queue(
-      postId: string, taskId: string, command: EditorialHumanCommand,
+      postId: string, taskId: string, command: EditorialHumanCommand, live=false,
     ): Promise<EditorialQueueReceipt> {
       const url = path(postId, taskId);
       checkedCommand(command);
       // Never retry a mutating request, even if the network throws or the
       // response is invalid. The caller must reconcile with read() only.
-      const res = await fetcher(url + '/decisions', {
-        method: 'POST', cache: 'no-store',
+      const res = await fetcher(url + (live ? '/live-image/decisions' : '/decisions'), {
+        method: 'POST', cache: 'no-store', redirect:'error',
         body: JSON.stringify(command),
       });
       if (!res.ok) throw new Error('editorial_queue_outcome_unknown');

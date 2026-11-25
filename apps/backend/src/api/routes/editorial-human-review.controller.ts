@@ -68,6 +68,38 @@ export class EditorialHumanReviewController {
     return new StreamableFile(bytes,{type:'image/jpeg',length:bytes.length,disposition:'inline'});
   }
 
+  @Post(':postId/:taskId/live-image/import')
+  @HttpCode(200)
+  @Header('Cache-Control','private, no-store')
+  @RequirePermission('posts','update')
+  importLiveImage(
+    @Req() req:Request,
+    @GetOrgFromRequest() org:Organization,
+    @GetUserFromRequest() user:User,
+    @Param('postId') postId:string,
+    @Param('taskId') taskId:string,
+    @Body() body:unknown,
+  ) {
+    sessionOnly(req);
+    return this.review.importLiveImage(org.id,user.id,postId,taskId,body);
+  }
+
+  @Post(':postId/:taskId/live-image/decisions')
+  @HttpCode(200)
+  @Header('Cache-Control','private, no-store')
+  @RequirePermission('posts','update')
+  queueLiveImage(
+    @Req() req:Request,
+    @GetOrgFromRequest() org:Organization,
+    @GetUserFromRequest() user:User,
+    @Param('postId') postId:string,
+    @Param('taskId') taskId:string,
+    @Body() body:unknown,
+  ) {
+    sessionOnly(req);
+    return this.review.queueLiveImage(org.id,user.id,postId,taskId,body);
+  }
+
   @Post(':postId/:taskId/image/import')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')

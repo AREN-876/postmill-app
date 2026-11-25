@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@postmill-ai/react/form/button';
 
 // Presentation only: this component has no network client or production route.
@@ -12,6 +12,7 @@ export type EditorialReviewSnapshot = {
   content: { title: string; parts: string[] };
   review_acknowledged: boolean;
   live_image_preview_enabled?: true;
+  live_image_mutations_enabled?: true;
   mock_image?: {status:'waiting'|'recorded'|'uncertain'|'unavailable'; can_import:boolean;
     asset: {file_id:string; revision:number; sha256:string; compatible:boolean; png_base64:string} | null};
   review: {
@@ -66,12 +67,14 @@ type Props = {
 
 // Mounted only for the current confirmed snapshot. A new mount fetches
 // read-only bytes automatically; no import or decision is triggered.
-function LiveImagePreview({ seq, load }: {
+function LiveImagePreview({ seq, load, children }: {
   seq: string;
   load: (seq: string, signal: AbortSignal) => Promise<Blob>;
+  children?: ReactNode;
 }) {
   const objectUrl = useRef<string | null>(null);
   const [src, setSrc] = useState<string | null>(null);
+  const [decoded, setDecoded] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -104,13 +107,16 @@ function LiveImagePreview({ seq, load }: {
           {/* Object URL for the verified binary response, never a storage URL. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img alt="Иллюстрация редакции" className="max-w-full max-h-96 object-contain" src={src}
+            onLoad={() => setDecoded(true)}
             onError={() => {
               if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
               objectUrl.current = null;
               setSrc(null);
+              setDecoded(false);
               setError(true);
             }} />
           <p className="text-sm text-newTableText">Доступ проверен при получении. Это не разрешение на публикацию.</p>
+          {decoded && children}
         </>
       )}
     </section>
@@ -142,14 +148,20 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
   const canDecide = validContent && validSeq && snapshot.review_acknowledged === true &&
     snapshot.publishable === false && snapshot.dispatch_authorized === false &&
     idle && !waitingRevision && state?.rejected !== true && state?.final_approved !== true &&
-    !busy && !importing && importBlocked !== seq && blockedAtSeq === null && !mutationsBlocked &&
-    snapshot.mock_image?.status !== 'uncertain' && snapshot.mock_image?.status !== 'unavailable';
+    !busy && !refreshing && !importing && importBlocked !== seq && blockedAtSeq === null && !mutationsBlocked &&
+    snapshot.mock_image?.status !== 'uncertain' && snapshot.mock_image?.status !== 'unavailable' &&
+    (!state?.image || !!snapshot.mock_image || snapshot.live_image_mutations_enabled === true);
   const imageAllowed = state?.image_mode === 'manual' || state?.image_mode === 'automatic' ||
     (state?.image_mode === 'after_text_approval' && state.text_status === 'approved');
   const canRequestImage = imageAllowed && state?.image_intent == null && state?.image_compatible !== true &&
-    (state?.image_mode === 'manual' || !!snapshot.mock_image);
+    (state?.image_mode === 'manual' || !!snapshot.mock_image || snapshot.live_image_mutations_enabled === true);
   const canReviewImage = imageAllowed && state?.image_intent === null && !!state.image &&
-    snapshot.mock_image?.status === 'recorded' && !!snapshot.mock_image.asset;
+    ((snapshot.mock_image?.status === 'recorded' && !!snapshot.mock_image.asset) ||
+      snapshot.live_image_mutations_enabled === true);
+  const canImportLive = snapshot.live_image_mutations_enabled === true && imageAllowed &&
+    state?.rejected === false && state.final_approved === false && state.image_compatible === false &&
+    typeof state.image_intent === 'string' && state.image_intent.length > 0 &&
+    (state.text_status === 'pending' || state.text_status === 'approved');
   const canReuse = canReviewImage && state?.image_compatible === false;
   const canFinal = canReviewImage && state?.image_compatible === true && state.text_status === 'approved';
   const canApproveText = state?.text_status === undefined || state.text_status === 'pending';
@@ -203,7 +215,7 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
   }
 
   async function importImage() {
-    if (!canDecide || !seq || !onImportImage || !snapshot.mock_image?.can_import || importing) return;
+    if (!canDecide || !seq || !onImportImage || (!snapshot.mock_image?.can_import && !canImportLive) || importing) return;
     setImportBlocked(seq); setImporting(true);
     try {
       const result = await onImportImage(seq);
@@ -260,8 +272,35 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
         !busy && !refreshing && !importing && !mutationsBlocked && blockedAtSeq === null &&
         importBlocked !== seq && (
           <LiveImagePreview key={snapshot.post_id + ':' + snapshot.task_id + ':' + seq + ':' + state.image.sha256}
-            seq={seq} load={onPreviewLiveImage} />
+            seq={seq} load={onPreviewLiveImage}>
+            {canReviewImage && snapshot.live_image_mutations_enabled === true && (
+              <>
+                <p>Редакция {state.image.revision}; {state.image_compatible ?
+                  'соответствует тексту' : 'требуется подтверждение соответствия'}.</p>
+                <label htmlFor="editorial-live-image-feedback">Замечания к изображению</label>
+                <textarea id="editorial-live-image-feedback" value={imageFeedback} maxLength={4000}
+                  disabled={!canDecide} onChange={e => setImageFeedback(e.target.value)}
+                  className="w-full min-h-[96px] border border-newTableBorder rounded-[8px] p-[12px]" />
+                <Button secondary type="button" disabled={!canDecide || !imageFeedback.trim()}
+                  onClick={() => void queue('request_image_changes')}>Переделать изображение</Button>
+                {canReuse && <Button secondary type="button" disabled={!canDecide}
+                  onClick={() => void queue('confirm_image_reuse')}>Подтвердить повторное использование</Button>}
+                {canFinal && <Button type="button" disabled={!canDecide}
+                  onClick={() => void queue('approve_final')}>Утвердить текст и изображение</Button>}
+              </>
+            )}
+          </LiveImagePreview>
       )}
+
+      {canImportLive && onImportImage && (
+        <section aria-label="Импорт иллюстрации" className="space-y-2">
+          <p>Изображение ожидает импорта в черновик.</p>
+          <Button secondary type="button" disabled={!canDecide || importing}
+            onClick={() => void importImage()}>{importing ? 'Импорт…' : 'Получить изображение'}</Button>
+        </section>
+      )}
+      {snapshot.review?.status === 'image_import_uncertain' &&
+        <p role="alert">Результат импорта неизвестен. Повторная запись запрещена.</p>}
 
       {snapshot.mock_image && (
         <section aria-label="Иллюстрация редакции" className="space-y-2">

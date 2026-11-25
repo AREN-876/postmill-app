@@ -101,7 +101,8 @@ export class EditorialLiveImageService {
   }
 
   async import(org: string, pid: string, task: string, target: string, seq: string,
-    wire: () => EditorialWireConfig = wireConfig, fetchImage = fetchEditorialLiveImage) {
+    wire: () => EditorialWireConfig = wireConfig, fetchImage = fetchEditorialLiveImage,
+    beforeWrite: () => Promise<void> = async () => undefined) {
     if (!liveImageImportEnabled(org,target)) throw new HttpException('editorial_image_import_disabled',404);
     try {
       const ctx = await this.posts.readLiveImageContext(org,pid,task,target);
@@ -122,6 +123,7 @@ export class EditorialLiveImageService {
       const privateStore = await EditorialPrivateImageStore.open();
       await this.storage.assertWithinProviderQuota(adapter,org,fetched.bytes.length,null);
       // Standalone SQL query commits before the only private write invocation.
+      await beforeWrite();
       const claim = await this.posts.reserveLiveImageImport(org,pid,task,target,fetched.proof);
       if (!record(claim) || claim.publishable !== false || claim.dispatch_authorized !== false) unavailable();
       if (claim.status === 'recorded' || claim.status === 'uncertain') return {status:claim.status,publishable:false,dispatch_authorized:false};
@@ -137,6 +139,7 @@ export class EditorialLiveImageService {
             !isDeepStrictEqual(current.proof,fetched.proof)) unavailable();
       };
       await recheck();
+      await beforeWrite();
       const path = await privateStore.write(claim.import_id,fetched.bytes);
       const verified = await this.readBytes(privateStore,path,asset);
       if (!verified.equals(fetched.bytes)) unavailable();
