@@ -1,0 +1,5 @@
+# 028B.1 — live JPEG release SQL candidate (isolated)
+
+Baseline #52 4c7c255 (7/7), #64 a188ea6 (2/2). Existing runtime release remains text-only. The 59 mock PNG qualification is unchanged. Candidate is a pg_temp function in tools/db/editorial-live-image-full-assertions.sql, guarded by existing disposable DB allowlist and rollback transaction; no numbered migration or runtime caller. Reuses existing locks, EditorialRelease, native publication fence. Exact final approval, native image pin, SHA-256/size, frozen target and source, one native copy with storyImageId/storyImageSha256, no Post.image. Replay historical only. Fixture uses four-byte metadata-only marker, not decoded JPEG or provider evidence. CI pending.
+
+Next: qualify actual private JPEG decode and exact source→release→receipt at worker occurrence, signed remote current authorization at release and agreed policy for scheduled send/revocation, no public URL or ordinary media access. Reuse existing binary upload immediately before StoryGo publication, no persisted upload IDs or unknown-outcome retry. Scheduling and actual cross-DB/worker tests remain; no activation or paid calls.

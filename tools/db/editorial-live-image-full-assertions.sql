@@ -1,6 +1,212 @@
 \set ON_ERROR_STOP on
 -- Full native Prisma schema, disposable PostgreSQL 17 only. Roll back fixture.
 BEGIN;
+-- 028B.1: pg_temp SQL candidate; verifies metadata/digest, not JPEG decode
+-- or signed remote authority. Entire fixture rolls back.
+CREATE FUNCTION pg_temp.qualify_live_image_release_v1(
+ org text, pid text, task text, target text, actor text, command jsonb,
+ expected_state jsonb, expected_pin jsonb, verified_bytes bytea
+) RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,public,pg_temp AS $fn$
+DECLARE
+ v jsonb; review jsonb; confirmed jsonb; receipt jsonb; s jsonb;
+ ctx jsonb; media jsonb; frozen_settings jsonb; manifest_ref jsonb;
+ src public."Post"%ROWTYPE; i public."Integration"%ROWTYPE; prior public."EditorialRelease"%ROWTYPE;
+ pubid text; timeutc timestamp(3); at_instant timestamptz;
+ cmd text; action text; requested_at text; times jsonb; current_target jsonb;
+ utc_minute int; created_at timestamptz:=clock_timestamp();
+BEGIN
+ -- Transaction-local CI candidate only; never installed by migrations.
+ IF current_database() NOT IN ('postmill_image_ci','edx_upgrade_restored_44','postmill-editorial-restore-ci')
+ OR org IS DISTINCT FROM 'org-modes' OR target IS DISTINCT FROM 'max:-73052031470103' THEN
+  RAISE EXCEPTION 'EDITORIAL_LIVE_RELEASE_ISOLATED_ONLY' USING ERRCODE='55000';
+ END IF;
+ IF current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'EDITORIAL_REQUIRES_READ_COMMITTED' USING ERRCODE='25000';
+ END IF;
+ IF (org ~ '^[A-Za-z0-9_.:-]{1,200}$'
+  AND pid ~ '^[0-9a-f]{32}$'
+  AND task ~ '^[1-9][0-9]{0,18}$'
+  AND (length(task)<19 OR task<='9223372036854775807')
+  AND length(target) BETWEEN 1 AND 200
+  AND actor ~ '^[A-Za-z0-9_.:-]{1,200}$'
+  AND jsonb_typeof(command)='object' AND octet_length(command::text)<=1000
+  AND command ?& ARRAY['command_id','action','publish_at']
+  AND command-ARRAY['command_id','action','publish_at']='{}'::jsonb
+  AND jsonb_typeof(command->'command_id')='string'
+  AND command->>'command_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND command->>'action' IN ('publish_now','queue')
+  AND ((command->>'action'='publish_now' AND command->'publish_at'='null'::jsonb)
+    OR (command->>'action'='queue' AND jsonb_typeof(command->'publish_at')='string'
+     AND command->>'publish_at' ~ '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00([.]000)?Z$'))
+ ) IS NOT TRUE THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID' USING ERRCODE='22023';
+ END IF;
+ cmd:=command->>'command_id'; action:=command->>'action';
+ requested_at:=command->>'publish_at';
+
+ -- Consistent lock order with the 06A/06B editor boundary; channel lock also
+ -- serializes concurrent editorial release reservations for this integration.
+ PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array(org,task)::text,0));
+ v:=postmill_read_editorial_human_v1(org,pid,task,target);
+ IF v IS NULL THEN RETURN NULL; END IF;
+
+ ctx:=postmill_live_image_context_v1(org,pid,task,target);
+ IF ctx IS NULL OR ctx->>'status' IS DISTINCT FROM 'idle'
+ OR ctx->'state' IS DISTINCT FROM expected_state
+ OR jsonb_typeof(ctx->'media') IS DISTINCT FROM 'object'
+ OR expected_pin IS NULL
+ OR postmill_live_image_pin_v1(pid,expected_state->'image') IS DISTINCT FROM expected_pin
+ OR verified_bytes IS NULL OR octet_length(verified_bytes) NOT BETWEEN 4 AND 8388608
+ THEN RAISE EXCEPTION 'EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH' USING ERRCODE='55000'; END IF;
+ media:=ctx->'media';
+ IF media->>'sha256' IS DISTINCT FROM encode(sha256(verified_bytes),'hex')
+ OR media->'size_bytes' IS DISTINCT FROM to_jsonb(octet_length(verified_bytes))
+ OR media->>'mime' IS DISTINCT FROM 'image/jpeg'
+ THEN RAISE EXCEPTION 'EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH' USING ERRCODE='55000'; END IF;
+ SELECT a.proof->'manifest' INTO manifest_ref
+ FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+ WHERE a."postId"=pid AND b."fileId"=media->>'file_id'
+ AND a.proof->'state'->'image'=expected_state->'image';
+ IF NOT FOUND OR encode(sha256(convert_to(manifest_ref::text,'UTF8')),'hex') IS DISTINCT FROM expected_state->'image'->>'sha256'
+ THEN RAISE EXCEPTION 'EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH' USING ERRCODE='55000'; END IF;
+
+ SELECT * INTO prior FROM public."EditorialRelease" r WHERE r."sourcePostId"=pid;
+ IF FOUND THEN
+  -- The original release is the only valid result; a retry never creates a
+  -- second publication or another dispatch even after a lost HTTP response.
+  IF prior."commandId" IS DISTINCT FROM cmd
+    OR prior.mode IS DISTINCT FROM action
+    OR prior."actorId" IS DISTINCT FROM actor
+    OR prior."confirmedSeq" IS DISTINCT FROM expected_state->>'seq'
+    OR (action='queue' AND
+        to_char(prior."publishAt",'YYYY-MM-DD"T"HH24:MI:SS"Z"') IS DISTINCT FROM
+        regexp_replace(requested_at,'[.]000Z$','Z')) THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_ALREADY_EXISTS' USING ERRCODE='55000';
+  END IF;
+  RETURN jsonb_build_object('created',false,'source_post_id',pid,
+   'publication_post_id',prior."publicationPostId",'mode',prior.mode,
+   'publish_at',to_char(prior."publishAt",'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+   'status','already_recorded','publishable',false,'dispatch_authorized',false);
+ END IF;
+
+ review:=v->'review'; confirmed:=review->'last_confirmed_state';
+ receipt:=v->'receipt';
+ IF (v->'review_acknowledged'='true'::jsonb
+  AND review->>'status'='idle'
+  AND confirmed->'binding'=receipt->'binding'
+  AND confirmed->'text'=receipt->'text'
+  AND confirmed->>'text_status'='approved'
+  AND confirmed->'final_approved'='true'::jsonb
+  AND confirmed->'rejected'='false'::jsonb
+  AND confirmed=expected_state
+  AND confirmed->>'image_mode' IN ('automatic','manual','after_text_approval')
+  AND jsonb_typeof(confirmed->'image')='object'
+  AND confirmed->'image_compatible'='true'::jsonb
+  AND confirmed->'image_intent'='null'::jsonb
+  AND confirmed->'text_request_id'='null'::jsonb
+  AND confirmed->'image'->'revision'=media->'revision'
+  AND confirmed->'dispatch_authorized'='false'::jsonb
+  AND confirmed->'publishable'='false'::jsonb
+  AND confirmed->>'seq' ~ '^[1-9][0-9]{0,18}$'
+  AND EXISTS(
+   SELECT 1 FROM public."EditorialDecisionOutbox" o
+   JOIN public."EditorialDecisionResult" r ON r."eventId"=o."eventId"
+   WHERE o."postId"=pid AND o."eventId"=review->>'latest_event_id'
+    AND o.payload->>'action'='approve_final'
+    AND o.payload->'text'=confirmed->'text' AND o.payload->'image'=confirmed->'image'
+    AND r.outcome->>'status'='accepted'
+    AND r.outcome->'state'=confirmed
+  )) IS NOT TRUE THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_NOT_APPROVED' USING ERRCODE='55000';
+ END IF;
+
+ SELECT * INTO src FROM public."Post" WHERE id=pid AND "organizationId"=org FOR SHARE;
+ IF NOT FOUND OR src.state<>'DRAFT' OR src."editorialTaskId" IS DISTINCT FROM task THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_SOURCE_CHANGED' USING ERRCODE='55000';
+ END IF;
+ SELECT * INTO i FROM public."Integration" WHERE id=src."integrationId"
+  AND "organizationId"=org AND "internalId"=target AND "providerIdentifier"='max'
+  AND NOT disabled AND NOT "refreshNeeded" AND NOT "inBetweenSteps"
+  AND "deletedAt" IS NULL FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'EDITORIAL_RELEASE_TARGET_CHANGED' USING ERRCODE='55000'; END IF;
+ current_target:=postmill_check_editorial_target_v1(
+  (SELECT r.request->'scope' FROM public."EditorialDraftReceipt" r WHERE r."postId"=pid),target);
+ IF current_target IS DISTINCT FROM
+   (SELECT r."targetSnapshot" FROM public."EditorialDraftReceipt" r WHERE r."postId"=pid) THEN
+  RAISE EXCEPTION 'EDITORIAL_RELEASE_TARGET_CHANGED' USING ERRCODE='55000';
+ END IF;
+
+ PERFORM pg_advisory_xact_lock(hashtextextended(
+   jsonb_build_array('editorial-release-channel',org,i.id)::text,0));
+ IF action='publish_now' THEN
+  timeutc:=(created_at AT TIME ZONE 'UTC')::timestamp(3);
+ ELSE
+  -- Explicit operator-chosen preview time must still be a future, configured
+  -- UTC slot on this exact channel; preview alone is not reservation.
+  BEGIN
+   at_instant:=requested_at::timestamptz;
+  EXCEPTION WHEN OTHERS THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_TIME' USING ERRCODE='22023';
+  END;
+  timeutc:=(at_instant AT TIME ZONE 'UTC')::timestamp(3);
+  IF at_instant <= clock_timestamp() + interval '10 seconds'
+    OR timeutc > (clock_timestamp() AT TIME ZONE 'UTC') + interval '366 days' THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_TIME' USING ERRCODE='22023';
+  END IF;
+  BEGIN
+    times:=i."postingTimes"::jsonb;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'EDITORIAL_RELEASE_INVALID_GRID' USING ERRCODE='22023';
+  END;
+  utc_minute:=extract(hour from timeutc)::int*60+extract(minute from timeutc)::int;
+  IF (jsonb_typeof(times)='array' AND EXISTS(
+     SELECT 1 FROM jsonb_array_elements(times) x
+     WHERE x->>'time'=utc_minute::text
+  )) IS NOT TRUE THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_NOT_IN_GRID' USING ERRCODE='22023';
+  END IF;
+  IF EXISTS(SELECT 1 FROM public."Post" p WHERE p."organizationId"=org
+   AND p."integrationId"=i.id AND p."publishDate"=timeutc
+   AND p."deletedAt" IS NULL AND p.state IN ('QUEUE','PUBLISHING')) THEN
+   RAISE EXCEPTION 'EDITORIAL_RELEASE_SLOT_OCCUPIED' USING ERRCODE='55000';
+  END IF;
+ END IF;
+
+ -- StoryGo photos use native settings, not Post.image, which must remain
+ -- empty for story mode. The source stays byte-for-byte unchanged.
+ IF src.image IS DISTINCT FROM '[]'
+ OR jsonb_typeof(src.settings::jsonb) IS DISTINCT FROM 'object'
+ OR src.settings::jsonb ?| ARRAY['storyImageId','storyImageSha256','__gateway','__maxMedia']
+ THEN RAISE EXCEPTION 'EDITORIAL_LIVE_RELEASE_SOURCE_CHANGED' USING ERRCODE='55000'; END IF;
+ frozen_settings:=src.settings::jsonb||jsonb_build_object(
+   'storyImageId',media->>'file_id','storyImageSha256',media->>'sha256');
+ pubid:=replace(gen_random_uuid()::text,'-','');
+ INSERT INTO public."Post"(
+   id,"organizationId","integrationId","campaignId","group",state,
+   "publishDate",content,settings,image,"creationMethod","updatedAt",
+   "approvalStatus","approvedById","approvedAt","maxScheduleRevision","maxTarget"
+ ) VALUES(
+   pubid,org,i.id,src."campaignId",'edx-release-'||pubid,'QUEUE',
+   timeutc,src.content,frozen_settings::text,'[]','API',now(),
+   'approved',actor,now(),1,
+   jsonb_build_object(
+    'integrationId',i.id,'internalId',i."internalId",
+    'providerConfigId',i."providerConfigId",
+    'version',coalesce(i."providerVersion",'v1'),
+    'tokenHash',current_target->>'tokenHash')
+ );
+ INSERT INTO public."EditorialRelease"(
+   "sourcePostId","publicationPostId","commandId",mode,
+   "publishAt","actorId","confirmedSeq"
+ ) VALUES(pid,pubid,cmd,action,timeutc,actor,confirmed->>'seq');
+ RETURN jsonb_build_object('created',true,'source_post_id',pid,
+  'publication_post_id',pubid,'mode',action,
+  'publish_at',to_char(timeutc,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  'status','isolated_native_queue_fixture','publishable',false,'dispatch_authorized',false,
+  'provider_version',coalesce(i."providerVersion",'v1'));
+END $fn$;
+
 DO $test$
 DECLARE s jsonb; task text:='9071'; target text:='max:-73052031470103'; pid text;
  body jsonb; p jsonb; st jsonb; ev jsonb; a jsonb; proof jsonb; claim jsonb; res jsonb; ctx jsonb;
@@ -138,6 +344,67 @@ BEGIN
  ASSERT (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)=1;
  ASSERT NOT EXISTS(SELECT 1 FROM "EditorialDeliveryRecovery" WHERE "eventId"=queued->>'event_id');
  ASSERT NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid);
+ -- 028B.1: final approval, exact pin, digest, one immutable copy.
+ command:=jsonb_build_object('command_id',gen_random_uuid()::text,'action','publish_now','publish_at',NULL);
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
+  RAISE EXCEPTION 'release before final approval accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_NOT_APPROVED'; END;
+ final_state:=next_state;
+ queued:=postmill_queue_editorial_live_human_v1('org-modes',pid,task,target,'ci-editor',
+  jsonb_build_object('command_id',gen_random_uuid()::text,'expected_seq',final_state->>'seq','action','approve_final','feedback',''));
+ decision:=postmill_read_editorial_delivery_v1(s,task,target);
+ ASSERT decision->'native_pin'=jsonb_build_object('plan_id',a->>'plan_id','native_file_id',fid,'asset_sha256',digest);
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
+  RAISE EXCEPTION 'release overtook pending approval';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
+ ASSERT postmill_reserve_editorial_delivery_v1(s,task,target,queued->>'event_id')->'newly_reserved'='true'::jsonb;
+ next_state:=postmill_editorial_next_state_v1(final_state,decision->'event');
+ reply:=jsonb_build_object('status','accepted','reason',NULL,'state',next_state,'publishable',false,'dispatch_authorized',false,'newly_applied',true,'replay',false);
+ ASSERT postmill_import_editorial_result_v1(s,task,target,queued->>'event_id',decision->>'payload_sha256',reply)->'newly_recorded'='true'::jsonb;
+ ASSERT next_state->'final_approved'='true'::jsonb;
+ ASSERT postmill_editorial_confirmed_v1(pid)->'last_confirmed_state'=next_state;
+ BEGIN
+  PERFORM postmill_release_editorial_story_v1('org-modes',pid,task,target,'ci-editor',command);
+  RAISE EXCEPTION 'legacy release accepted JPEG';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_NOT_APPROVED'; END;
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,final_state,decision->'native_pin',png);
+  RAISE EXCEPTION 'stale release accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,
+    jsonb_set(decision->'native_pin','{native_file_id}',to_jsonb(gen_random_uuid()::text)),png);
+  RAISE EXCEPTION 'wrong pin accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',decode('ffd8ffd8','hex'));
+  RAISE EXCEPTION 'wrong digest accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_RELEASE_IMAGE_MISMATCH'; END;
+ ASSERT NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid);
+ SELECT to_jsonb(srcrow) INTO source_before FROM "Post" srcrow WHERE id=pid;
+ release_result:=pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png);
+ ASSERT release_result->'created'='true'::jsonb AND release_result->'publishable'='false'::jsonb AND release_result->'dispatch_authorized'='false'::jsonb;
+ pubid:=release_result->>'publication_post_id';
+ ASSERT (SELECT to_jsonb(srcrow)=source_before FROM "Post" srcrow WHERE id=pid);
+ ASSERT (SELECT state='QUEUE' AND image='[]' AND "editorialTaskId" IS NULL
+   AND settings::jsonb->>'storyImageId'=fid AND settings::jsonb->>'storyImageSha256'=digest
+   AND settings::jsonb - ARRAY['storyImageId','storyImageSha256']=(source_before->>'settings')::jsonb
+   AND content=source_before->>'content' FROM "Post" WHERE id=pubid);
+ ASSERT (SELECT "publicationPostId"=pubid AND "confirmedSeq"=next_state->>'seq' FROM "EditorialRelease" WHERE "sourcePostId"=pid);
+ ASSERT pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',command,next_state,decision->'native_pin',png)->'created'='false'::jsonb;
+ BEGIN
+  PERFORM pg_temp.qualify_live_image_release_v1('org-modes',pid,task,target,'ci-editor',
+    jsonb_set(command,'{command_id}',to_jsonb(gen_random_uuid()::text)),next_state,decision->'native_pin',png);
+  RAISE EXCEPTION 'second release accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_RELEASE_ALREADY_EXISTS'; END;
+ BEGIN
+  UPDATE "Post" SET settings=(settings::jsonb||jsonb_build_object('storyImageSha256',repeat('0',64)))::text WHERE id=pubid;
+  RAISE EXCEPTION 'publication digest mutable';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_PUBLICATION_IMMUTABLE'; END;
+ ASSERT (SELECT count(*) FROM "EditorialRelease" WHERE "sourcePostId"=pid)=1;
 END $test$;
 ROLLBACK;
 SELECT 'POSTMILL_LIVE_IMAGE_IMPORT_SQL_OK';
+SELECT 'POSTMILL_028B1_LIVE_IMAGE_RELEASE_SQL_OK';
