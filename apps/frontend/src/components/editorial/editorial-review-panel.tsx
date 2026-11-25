@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@postmill-ai/react/form/button';
 
 // Presentation only: this component has no network client or production route.
@@ -11,6 +11,7 @@ export type EditorialReviewSnapshot = {
   task_id: string;
   content: { title: string; parts: string[] };
   review_acknowledged: boolean;
+  live_image_preview_enabled?: true;
   mock_image?: {status:'waiting'|'recorded'|'uncertain'|'unavailable'; can_import:boolean;
     asset: {file_id:string; revision:number; sha256:string; compatible:boolean; png_base64:string} | null};
   review: {
@@ -58,11 +59,78 @@ type Props = {
   snapshot: EditorialReviewSnapshot;
   onCommand: (command: EditorialHumanCommand) => Promise<EditorialQueueReceipt>;
   onRefresh: () => Promise<void>;
+  onPreviewLiveImage?: (seq: string, signal: AbortSignal) => Promise<Blob>;
   onImportImage?: (seq: string) => Promise<{status:string}>;
   mutationsBlocked?: boolean;
 };
 
-export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportImage, mutationsBlocked = false }: Props) {
+// Mounted only for the current confirmed snapshot. Unmount on refresh,
+ // identity/revision change or a local mutation; never persist bytes or URLs.
+function LiveImagePreview({ seq, load }: {
+  seq: string;
+  load: (seq: string, signal: AbortSignal) => Promise<Blob>;
+}) {
+  const request = useRef<AbortController | null>(null);
+  const objectUrl = useRef<string | null>(null);
+  const [src, setSrc] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  useEffect(() => () => {
+    request.current?.abort();
+    request.current = null;
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    objectUrl.current = null;
+  }, []);
+
+  async function preview() {
+    if (request.current) return;
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    objectUrl.current = null;
+    setSrc(null);
+    setError(false);
+    setBusy(true);
+    const controller = new AbortController();
+    request.current = controller;
+    try {
+      const blob = await load(seq, controller.signal);
+      if (request.current !== controller || controller.signal.aborted) return;
+      objectUrl.current = URL.createObjectURL(blob);
+      setSrc(objectUrl.current);
+    } catch {
+      if (request.current === controller) setError(true);
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        setBusy(false);
+      }
+    }
+  }
+  return (
+    <section aria-label="Предпросмотр реальной иллюстрации" className="space-y-2">
+      <h3 className="font-semibold">Иллюстрация (закрытый предпросмотр)</h3>
+      <Button secondary type="button" disabled={busy} onClick={() => void preview()}>
+        {busy ? 'Проверка изображения…' : 'Показать изображение'}
+      </Button>
+      {error && <p role="alert">Не удалось подтвердить доступ к изображению.</p>}
+      {src && (
+        <>
+          {/* Object URL for the verified binary response, never a storage URL. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img alt="Иллюстрация редакции" className="max-w-full max-h-96 object-contain" src={src}
+            onError={() => {
+              if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+              objectUrl.current = null;
+              setSrc(null);
+              setError(true);
+            }} />
+          <p className="text-sm text-newTableText">Доступ проверен при получении. Это не разрешение на публикацию.</p>
+        </>
+      )}
+    </section>
+  );
+}
+
+export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportImage, onPreviewLiveImage, mutationsBlocked = false }: Props) {
   const [feedback, setFeedback] = useState('');
   const [imageFeedback,setImageFeedback] = useState('');
   const [busy, setBusy] = useState(false);
@@ -196,6 +264,16 @@ export function EditorialReviewPanel({ snapshot, onCommand, onRefresh, onImportI
         </article>
       ) : (
         <p role="alert">Неполный или неподтверждённый текст. Решения недоступны.</p>
+      )}
+
+      {snapshot.live_image_preview_enabled === true && !snapshot.mock_image && onPreviewLiveImage &&
+        validContent && validSeq && typeof seq === 'string' && idle && state?.rejected === false &&
+        state.image && snapshot.review_acknowledged === true &&
+        snapshot.publishable === false && snapshot.dispatch_authorized === false &&
+        !busy && !refreshing && !importing && !mutationsBlocked && blockedAtSeq === null &&
+        importBlocked !== seq && (
+          <LiveImagePreview key={snapshot.post_id + ':' + snapshot.task_id + ':' + seq + ':' + state.image.sha256}
+            seq={seq} load={onPreviewLiveImage} />
       )}
 
       {snapshot.mock_image && (

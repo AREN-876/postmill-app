@@ -108,6 +108,13 @@ export class EditorialHumanReviewService {
       const image = await this.images.preview(orgId,postId,taskId,cfg.targetInternalId,result.review.last_confirmed_state);
       if (image !== undefined) return {...result,mock_image:image};
     }
+    // Capability only, not proof of a current grant. Actual bytes still
+    // require the independent signed preview check on every explicit request.
+    if (this.liveImages && isRecord(result) &&
+        liveImagePreviewEnabled(orgId,cfg.targetInternalId) &&
+        !mockImageImportEnabled(orgId,cfg.targetInternalId)) {
+      return {...result,live_image_preview_enabled:true};
+    }
     return result;
   }
 

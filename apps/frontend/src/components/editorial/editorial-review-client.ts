@@ -70,6 +70,10 @@ function checkedSnapshot(x: unknown, postId: string, taskId: string): EditorialR
       throw new Error('editorial_untrusted_image');
     }
   }
+  if (x.live_image_preview_enabled !== undefined &&
+      (x.live_image_preview_enabled !== true || x.mock_image !== undefined)) {
+    throw new Error('editorial_untrusted_image_capability');
+  }
   return x as EditorialReviewSnapshot;
 }
 
@@ -95,6 +99,42 @@ export function editorialReviewClient(fetcher: Fetcher) {
       if (!res.ok) throw new Error('editorial_review_read_unavailable');
       const data: unknown = await res.json();
       return checkedSnapshot(data, postId, taskId);
+    },
+    async previewLiveImage(postId: string, taskId: string, seq: string, signal?: AbortSignal): Promise<Blob> {
+      const url = path(postId, taskId);
+      if (!/^(0|[1-9][0-9]{0,18})$/.test(seq) ||
+          (seq.length === 19 && seq > MAX_TASK)) throw new Error('editorial_invalid_identity');
+      const res = await fetcher(url + '/live-image/preview', {
+        method: 'POST', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer',
+        headers: { Accept: 'image/jpeg' }, body: JSON.stringify({ expected_seq: seq }), signal,
+      });
+      const maxBytes = 8 * 1024 * 1024;
+      const length = res.headers.get('content-length');
+      if (!res.ok || res.redirected || res.headers.get('content-type') !== 'image/jpeg' ||
+          (length !== null && (!/^[0-9]+$/.test(length) || Number(length) < 4 || Number(length) > maxBytes)) ||
+          !res.body) throw new Error('editorial_image_preview_unavailable');
+      const reader = res.body.getReader();
+      const chunks: ArrayBuffer[] = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxBytes) throw new Error('editorial_image_preview_unavailable');
+          const copy = new Uint8Array(value.byteLength);
+          copy.set(value);
+          chunks.push(copy.buffer);
+        }
+        if (size < 4 || (length !== null && size !== Number(length)) || signal?.aborted)
+          throw new Error('editorial_image_preview_unavailable');
+        return new Blob(chunks, { type: 'image/jpeg' });
+      } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
     },
     async importImage(postId:string,taskId:string,seq:string): Promise<{status:string}> {
       const url=path(postId,taskId);

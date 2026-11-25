@@ -207,3 +207,29 @@ describe('Editorial 06B-4B dormant reviewer panel', () => {
     expect(onCommand).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('live JPEG preview UI boundary', () => {
+  it('only invokes the preview callback on explicit click for a current opted-in image', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('revoked'));
+    const data = snapshot({
+      live_image_preview_enabled: true,
+      review: { status: 'idle', last_confirmed_state: {
+        seq: '8', rejected: false, image: { revision: 1, sha256: 'a'.repeat(64) },
+      } },
+    });
+    const props = { onCommand, onRefresh, onPreviewLiveImage: load };
+    const view = render(<EditorialReviewPanel {...props} snapshot={snapshot()} />);
+    expect(screen.queryByRole('button', { name: 'Показать изображение' })).toBeNull();
+    view.rerender(<EditorialReviewPanel {...props} snapshot={data} />);
+    expect(load).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Показать изображение' }));
+    await screen.findByText('Не удалось подтвердить доступ к изображению.');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load.mock.calls[0][0]).toBe('8');
+    expect(screen.queryByRole('img', { name: 'Иллюстрация редакции' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Утвердить текст и изображение' })).toBeNull();
+    view.rerender(<EditorialReviewPanel {...props} snapshot={data} mutationsBlocked />);
+    expect(screen.queryByRole('button', { name: 'Показать изображение' })).toBeNull();
+  });
+});

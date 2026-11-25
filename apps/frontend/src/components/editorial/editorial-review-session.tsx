@@ -101,6 +101,11 @@ export function EditorialReviewSession({
     return result;
   }, [client,enabled,identity,postId,taskId]);
 
+  const previewLiveImage = useCallback((seq: string, signal: AbortSignal) => {
+    if (!enabled) throw new Error('editorial_review_disabled');
+    return client.previewLiveImage(postId, taskId, seq, signal);
+  }, [client, enabled, postId, taskId]);
+
   if (!enabled) return <p>Редакторский обмен отключён.</p>;
   if (error) {
     return (
@@ -122,6 +127,7 @@ export function EditorialReviewSession({
         onCommand={queue}
         onRefresh={refresh}
         onImportImage={importImage}
+        onPreviewLiveImage={previewLiveImage}
         mutationsBlocked={attempted?.identity === identity &&
           attempted.seq === loaded.snapshot.review?.last_confirmed_state?.seq}
       />
