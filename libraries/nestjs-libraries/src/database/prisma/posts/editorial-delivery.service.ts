@@ -3,7 +3,8 @@ import { PostsRepository } from './posts.repository';
 import { validateEditorialArtifact, type EditorialScope } from './editorial-ingress';
 import {
   editorialPending, editorialWireConfig, editorialLoopbackFetch, EditorialTransportError,
-  signedEditorialRequest, signedEditorialRevisionLookup, type EditorialWireConfig,
+  signedEditorialRequest, signedEditorialRevisionLookup, signedEditorialLiveReviewRequest,
+  type EditorialWireConfig, type EditorialLiveReviewPin, type EditorialPending,
 } from './editorial-signed-transport';
 
 // Used by the isolated, default-off editorial Inngest activity. It reserves
@@ -13,6 +14,34 @@ import {
 export type EditorialDeliveryConfig = EditorialWireConfig & {
   allowMissingRecovery?: boolean;
 };
+
+function pendingRoute(raw: unknown, config: EditorialWireConfig, task: string) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new EditorialTransportError();
+  const {native_pin: pin, ...event}=raw as Record<string,unknown>;
+  const pending=editorialPending(event,config.orgId,task);
+  if (Object.hasOwn(raw,'native_pin')) {
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (config.allowLiveImageReview!==true || config.orgId!=='org-modes' ||
+        !pin || typeof pin!=='object' || Array.isArray(pin) ||
+        Object.keys(pin).length!==3) throw new EditorialTransportError();
+    const p=pin as Record<string,unknown>;
+    if (typeof p.plan_id!=='string' || !uuid.test(p.plan_id) ||
+        typeof p.native_file_id!=='string' || !uuid.test(p.native_file_id) ||
+        typeof p.asset_sha256!=='string' || !/^[0-9a-f]{64}$/.test(p.asset_sha256) ||
+        !pending.event.image || typeof pending.event.image!=='object') throw new EditorialTransportError();
+    return {pending,pin:p as EditorialLiveReviewPin};
+  }
+  return {pending,pin:null};
+}
+function samePin(a: EditorialLiveReviewPin|null,b: EditorialLiveReviewPin|null) {
+  return a===null ? b===null : b!==null && a.plan_id===b.plan_id &&
+    a.native_file_id===b.native_file_id && a.asset_sha256===b.asset_sha256;
+}
+function send(pending: EditorialPending,pin: EditorialLiveReviewPin|null,config: EditorialWireConfig,
+  operation:'submit'|'lookup',fetcher:typeof editorialLoopbackFetch) {
+  return pin ? signedEditorialLiveReviewRequest(pending,pin,config,operation,fetcher) :
+    signedEditorialRequest(pending,config,operation,fetcher);
+}
 
 @Injectable()
 export class EditorialDeliveryService {
@@ -63,8 +92,8 @@ export class EditorialDeliveryService {
     }
     const raw = await this.posts.readPendingEditorialDelivery(scope, task, target);
     if (raw === null) return { status: 'no_pending' as const };
-    const pending = editorialPending(raw, scope.org_id, task);
-    const remote = await signedEditorialRequest(pending, config, 'lookup', fetcher);
+    const {pending,pin}=pendingRoute(raw,config,task);
+    const remote=await send(pending,pin,config,'lookup',fetcher);
     if (remote.found !== true || remote.outcome === null) {
       // Unknown is not rejected. Do not submit/retry as a side effect.
       return { status: 'unknown' as const };
@@ -86,7 +115,7 @@ export class EditorialDeliveryService {
     }
     const raw = await this.posts.readPendingEditorialDelivery(scope, task, target);
     if (raw === null) return { status: 'no_pending' as const, operation: 'none' as const };
-    const pending = editorialPending(raw, peer.orgId, task);
+    const {pending,pin}=pendingRoute(raw,config,task);
 
     // Prisma's standalone query commits the SQL reservation before HTTP.
     // Uncertain DB errors cannot trigger the signed send.
@@ -104,15 +133,15 @@ export class EditorialDeliveryService {
     // Re-read after reservation: a changed/confirmed event cannot borrow it.
     const current = await this.posts.readPendingEditorialDelivery(scope, task, target);
     if (current === null) return { status: 'no_pending' as const, operation };
-    const fresh = editorialPending(current, peer.orgId, task);
+    const {pending:fresh,pin:freshPin}=pendingRoute(current,config,task);
     if (fresh.event_id !== pending.event_id ||
-        fresh.payload_sha256 !== pending.payload_sha256) {
+        fresh.payload_sha256 !== pending.payload_sha256 || !samePin(pin,freshPin)) {
       throw new EditorialTransportError();
     }
 
-    let remote = await signedEditorialRequest(fresh, config, operation, fetcher);
+    let remote=await send(fresh,freshPin,config,operation,fetcher);
     if (operation === 'lookup' && remote.found === false && remote.outcome === null) {
-      if (config.allowMissingRecovery !== true || target !== 'max:-73052031470103') {
+      if (pin || config.allowMissingRecovery !== true || target !== 'max:-73052031470103') {
         return { status: 'unknown' as const, operation };
       }
       // The SQL claim is committed before HTTP. A refused/exhausted/ambiguous
@@ -123,8 +152,8 @@ export class EditorialDeliveryService {
       if (claimed !== true) return { status: 'unknown' as const, operation };
       const afterClaim = await this.posts.readPendingEditorialDelivery(scope, task, target);
       if (afterClaim === null) return { status: 'no_pending' as const, operation };
-      const same = editorialPending(afterClaim, peer.orgId, task);
-      if (same.event_id !== fresh.event_id || same.payload_sha256 !== fresh.payload_sha256) {
+      const {pending:same,pin:afterPin}=pendingRoute(afterClaim,config,task);
+      if (same.event_id !== fresh.event_id || same.payload_sha256 !== fresh.payload_sha256 || afterPin !== null) {
         throw new EditorialTransportError();
       }
       // Same event, not a new human decision. The remote SQL reducer

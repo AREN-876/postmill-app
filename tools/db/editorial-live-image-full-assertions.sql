@@ -111,6 +111,32 @@ BEGIN
   RAISE EXCEPTION 'native draft image bypass';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_MANAGED_DRAFT_FROZEN'; END;
 
+ -- Queue through the separate native boundary, retaining the existing outbox.
+ command:=jsonb_build_object('command_id',gen_random_uuid()::text,'expected_seq','1','action','approve_text','feedback','');
+ BEGIN
+  PERFORM postmill_queue_editorial_human_v1('org-modes',pid,task,target,'ci-editor',command);
+  RAISE EXCEPTION 'legacy queue accepted live image';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_LIVE_DECISION_ROUTE_MISMATCH'; END;
+ BEGIN
+  PERFORM postmill_queue_editorial_live_human_v1('org-modes',pid,task,target,'ci-editor',jsonb_set(command,'{expected_seq}','"0"'));
+  RAISE EXCEPTION 'stale live command accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_STALE_DECISION'; END;
+ queued:=postmill_queue_editorial_live_human_v1('org-modes',pid,task,target,'ci-editor',command);
+ ASSERT queued->>'status'='queued/unconfirmed' AND queued->'newly_queued'='true'::jsonb;
+ ASSERT postmill_queue_editorial_live_human_v1('org-modes',pid,task,target,'ci-editor',command)->'replay'='true'::jsonb;
+ decision:=postmill_read_editorial_delivery_v1(s,task,target);
+ ASSERT decision->'native_pin'=jsonb_build_object('plan_id',a->>'plan_id','native_file_id',fid,'asset_sha256',digest);
+ ASSERT decision->>'event_id'=queued->>'event_id';
+ ASSERT postmill_reserve_editorial_delivery_v1(s,task,target,queued->>'event_id')->'newly_reserved'='true'::jsonb;
+ ASSERT postmill_reserve_editorial_delivery_v1(s,task,target,queued->>'event_id')->'newly_reserved'='false'::jsonb;
+ ASSERT NOT postmill_reserve_editorial_recovery_v1(s,task,target,queued->>'event_id',decision->>'payload_sha256');
+ next_state:=postmill_editorial_next_state_v1(proof->'state',decision->'event');
+ reply:=jsonb_build_object('status','accepted','reason',NULL,'state',next_state,'publishable',false,'dispatch_authorized',false,'newly_applied',true,'replay',false);
+ ASSERT postmill_import_editorial_result_v1(s,task,target,queued->>'event_id',decision->>'payload_sha256',reply)->'newly_recorded'='true'::jsonb;
+ ASSERT postmill_editorial_confirmed_v1(pid)->'last_confirmed_state'=next_state;
+ ASSERT postmill_read_editorial_delivery_v1(s,task,target) IS NULL;
+ ASSERT (SELECT count(*) FROM "EditorialDecisionOutbox" WHERE "postId"=pid)=1;
+ ASSERT NOT EXISTS(SELECT 1 FROM "EditorialDeliveryRecovery" WHERE "eventId"=queued->>'event_id');
  ASSERT NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid);
 END $test$;
 ROLLBACK;

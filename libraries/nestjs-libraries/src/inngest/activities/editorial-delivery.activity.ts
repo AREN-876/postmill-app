@@ -40,6 +40,8 @@ function runtime() {
     orgId: gate.orgId,
     requestKeyHex, responseKeyHex,
     allowMissingRecovery: process.env.EDITORIAL_TEST_RECOVERY_ENABLED === 'true',
+    ...(gate.orgId==='org-modes' && process.env.EDITORIAL_TEST_LIVE_IMAGE_IMPORT_ENABLED==='true' &&
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED==='true' ? {allowLiveImageReview:true} : {}),
     ...(gate.orgId === 'org-modes' && process.env.EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED === 'true'
       ? {allowMockImageReview: true} : {}),
   };
@@ -60,9 +62,9 @@ export class EditorialDeliveryActivity {
   async sweep() {
     const cfg = runtime();
     if (!cfg) return { status: 'disabled' as const };
-    const candidates = await this.posts.listPendingEditorialTestDelivery(
-      cfg.orgId, cfg.target,
-    );
+    const candidates = 'allowLiveImageReview' in cfg.wire && cfg.wire.allowLiveImageReview===true
+      ? await this.posts.listPendingEditorialTestDelivery(cfg.orgId,cfg.target,true)
+      : await this.posts.listPendingEditorialTestDelivery(cfg.orgId,cfg.target);
     let submitted = 0;
     let lookedUp = 0;
     let confirmed = 0;

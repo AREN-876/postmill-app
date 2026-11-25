@@ -138,6 +138,17 @@ export class PostsRepository {
     return row.result;
   }
 
+  // Internal only: caller must first authenticate the editor and verify private preview.
+  async queueEditorialLiveHuman(org: string, pid: string, task: string, target: string,
+    actor: string, command: { command_id: string; expected_seq: string; action: string; feedback: string }) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_queue_editorial_live_human_v1(
+        ${org}::text,${pid}::text,${task}::text,${target}::text,${actor}::text,${JSON.stringify(command)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
   async readMockImageContext(org: string, pid: string, task: string, target: string) {
     const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
       SELECT public.postmill_mock_image_context_v1(${org}::text,${pid}::text,${task}::text,${target}::text) AS result
@@ -239,7 +250,7 @@ export class PostsRepository {
   // Only one test organization's frozen MAX story decisions are eligible.
   // This is candidate discovery, NOT permission to submit: every event is
   // revalidated by readPendingEditorialDelivery and the SQL reservation.
-  async listPendingEditorialTestDelivery(orgId: string, target: string) {
+  async listPendingEditorialTestDelivery(orgId: string, target: string, allowLiveReview = false) {
     return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope }>>`
       SELECT p."editorialTaskId" AS task, r.request->'scope' AS scope
       FROM "EditorialDecisionOutbox" o
@@ -248,6 +259,9 @@ export class PostsRepository {
       JOIN "Integration" i ON i.id=p."integrationId"
       LEFT JOIN "EditorialDecisionResult" d ON d."eventId"=o."eventId"
       WHERE d."eventId" IS NULL
+        AND (${allowLiveReview}::boolean OR NOT EXISTS(
+          SELECT 1 FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          WHERE a."postId"=p.id AND a.proof->'manifest'->0->>'mime'='image/jpeg'))
         AND p."organizationId"=${orgId}::text
         AND p.state='DRAFT'
         AND p."editorialTaskId" IS NOT NULL
