@@ -44,6 +44,14 @@ BEGIN
   PERFORM postmill_reserve_live_image_import_v1('org-modes',pid,task,target,jsonb_set(proof,'{state,text,revision}','2'));
   RAISE EXCEPTION 'tampered image proof accepted';
  EXCEPTION WHEN object_not_in_prerequisite_state THEN ASSERT SQLERRM='EDITORIAL_IMAGE_PROOF_STATE_MISMATCH'; END;
+ -- Recompute event digest after tampering to exercise structural validation,
+ -- not just the outer hash mismatch.
+ bad:=jsonb_set(proof,'{install_event,revision_content,unexpected}','true');
+ bad:=jsonb_set(bad,'{install_payload_sha256}',to_jsonb(encode(sha256(convert_to((bad->'install_event')::text,'UTF8')),'hex')));
+ BEGIN
+  PERFORM postmill_reserve_live_image_import_v1('org-modes',pid,task,target,bad);
+  RAISE EXCEPTION 'extra revision content accepted';
+ EXCEPTION WHEN invalid_parameter_value THEN ASSERT SQLERRM='EDITORIAL_IMAGE_PROOF_INVALID'; END;
  claim:=postmill_reserve_live_image_import_v1('org-modes',pid,task,target,proof);
  ASSERT claim->>'status'='reserved';
  ASSERT postmill_editorial_confirmed_v1(pid)->>'status'='image_import_uncertain';

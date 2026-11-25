@@ -76,7 +76,7 @@ BEGIN
  AND ev->>'event_id'='live-image:'||(a->>'plan_id')
  AND jsonb_typeof(ev->'revision_content')='object'
  AND ev->'revision_content' ?& ARRAY['plan_id','plan_sha256','asset_sha256']
- AND ev->'revision_content'-ARRAY['plan_id','plan_sha256','asset_sha256']='{}'::jsonb
+ AND (ev->'revision_content')-ARRAY['plan_id','plan_sha256','asset_sha256']='{}'::jsonb
  AND ev->'revision_content'->'plan_id'=a->'plan_id'
  AND ev->'revision_content'->'asset_sha256'=a->'sha256'
  AND ev->'revision_content'->>'plan_sha256' ~ '^[0-9a-f]{64}$'
