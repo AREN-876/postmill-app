@@ -407,4 +407,133 @@ END $fn$;
 REVOKE ALL ON FUNCTION postmill_live_image_pin_v1(text,jsonb),
  postmill_queue_editorial_decision_internal_v2(jsonb,text,text,text,jsonb,boolean),
  postmill_queue_editorial_live_human_v1(text,text,text,text,text,jsonb) FROM PUBLIC;
+
+-- Exact accepted live return request; same revision ledger and native draft update.
+CREATE FUNCTION postmill_import_editorial_revision_internal_v2(s jsonb, task text, target text,
+ req text, digest text, p jsonb, pin jsonb) RETURNS jsonb
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,public,pg_temp AS $fn$
+DECLARE verified jsonb; pid text; review jsonb; before_state jsonb; after_state jsonb;
+ ev jsonb; body jsonb; newref jsonb; seq bigint; rev integer;
+ prior "EditorialDecisionOutbox"%ROWTYPE; previous_proof jsonb; h text;
+ receipt jsonb; part jsonb; revision_title text; live boolean:=pin IS NOT NULL; ctx jsonb;
+BEGIN
+ IF (s->'is_test'='true'::jsonb AND (s->>'image_mode'='disabled' OR postmill_mock_image_review_scope_v1(s,target))
+   AND target='max:-73052031470103'
+   AND req ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+   AND digest ~ '^[0-9a-f]{64}$'
+   AND jsonb_typeof(p)='object' AND octet_length(p::text)<=100000
+   AND p ?& ARRAY['install_event_id','install_payload_sha256','install_event','state','publishable','dispatch_authorized']
+   AND p-ARRAY['install_event_id','install_payload_sha256','install_event','state','publishable','dispatch_authorized']='{}'::jsonb
+   AND p->'publishable'='false'::jsonb AND p->'dispatch_authorized'='false'::jsonb
+   AND jsonb_typeof(p->'install_event_id')='string' AND length(p->>'install_event_id') BETWEEN 1 AND 200
+   AND p->>'install_payload_sha256' ~ '^[0-9a-f]{64}$') IS NOT TRUE
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_INVALID' USING ERRCODE='22023'; END IF;
+ verified:=postmill_read_editorial_draft_v1(s,task,target);
+ IF verified IS NULL THEN RAISE EXCEPTION 'EDITORIAL_DRAFT_NOT_FOUND' USING ERRCODE='55000'; END IF;
+ pid:=verified->'receipt'->'binding'->>'post_id';
+ SELECT * INTO prior FROM "EditorialDecisionOutbox" WHERE "eventId"=req AND "postId"=pid;
+ IF NOT FOUND OR prior."payloadHash" IS DISTINCT FROM digest
+    OR prior.payload->>'action' IS DISTINCT FROM 'request_text_changes'
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_REQUEST_MISMATCH' USING ERRCODE='55000'; END IF;
+ IF live THEN
+  IF postmill_live_image_pin_v1(pid,prior.payload->'image') IS DISTINCT FROM pin
+     OR s->>'org_id' IS DISTINCT FROM 'org-modes' OR NOT postmill_mock_image_review_scope_v1(s,target)
+  THEN RAISE EXCEPTION 'EDITORIAL_LIVE_REVISION_PIN_MISMATCH' USING ERRCODE='55000'; END IF;
+ ELSIF EXISTS(SELECT 1 FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+      WHERE a."postId"=pid AND a.proof->'manifest'->0->>'mime'='image/jpeg')
+ THEN RAISE EXCEPTION 'EDITORIAL_LIVE_REVISION_ROUTE_MISMATCH' USING ERRCODE='55000'; END IF;
+ SELECT outcome INTO receipt FROM "EditorialDecisionResult" WHERE "eventId"=req;
+ IF NOT FOUND OR receipt->>'status' IS DISTINCT FROM 'accepted'
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_REQUEST_UNCONFIRMED' USING ERRCODE='55000'; END IF;
+ SELECT proof INTO previous_proof FROM "EditorialTextRevision" WHERE "requestEventId"=req;
+ IF FOUND THEN
+  IF previous_proof IS DISTINCT FROM p THEN RAISE EXCEPTION 'EDITORIAL_REVISION_PROOF_CONFLICT' USING ERRCODE='55000'; END IF;
+  RETURN jsonb_build_object('installed',false,'state',p->'state','publishable',false,'dispatch_authorized',false);
+ END IF;
+ review:=postmill_editorial_confirmed_v1(pid); before_state:=review->'last_confirmed_state';
+ IF (review->>'status'='idle' AND review->>'latest_event_id'=req
+   AND receipt->'state'=before_state AND before_state->>'text_status'='changes_requested'
+   AND before_state->>'text_request_id'=req AND before_state->'text'=verified->'receipt'->'text'
+   AND before_state->'binding'=verified->'receipt'->'binding'
+   AND before_state->>'image_mode'=s->>'image_mode'
+   AND (before_state->'image'='null'::jsonb OR postmill_mock_image_review_scope_v1(s,target))
+   AND before_state->'final_approved'='false'::jsonb AND before_state->'rejected'='false'::jsonb
+   AND NOT EXISTS(SELECT 1 FROM "EditorialRelease" WHERE "sourcePostId"=pid)) IS NOT TRUE
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_NOT_PENDING' USING ERRCODE='55000'; END IF;
+ IF live THEN
+  ctx:=postmill_live_image_context_v1(s->>'org_id',pid,task,target);
+  IF ctx IS NULL OR ctx->>'status' IS DISTINCT FROM 'idle'
+    OR ctx->'state' IS DISTINCT FROM before_state
+    OR postmill_live_image_pin_v1(pid,before_state->'image') IS DISTINCT FROM pin
+  THEN RAISE EXCEPTION 'EDITORIAL_LIVE_REVISION_PIN_MISMATCH' USING ERRCODE='55000'; END IF;
+ ELSIF before_state->'image'<>'null'::jsonb AND jsonb_typeof(postmill_mock_image_context_v1(s->>'org_id',pid,task,target)->'media') IS DISTINCT FROM 'object' THEN
+  RAISE EXCEPTION 'EDITORIAL_IMAGE_MEDIA_MISMATCH' USING ERRCODE='55000'; END IF;
+ ev:=p->'install_event'; body:=ev->'revision_content';
+ IF (jsonb_typeof(ev)='object'
+   AND ev ?& ARRAY['schema_version','event_id','producer','actor_id','occurred_at','binding','expected_seq','action','text','image','feedback','request_id','revision_content']
+   AND ev-ARRAY['schema_version','event_id','producer','actor_id','occurred_at','binding','expected_seq','action','text','image','feedback','request_id','revision_content']='{}'::jsonb
+   AND ev->'schema_version'='1'::jsonb AND ev->>'event_id'=p->>'install_event_id'
+   AND ev->>'producer'='operator' AND ev->>'action'='install_text'
+   AND jsonb_typeof(ev->'actor_id')='string' AND ev->>'actor_id' ~ '[^[:space:]]' AND length(ev->>'actor_id')<=200
+   AND ev->>'occurred_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?Z$'
+   AND ev->>'feedback'='' AND ev->>'request_id'=req
+   AND ev->'expected_seq'=before_state->'seq'
+   AND ev->'binding'=before_state->'binding' AND ev->'text'=before_state->'text' AND ev->'image'=before_state->'image'
+   AND p->>'install_payload_sha256'=encode(sha256(convert_to(ev::text,'UTF8')),'hex')
+   AND jsonb_typeof(body)='object' AND body ?& ARRAY['title','parts']
+   AND body-ARRAY['title','parts']='{}'::jsonb
+   AND jsonb_typeof(body->'title')='string' AND jsonb_typeof(body->'parts')='array') IS NOT TRUE
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_PROOF_INVALID' USING ERRCODE='22023'; END IF;
+ revision_title:=body->>'title';
+ IF revision_title<>btrim(revision_title) OR revision_title !~ '[^[:space:]]' OR length(revision_title)>160 OR revision_title ~ '[[:cntrl:]]'
+    OR jsonb_array_length(body->'parts')<>3
+    OR length(revision_title||E'\n\n'||(body->'parts'->>0))>4000
+    OR revision_title ~ '[<>]' OR position('────────────────────────' in revision_title)>0
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_CONTENT_INVALID' USING ERRCODE='22023'; END IF;
+ FOR part IN SELECT value FROM jsonb_array_elements(body->'parts') LOOP
+  IF (jsonb_typeof(part)='string' AND (part#>>'{}') ~ '[^[:space:]]'
+    AND length(part#>>'{}')<=4000 AND (part#>>'{}') !~ '[<>]'
+    AND position('────────────────────────' in (part#>>'{}'))=0) IS NOT TRUE
+  THEN RAISE EXCEPTION 'EDITORIAL_REVISION_CONTENT_INVALID' USING ERRCODE='22023'; END IF;
+ END LOOP;
+ seq:=(before_state->>'seq')::bigint;
+ rev:=(before_state->'text'->>'revision')::int;
+ IF seq=9223372036854775807 OR rev=2147483647 THEN
+  RAISE EXCEPTION 'EDITORIAL_REVISION_LIMIT' USING ERRCODE='55000'; END IF;
+ rev:=rev+1;
+ newref:=jsonb_build_object('revision',rev,'sha256',encode(sha256(convert_to(body::text,'UTF8')),'hex'));
+ after_state:=before_state||jsonb_build_object('seq',(seq+1)::text,'text',newref,
+   'text_status','pending','text_request_id',NULL,'image_intent',CASE WHEN before_state->'image'='null'::jsonb
+    AND before_state->>'image_mode' IN ('automatic','after_text_approval') THEN 'initial:'||rev::text END,
+   'image_compatible',false,'final_approved',false);
+ IF p->'state' IS DISTINCT FROM after_state THEN
+  RAISE EXCEPTION 'EDITORIAL_REVISION_STATE_MISMATCH' USING ERRCODE='55000'; END IF;
+ h:=encode(sha256(convert_to(p::text,'UTF8')),'hex');
+ INSERT INTO "EditorialTextRevision"("requestEventId","postId",revision,"installEventId",proof,"proofHash")
+ VALUES(req,pid,rev,p->>'install_event_id',p,h);
+ UPDATE "Post" SET content=revision_title||E'\n\n'||(body->'parts'->>0),
+   settings=jsonb_build_object('__type','max','mode','story','continuationText',
+       (body->'parts'->>1)||E'\n────────────────────────\n'||(body->'parts'->>2))::text,
+   "updatedAt"=now() WHERE id=pid AND state='DRAFT';
+ IF NOT FOUND THEN RAISE EXCEPTION 'EDITORIAL_REVISION_NATIVE_MISMATCH' USING ERRCODE='55000'; END IF;
+ verified:=postmill_read_editorial_draft_v1(s,task,target);
+ IF verified IS NULL OR verified->'receipt'->'text' IS DISTINCT FROM newref
+    OR postmill_editorial_confirmed_v1(pid)->'last_confirmed_state' IS DISTINCT FROM after_state
+ THEN RAISE EXCEPTION 'EDITORIAL_REVISION_NATIVE_MISMATCH' USING ERRCODE='55000'; END IF;
+ RETURN jsonb_build_object('installed',true,'state',after_state,'publishable',false,'dispatch_authorized',false);
+END $fn$;
+
+CREATE OR REPLACE FUNCTION postmill_import_editorial_revision_v1(s jsonb,task text,target text,req text,digest text,p jsonb)
+RETURNS jsonb LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,public,pg_temp AS $fn$
+ SELECT public.postmill_import_editorial_revision_internal_v2(s,task,target,req,digest,p,NULL)
+$fn$;
+CREATE FUNCTION postmill_import_editorial_live_revision_v1(s jsonb,task text,target text,req text,digest text,p jsonb,pin jsonb)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,public,pg_temp AS $fn$
+BEGIN
+ IF jsonb_typeof(pin) IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'EDITORIAL_LIVE_REVISION_PIN_MISMATCH' USING ERRCODE='22023'; END IF;
+ RETURN public.postmill_import_editorial_revision_internal_v2(s,task,target,req,digest,p,pin);
+END $fn$;
+REVOKE ALL ON FUNCTION postmill_import_editorial_revision_internal_v2(jsonb,text,text,text,text,jsonb,jsonb),
+ postmill_import_editorial_live_revision_v1(jsonb,text,text,text,text,jsonb,jsonb) FROM PUBLIC;
 COMMIT;

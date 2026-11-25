@@ -4,6 +4,7 @@ import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'und
 export const EDITORIAL_SUBMIT_PATH = '/internal/editorial/v1/events/submit';
 export const EDITORIAL_LOOKUP_PATH = '/internal/editorial/v1/events/lookup';
 export const EDITORIAL_REVISION_LOOKUP_PATH = '/internal/editorial/v1/revisions/lookup';
+export const EDITORIAL_LIVE_REVISION_LOOKUP_PATH = '/internal/editorial/v1/live-revisions/lookup';
 export const EDITORIAL_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/images/lookup';
 export const EDITORIAL_IMAGE_READ_PATH = '/internal/editorial/v1/images/read';
 export const EDITORIAL_LIVE_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/live-images/lookup';
@@ -104,6 +105,7 @@ export async function editorialLoopbackFetch(url: string, init?: RequestInit): P
   if ((url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_SUBMIT_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_REVISION_LOOKUP_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVISION_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_IMAGE_READ_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_LOOKUP_PATH &&
@@ -154,7 +156,7 @@ function responseMessage(path: string, timestamp: string, nonce: string,
 
 // Shared bounded signed round-trip; request and response limits remain separate.
 type EditorialPath = typeof EDITORIAL_SUBMIT_PATH | typeof EDITORIAL_LOOKUP_PATH |
-  typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH |
+  typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_LIVE_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH |
   typeof EDITORIAL_LIVE_IMAGE_LOOKUP_PATH | typeof EDITORIAL_LIVE_IMAGE_READ_PATH |
   typeof EDITORIAL_LIVE_REVIEW_SUBMIT_PATH | typeof EDITORIAL_LIVE_REVIEW_LOOKUP_PATH;
 
@@ -344,6 +346,23 @@ export async function signedEditorialRevisionLookup(
   fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
   nowMs = Date.now(), nonce = randomBytes(16).toString('hex'),
 ): Promise<EditorialRevisionProof | null> {
+  return revisionLookup(request,config,fetcher,nowMs,nonce,null);
+}
+export async function signedEditorialLiveRevisionLookup(
+  request: EditorialRevisionRequest, pin: EditorialLiveReviewPin, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs = Date.now(), nonce = randomBytes(16).toString('hex'),
+): Promise<EditorialRevisionProof | null> {
+  if (config.allowLiveImageReview!==true || config.orgId!=='org-modes' ||
+      !exact(pin,['plan_id','native_file_id','asset_sha256']) ||
+      typeof pin.plan_id!=='string' || !UUID.test(pin.plan_id) ||
+      typeof pin.native_file_id!=='string' || !UUID.test(pin.native_file_id) ||
+      typeof pin.asset_sha256!=='string' || !SHA.test(pin.asset_sha256)) throw new EditorialTransportError();
+  return revisionLookup(request,config,fetcher,nowMs,nonce,pin);
+}
+async function revisionLookup(request: EditorialRevisionRequest, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch, nowMs: number, nonce: string,
+  pin: EditorialLiveReviewPin|null): Promise<EditorialRevisionProof | null> {
   const peer = editorialWireConfig(config);
   if (!exact(request, ['org_id','task_id','event_id','payload_sha256']) ||
       request.org_id !== peer.orgId || typeof request.task_id !== 'string' ||
@@ -355,8 +374,8 @@ export async function signedEditorialRevisionLookup(
   }
   const body = { schema_version: 1, org_id: request.org_id, task_id: request.task_id,
     event_id: request.event_id, payload_sha256: request.payload_sha256 };
-  const parsed = await signedExchangeBody(EDITORIAL_REVISION_LOOKUP_PATH, body, config,
-    fetcher, nowMs, nonce, MAX_REVISION_RESPONSE);
+  const parsed = await signedExchangeBody(pin?EDITORIAL_LIVE_REVISION_LOOKUP_PATH:EDITORIAL_REVISION_LOOKUP_PATH,
+    pin?{...body,native_pin:pin}:body, config, fetcher, nowMs, nonce, MAX_REVISION_RESPONSE);
   if (!exact(parsed, ['schema_version','event_id','payload_sha256','found','proof']) ||
       parsed.schema_version !== 1 || parsed.event_id !== request.event_id ||
       parsed.payload_sha256 !== request.payload_sha256 || typeof parsed.found !== 'boolean') {
@@ -377,7 +396,9 @@ export async function signedEditorialRevisionLookup(
       !record(p.install_event.binding) || p.install_event.binding.org_id !== request.org_id ||
       p.install_event.binding.task_id !== request.task_id || p.install_event.binding.is_test !== true ||
       p.state.publishable !== false || p.state.dispatch_authorized !== false ||
-      (p.state.image_mode !== 'disabled' && !(config.allowMockImageReview === true && request.org_id === 'org-modes' &&
+      (pin!==null && (p.state.image_mode==='disabled' || !artifactRef(p.install_event.image) ||
+        !artifactRef(p.state.image) || p.state.image_compatible!==false)) ||
+      (p.state.image_mode !== 'disabled' && !((pin!==null || config.allowMockImageReview === true) && request.org_id === 'org-modes' &&
         typeof p.install_event.binding.integration_id === 'string' && p.install_event.binding.integration_id.startsWith('mock-review-') &&
         ['automatic','manual','after_text_approval'].includes(p.state.image_mode as string))) || p.state.text_status !== 'pending' ||
       p.state.final_approved !== false || p.state.rejected !== false) {

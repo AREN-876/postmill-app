@@ -3,7 +3,7 @@ import { PostsRepository } from './posts.repository';
 import { validateEditorialArtifact, type EditorialScope } from './editorial-ingress';
 import {
   editorialPending, editorialWireConfig, editorialLoopbackFetch, EditorialTransportError,
-  signedEditorialRequest, signedEditorialRevisionLookup, signedEditorialLiveReviewRequest,
+  signedEditorialRequest, signedEditorialRevisionLookup, signedEditorialLiveReviewRequest, signedEditorialLiveRevisionLookup,
   type EditorialWireConfig, type EditorialLiveReviewPin, type EditorialPending,
 } from './editorial-signed-transport';
 
@@ -52,16 +52,18 @@ export class EditorialDeliveryService {
   // validated before the local SQL transaction consumes it.
   async reconcileTextRevision(scope: EditorialScope, task: string, target: string,
     eventId: string, digest: string, config: EditorialWireConfig,
-    fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch) {
+    fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+    pin: EditorialLiveReviewPin|null = null) {
     const peer = editorialWireConfig(config);
     if (scope.org_id !== peer.orgId || scope.is_test !== true ||
-        (scope.image_mode !== 'disabled' && !(config.allowMockImageReview === true && scope.org_id === 'org-modes' &&
+        (pin!==null && (config.allowLiveImageReview!==true || scope.org_id!=='org-modes' || scope.image_mode==='disabled')) ||
+        (scope.image_mode !== 'disabled' && !((pin!==null || config.allowMockImageReview === true) && scope.org_id === 'org-modes' &&
           scope.integration_id.startsWith('mock-review-') && ['automatic','manual','after_text_approval'].includes(scope.image_mode))) || target !== 'max:-73052031470103') {
       throw new EditorialTransportError();
     }
-    const proof = await signedEditorialRevisionLookup({
-      org_id: scope.org_id, task_id: task, event_id: eventId, payload_sha256: digest,
-    }, config, fetcher);
+    const request={org_id:scope.org_id,task_id:task,event_id:eventId,payload_sha256:digest};
+    const proof=pin?await signedEditorialLiveRevisionLookup(request,pin,config,fetcher):
+      await signedEditorialRevisionLookup(request,config,fetcher);
     if (proof === null) return { status: 'not_ready' as const };
     if (proof.state.image_mode !== scope.image_mode) throw new EditorialTransportError();
     const ref = proof.state.text;
@@ -77,9 +79,8 @@ export class EditorialDeliveryService {
     } catch {
       throw new EditorialTransportError();
     }
-    const receipt = await this.posts.importEditorialTextRevision(
-      scope, task, target, eventId, digest, proof,
-    );
+    const receipt=pin?await this.posts.importEditorialLiveTextRevision(scope,task,target,eventId,digest,proof,pin):
+      await this.posts.importEditorialTextRevision(scope,task,target,eventId,digest,proof);
     return { status: 'recorded' as const, receipt };
   }
 

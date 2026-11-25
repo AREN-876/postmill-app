@@ -308,10 +308,11 @@ export class PostsRepository {
 
   // Exact test-only accepted return requests that still await a newer artifact.
   // Revalidated by the transactional import function after signed lookup.
-  async listPendingEditorialTextRevisions(orgId: string, target: string, allowMock = false) {
-    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string }>>`
+  async listPendingEditorialTextRevisions(orgId: string, target: string, allowMock = false, allowLive = false) {
+    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string; nativePin?: import('./editorial-signed-transport').EditorialLiveReviewPin | null }>>`
       SELECT p."editorialTaskId" AS task, d.request->'scope' AS scope,
-             o."eventId", o."payloadHash" AS digest
+             o."eventId", o."payloadHash" AS digest,
+             public.postmill_live_image_pin_v1(p.id,o.payload->'image') AS "nativePin"
       FROM "EditorialDecisionOutbox" o
       JOIN "EditorialDecisionResult" r ON r."eventId"=o."eventId"
       JOIN "Post" p ON p.id=o."postId"
@@ -324,8 +325,12 @@ export class PostsRepository {
         AND p."editorialTaskId" IS NOT NULL
         AND d.request->'scope'->>'org_id'=${orgId}::text
         AND d.request->'scope'->'is_test'='true'::jsonb
-        AND (d.request->'scope'->>'image_mode'='disabled' OR (${allowMock}::boolean AND
-          public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)))
+        AND ((${allowLive}::boolean AND public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)
+            AND public.postmill_live_image_pin_v1(p.id,o.payload->'image') IS NOT NULL)
+          OR ((d.request->'scope'->>'image_mode'='disabled' OR (${allowMock}::boolean AND
+            public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)))
+            AND NOT EXISTS(SELECT 1 FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+              WHERE a."postId"=p.id AND a.proof->'manifest'->0->>'mime'='image/jpeg')))
         AND d."targetSnapshot"->>'internalId'=${target}::text AND i."internalId"=${target}::text
         AND i."providerIdentifier"='max' AND NOT i.disabled AND NOT i."refreshNeeded"
         AND i."deletedAt" IS NULL
@@ -343,6 +348,17 @@ export class PostsRepository {
       SELECT public.postmill_import_editorial_revision_v1(
         ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
         ${eventId}::text, ${digest}::text, ${JSON.stringify(proof)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
+  async importEditorialLiveTextRevision(scope: EditorialScope,task: string,target: string,
+    eventId: string,digest: string,proof: object,pin: object) {
+    const [row] = await this._post.$queryRaw<Array<{result:Prisma.JsonValue}>>`
+      SELECT public.postmill_import_editorial_live_revision_v1(
+        ${JSON.stringify(scope)}::jsonb,${task}::text,${target}::text,${eventId}::text,${digest}::text,
+        ${JSON.stringify(proof)}::jsonb,${JSON.stringify(pin)}::jsonb
       ) AS result
     `;
     return row.result;
