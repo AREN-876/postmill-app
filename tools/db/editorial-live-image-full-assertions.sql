@@ -208,11 +208,11 @@ BEGIN
 END $fn$;
 
 -- 028B.2A: temporary native preflight projection, not a send grant.
-CREATE FUNCTION pg_temp.qualify_live_release_photo_v1(org text,pub text,occ text)
+CREATE FUNCTION pg_temp.qualify_live_release_photo_v1(org text,pub text,occ text,started boolean DEFAULT false,operation text DEFAULT NULL)
 RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
 SET search_path=pg_catalog,public,pg_temp AS $fn$
 DECLARE r "EditorialRelease"%ROWTYPE; src "Post"%ROWTYPE; dst "Post"%ROWTYPE;
- o "MaxDeliveryOccurrence"%ROWTYPE; ctx jsonb; st jsonb; media jsonb; pin jsonb;
+ o "MaxDeliveryOccurrence"%ROWTYPE; journal "MaxDeliveryAttempt"%ROWTYPE; ctx jsonb; st jsonb; media jsonb; pin jsonb;
  integ "Integration"%ROWTYPE; target constant text:='max:-73052031470103';
 BEGIN
  IF current_database() NOT IN ('postmill_image_ci','edx_upgrade_restored_44','postmill-editorial-restore-ci')
@@ -231,7 +231,7 @@ BEGIN
  AND st->'text_request_id'='null'::jsonb AND pin IS NOT NULL
  AND jsonb_typeof(media)='object') IS NOT TRUE THEN RETURN NULL; END IF;
  SELECT * INTO dst FROM "Post" WHERE id=pub AND "organizationId"=org;
- IF NOT FOUND OR (dst.state='QUEUE' AND dst."deletedAt" IS NULL
+ IF NOT FOUND OR (dst.state=CASE WHEN started THEN 'PUBLISHING'::"State" ELSE 'QUEUE'::"State" END AND dst."deletedAt" IS NULL
  AND dst."editorialTaskId" IS NULL AND dst."editorialProfileRef" IS NULL
  AND dst."integrationId"=src."integrationId" AND dst."campaignId"=src."campaignId"
  AND dst."parentPostId" IS NULL AND dst."intervalInDays" IS NULL
@@ -251,14 +251,31 @@ BEGIN
   'tokenHash',postmill_check_editorial_target_v1(ctx->'scope',target)->>'tokenHash')
  THEN RETURN NULL; END IF;
  SELECT * INTO o FROM "MaxDeliveryOccurrence" WHERE id=occ AND "postId"=pub AND "organizationId"=org;
- IF NOT FOUND OR (o.state='READY' AND o.attempt=0 AND o."parentId" IS NULL
+ IF NOT FOUND OR (o.state=CASE WHEN started THEN 'STARTED' ELSE 'READY' END AND o.attempt=CASE WHEN started THEN 1 ELSE 0 END AND o."parentId" IS NULL
  AND o."scheduledAt"=dst."publishDate"
  AND o."scheduledAt"<=clock_timestamp() AND o.fingerprint ~ '^[0-9a-f]{64}$') IS NOT TRUE
  THEN RETURN NULL; END IF;
- -- Fingerprint equality is the existing native begin() responsibility.
+ IF started THEN
+  SELECT * INTO journal FROM "MaxDeliveryAttempt" WHERE "occurrenceId"=occ AND number=1;
+  IF NOT FOUND OR (journal.state='STARTED'
+   AND operation ~ '^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+   AND journal.target->>'storygoOperationId'=operation
+   AND journal.target->>'storyPhotoSha256'=media->>'sha256'
+   AND journal.target->>'content'=dst.content
+   AND journal.target->>'textSha256'=encode(sha256(convert_to(dst.content,'UTF8')),'hex')
+   AND journal.target->>'integrationId'=integ.id
+   AND journal.target->>'chatId'=target
+   AND journal.target->>'version'=coalesce(integ."providerVersion",'v1')
+   AND journal.target->'providerConfigId'=coalesce(to_jsonb(integ."providerConfigId"),'null'::jsonb)
+   AND journal.target->>'tokenHash'=dst."maxTarget"->>'tokenHash'
+   AND dst."maxDelivery"=jsonb_build_object('occurrenceId',occ,'state','STARTED','attempt',1)
+   AND (SELECT count(*) FROM "MaxDeliveryAttempt" WHERE "occurrenceId"=occ)=1
+  ) IS NOT TRUE THEN RETURN NULL; END IF;
+ END IF;
+ -- Fingerprint equality remains the existing native begin() responsibility.
  RETURN jsonb_build_object('publication_post_id',pub,'source_post_id',src.id,
   'occurrence_id',occ,'attempt',1,'confirmed_seq',r."confirmedSeq",
-  'target',target,'request',jsonb_build_object('org_id',org,'task_id',src."editorialTaskId",
+  'target',target,'fingerprint',o.fingerprint,'request',jsonb_build_object('org_id',org,'task_id',src."editorialTaskId",
     'channel_id',ctx->'scope'->>'channel_id','state',st),
   'pin',pin,'media',media,'dispatch_authorized',false,'publishable',false);
 END $fn$;
@@ -477,9 +494,27 @@ BEGIN
  UPDATE "MaxDeliveryOccurrence" SET state='STARTED',attempt=1 WHERE id=occurrence;
  ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence) IS NULL;
  ASSERT (SELECT state='QUEUE' FROM "Post" WHERE id=pubid);
+ -- A STARTED row alone is not a new grant, even with the right occurrence.
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ UPDATE "Post" SET state='PUBLISHING',"maxDelivery"=jsonb_build_object('occurrenceId',occurrence,'state','STARTED','attempt',1) WHERE id=pubid;
+ INSERT INTO "MaxDeliveryAttempt"(id,"occurrenceId",number,state,target)
+ SELECT gen_random_uuid()::text,occurrence,1,'STARTED',jsonb_build_object(
+  'storygoOperationId','e299b442-02a8-5acf-ab16-6ab92926d548','storyPhotoSha256',digest,
+  'content',content,'textSha256',encode(sha256(convert_to(content,'UTF8')),'hex'),
+  'integrationId',"integrationId",'chatId',"maxTarget"->>'internalId','version',"maxTarget"->>'version',
+  'providerConfigId',"maxTarget"->'providerConfigId','tokenHash',"maxTarget"->>'tokenHash')
+ FROM "Post" WHERE id=pubid;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548')=projection;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d549') IS NULL;
+ UPDATE "MaxDeliveryAttempt" SET target=jsonb_set("MaxDeliveryAttempt".target,'{storyPhotoSha256}',to_jsonb(repeat('0',64))) WHERE "occurrenceId"=occurrence;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
+ UPDATE "MaxDeliveryOccurrence" SET state='REVIEW' WHERE id=occurrence;
+ ASSERT pg_temp.qualify_live_release_photo_v1('org-modes',pubid,occurrence,true,'e299b442-02a8-5acf-ab16-6ab92926d548') IS NULL;
 END $test$;
 ROLLBACK;
 SELECT 'POSTMILL_LIVE_IMAGE_IMPORT_SQL_OK';
 SELECT 'POSTMILL_028B1_LIVE_IMAGE_RELEASE_SQL_OK';
 
 SELECT 'POSTMILL_028B2A_PRIVATE_PHOTO_PROJECTION_SQL_OK';
+
+SELECT 'POSTMILL_028B2B2_POST_CLAIM_SQL_OK';

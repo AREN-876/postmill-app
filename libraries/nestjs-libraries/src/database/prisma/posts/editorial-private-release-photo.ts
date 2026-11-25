@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { v5 as uuidv5 } from 'uuid';
 import { EditorialPrivateImageStore } from './editorial-private-image';
 import { validateEditorialLiveJpeg } from './editorial-live-jpeg';
 import { checkEditorialLivePreview, type EditorialWireConfig, type EditorialLiveImageRequest, type EditorialLiveReviewPin, type EditorialLiveImageAsset } from './editorial-signed-transport';
@@ -38,7 +39,7 @@ export async function prepareEditorialPrivateReleasePhoto(identity:PrivateReleas
     if (!record(p) || p.publication_post_id!==identity.publicationPostId ||
         typeof p.source_post_id!=='string' || !POST.test(p.source_post_id) ||
         p.source_post_id===p.publication_post_id || p.occurrence_id!==identity.occurrenceId ||
-        p.attempt!==identity.attempt || p.target!=='max:-73052031470103' ||
+        p.attempt!==identity.attempt || p.target!=='max:-73052031470103' || !sha(p.fingerprint) ||
         p.publishable!==false || p.dispatch_authorized!==false || !record(p.request) ||
         p.request.org_id!==identity.orgId || !int64(p.request.task_id) || !int64(p.request.channel_id) ||
         !record(p.request.state) || !record(p.pin) || !record(p.media)) denied();
@@ -72,4 +73,47 @@ export async function prepareEditorialPrivateReleasePhoto(identity:PrivateReleas
       attempt:identity.attempt,remote_current_verified:true as const,
       dispatch_authorized:false as const,publishable:false as const };
   } catch { return denied(); }
+}
+
+type ClaimResult = {attempt?:number;occurrenceId?:string;blocked?:boolean;deferred?:boolean;alreadyConfirmed?:boolean};
+type HandoffDependencies = Dependencies & {
+  // These ports are deliberately not registered. claim must be the committed
+  // existing native CAS, not a lookup of an already STARTED journal.
+  claim: (identity:PrivateReleasePhotoIdentity, operationId:string, photoSha256:string)=>Promise<ClaimResult|null>;
+  readStarted: (identity:PrivateReleasePhotoIdentity,operationId:string)=>Promise<unknown>;
+  hold: (identity:PrivateReleasePhotoIdentity)=>Promise<void>;
+  send: (payload:{operationId:string;externalPostId:string;revision:string;image:{base64:string;mimeType:'image/jpeg';sha256:string}})=>Promise<void>;
+};
+
+// Inactive same-invocation orchestration candidate. A read of STARTED is
+// never sufficient to enter this function or resume a send. Unknown claim
+// response is fenced by native state; no retry or reopening on any failure.
+// The caller must not persist the in-memory photo or expose this as an RPC.
+export async function qualifyPrivateReleaseHandoff(identity:PrivateReleasePhotoIdentity,deps:HandoffDependencies) {
+  let snapshot:unknown;
+  const photo=await prepareEditorialPrivateReleasePhoto(identity,{...deps,read:async id=>{
+    const current=await deps.read(id);
+    if(snapshot===undefined) snapshot=structuredClone(current);
+    return current;
+  }});
+  const operationId=uuidv5('postmill:max:occurrence:'+identity.occurrenceId,uuidv5.URL);
+  const claim=await deps.claim(identity,operationId,photo.image.sha256);
+  if(!claim || claim.blocked || claim.deferred || claim.alreadyConfirmed ||
+      claim.attempt!==1 || claim.occurrenceId!==identity.occurrenceId) return {status:'not_claimed' as const};
+  try {
+    if(!record(snapshot)||!record(snapshot.request)||!record(snapshot.pin)||
+      !isDeepStrictEqual(snapshot,await deps.readStarted(identity,operationId))||
+      !await (deps.check??checkEditorialLivePreview)(snapshot.request as EditorialLiveImageRequest,
+        snapshot.pin as EditorialLiveReviewPin,deps.wire)||
+      !isDeepStrictEqual(snapshot,await deps.readStarted(identity,operationId))) denied();
+    // Only the fresh successful claim in this invocation reaches this point.
+    // This is a mockable transport handoff, not a remote publication receipt.
+    await deps.send({operationId,externalPostId:identity.publicationPostId,
+      revision:identity.occurrenceId,image:photo.image});
+    return {status:'handoff_returned' as const};
+  } catch {
+    // No resend, no READY reset. Completion/reconciliation is native-owned.
+    try {await deps.hold(identity);} catch { /* durable STARTED still fences */ }
+    return {status:'held' as const};
+  }
 }
