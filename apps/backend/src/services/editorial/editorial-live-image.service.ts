@@ -6,7 +6,7 @@ import { StorageProviderType } from '@prisma/client';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { StorageService } from '@postmill-ai/nestjs-libraries/database/prisma/storage/storage.service';
 import { EditorialPrivateImageStore } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-private-image';
-import { fetchEditorialLiveImage, editorialWireConfig, type EditorialWireConfig, type EditorialLiveImageAsset } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-signed-transport';
+import { fetchEditorialLiveImage, checkEditorialLivePreview, editorialWireConfig, type EditorialWireConfig, type EditorialLiveImageAsset } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-signed-transport';
 
 import { validateEditorialLiveJpeg } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-live-jpeg';
 const TARGET = 'max:-73052031470103';
@@ -24,10 +24,16 @@ export function liveImageImportEnabled(org: string, target: string,
     env.EDITORIAL_TEST_ORG_ID === ORG && env.EDITORIAL_TEST_MAX_TARGET === TARGET &&
     env.EDITORIAL_TEST_LIVE_IMAGE_IMPORT_ENABLED === 'true';
 }
+export function liveImagePreviewEnabled(org: string,target: string): boolean {
+  return liveImageImportEnabled(org,target) && process.env.EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED==='true' &&
+    process.env.EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED==='true';
+}
 function wireConfig(): EditorialWireConfig {
   const wire = {
     orgId: ORG,
     allowLiveImageRead: true,
+    allowLiveImageReview: true,
+    allowLiveImagePreview: true,
     requestKeyHex: readFileSync('/run/secrets/postmill_editorial_request_hmac_hex', 'utf8').trim(),
     responseKeyHex: readFileSync('/run/secrets/postmill_editorial_response_hmac_hex', 'utf8').trim(),
   };
@@ -35,7 +41,7 @@ function wireConfig(): EditorialWireConfig {
   return wire;
 }
 
-// Explicit test-target service, intentionally not registered in a module. No background sweep, no paid operation,
+// Explicit test-target service, registered only in the gated human session module. No background sweep, no paid operation,
 // no publication. Bytes are stored outside the public LOCAL adapter namespace.
 // Metadata and File row commit together in the SQL receipt transaction.
 @Injectable()
@@ -49,16 +55,16 @@ export class EditorialLiveImageService {
     return bytes;
   }
 
-  // Internal only; a future cookie+RBAC authorized binary endpoint must
-  // enforce the exact native review grant and must not expose storage URLs.
-  // This is a locally confirmed preview, NOT a remote-current proof.
-  async preview(org: string, pid: string, task: string, target: string, currentState: unknown) {
-    if (!liveImageImportEnabled(org,target) ||
-        process.env.EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED !== 'true') return undefined;
+  // Caller must enforce cookie session and explicit org membership. Read-only
+  // authority is checked before local bytes and again before returning them.
+  // Point-in-time proof, not a distributed lease or publication approval.
+  async preview(org: string, pid: string, task: string, target: string, currentState: unknown,
+    wire: () => EditorialWireConfig=wireConfig, check=checkEditorialLivePreview) {
+    if (!liveImagePreviewEnabled(org,target)) return undefined;
     try {
       const ctx = await this.posts.readLiveImageContext(org,pid,task,target);
       if (!record(ctx) || !record(ctx.state) || !record(ctx.scope) ||
-          ctx.scope.org_id !== org || ctx.status !== 'idle' ||
+          ctx.scope.org_id !== org || typeof ctx.scope.channel_id!=='string' || ctx.status !== 'idle' ||
           !record(currentState) || !isDeepStrictEqual(ctx.state,currentState) ||
           ctx.state.rejected !== false || !record(ctx.state.image) ||
           !record(ctx.media)) unavailable();
@@ -74,14 +80,20 @@ export class EditorialLiveImageService {
           m.revision !== ctx.state.image.revision || typeof m.revision !== 'number' ||
           !Number.isSafeInteger(m.revision) || m.revision < 1 ||
           typeof ctx.state.image_compatible !== 'boolean') unavailable();
+      const request={org_id:org,task_id:task,channel_id:ctx.scope.channel_id,state:ctx.state};
+      const pin={plan_id:a.plan_id,native_file_id:m.file_id,asset_sha256:a.sha256};
+      const config=wire();
+      if (!await check(request,pin,config)) unavailable();
       const bytes=await this.readBytes(await EditorialPrivateImageStore.open(),m.path,a as unknown as EditorialLiveImageAsset);
       // Verify the entire DB snapshot and native receipt again after IO.
       // No database lock is held across read/decode.
       const latest=await this.posts.readLiveImageContext(org,pid,task,target);
-      if (!isDeepStrictEqual(ctx,latest)) unavailable();
+      if (!isDeepStrictEqual(ctx,latest) || !liveImagePreviewEnabled(org,target) ||
+          !await check(request,pin,config)) unavailable();
+      if (!isDeepStrictEqual(ctx,await this.posts.readLiveImageContext(org,pid,task,target))) unavailable();
       return {bytes,mime:'image/jpeg' as const,file_id:m.file_id,revision:m.revision,
         sha256:a.sha256,compatible:ctx.state.image_compatible,
-        remote_current_verified:false as const,publishable:false as const,dispatch_authorized:false as const};
+        remote_current_verified:true as const,publishable:false as const,dispatch_authorized:false as const};
     } catch {
       // Never include paths or raw storage exceptions in preview failures.
       throw new HttpException('editorial_image_preview_unavailable',503);

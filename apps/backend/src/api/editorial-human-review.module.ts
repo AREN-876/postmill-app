@@ -8,6 +8,7 @@ import {
 import { EditorialHumanReviewController } from './routes/editorial-human-review.controller';
 import { EditorialReleaseController } from './routes/editorial-release.controller';
 import { EditorialReleaseService, EDITORIAL_RELEASE_CONFIG } from '@postmill-ai/backend/services/editorial/editorial-release.service';
+import { EditorialLiveImageService } from '@postmill-ai/backend/services/editorial/editorial-live-image.service';
 import { EditorialMockImageService } from '@postmill-ai/backend/services/editorial/editorial-mock-image.service';
 import { editorialReleaseConfig, editorialSessionConfig } from './editorial-session-runtime';
 
@@ -22,6 +23,7 @@ export const authenticatedController = [EditorialHumanReviewController, Editoria
   providers: [
     EditorialHumanReviewService,
     EditorialMockImageService,
+    EditorialLiveImageService,
     EditorialReleaseService,
     OrgRbacGuard,
     { provide: EDITORIAL_HUMAN_REVIEW_CONFIG, useFactory: () => editorialSessionConfig(process.env) },

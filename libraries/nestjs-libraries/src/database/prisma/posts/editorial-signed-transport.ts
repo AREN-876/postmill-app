@@ -11,6 +11,7 @@ export const EDITORIAL_LIVE_IMAGE_LOOKUP_PATH = '/internal/editorial/v1/live-ima
 export const EDITORIAL_LIVE_IMAGE_READ_PATH = '/internal/editorial/v1/live-images/read';
 export const EDITORIAL_LIVE_REVIEW_SUBMIT_PATH = '/internal/editorial/v1/live-events/submit';
 export const EDITORIAL_LIVE_REVIEW_LOOKUP_PATH = '/internal/editorial/v1/live-events/lookup';
+export const EDITORIAL_LIVE_PREVIEW_PATH = '/internal/editorial/v1/live-images/preview-check';
 const MAX_IMAGE_RESPONSE = 8 * 1024 * 1024;
 const MAX_REVISION_RESPONSE = 100_000;
 // Fixed numeric loopback only. No DNS, configurable URL, public origin or TLS
@@ -41,6 +42,7 @@ export type EditorialWireConfig = {
   allowMockImageReview?: boolean;
   allowLiveImageRead?: boolean;
   allowLiveImageReview?: boolean;
+  allowLiveImagePreview?: boolean;
 };
 export type EditorialPending = {
   schema_version: 1;
@@ -111,7 +113,8 @@ export async function editorialLoopbackFetch(url: string, init?: RequestInit): P
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_LOOKUP_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_IMAGE_READ_PATH &&
        url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVIEW_SUBMIT_PATH &&
-       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVIEW_LOOKUP_PATH) ||
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_REVIEW_LOOKUP_PATH &&
+       url !== EDITORIAL_LOOPBACK_ORIGIN + EDITORIAL_LIVE_PREVIEW_PATH) ||
       init?.method !== 'POST' || init.redirect !== 'error') {
     throw new EditorialTransportError();
   }
@@ -158,7 +161,7 @@ function responseMessage(path: string, timestamp: string, nonce: string,
 type EditorialPath = typeof EDITORIAL_SUBMIT_PATH | typeof EDITORIAL_LOOKUP_PATH |
   typeof EDITORIAL_REVISION_LOOKUP_PATH | typeof EDITORIAL_LIVE_REVISION_LOOKUP_PATH | typeof EDITORIAL_IMAGE_LOOKUP_PATH | typeof EDITORIAL_IMAGE_READ_PATH |
   typeof EDITORIAL_LIVE_IMAGE_LOOKUP_PATH | typeof EDITORIAL_LIVE_IMAGE_READ_PATH |
-  typeof EDITORIAL_LIVE_REVIEW_SUBMIT_PATH | typeof EDITORIAL_LIVE_REVIEW_LOOKUP_PATH;
+  typeof EDITORIAL_LIVE_REVIEW_SUBMIT_PATH | typeof EDITORIAL_LIVE_REVIEW_LOOKUP_PATH | typeof EDITORIAL_LIVE_PREVIEW_PATH;
 
 async function signedExchangeRaw(
   path: EditorialPath, body: JsonRecord, config: EditorialWireConfig,
@@ -641,4 +644,32 @@ export async function fetchEditorialLiveImage(
   if (bytes.length !== asset.size_bytes || sha(bytes) !== asset.sha256 ||
       bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length-2] !== 0xff || bytes[bytes.length-1] !== 0xd9) throw new EditorialTransportError();
   return {proof,bytes};
+}
+
+
+// Read-only point-in-time authority. The peer must match the full snapshot
+// and exact private receipt; no bytes, paths or new grants travel on this route.
+export async function checkEditorialLivePreview(request: EditorialMockImageRequest,
+  pin: EditorialLiveReviewPin, config: EditorialWireConfig,
+  fetcher: typeof editorialLoopbackFetch = editorialLoopbackFetch,
+  nowMs=Date.now(), nonce=randomBytes(16).toString('hex')):Promise<boolean> {
+  const peer=editorialWireConfig(config);
+  if (config.allowLiveImageReview!==true || config.allowLiveImagePreview!==true ||
+      peer.orgId!=='org-modes' || !exact(request,['org_id','task_id','channel_id','state']) ||
+      request.org_id!==peer.orgId || !validInt64(request.task_id) || !validInt64(request.channel_id) ||
+      !exact(request.state,STATE_KEYS) || !exact(request.state.binding,BINDING_KEYS) ||
+      request.state.binding.org_id!==request.org_id || request.state.binding.task_id!==request.task_id ||
+      request.state.binding.is_test!==true || typeof request.state.binding.integration_id!=='string' ||
+      !request.state.binding.integration_id.startsWith('mock-review-') ||
+      !artifactRef(request.state.image) || request.state.rejected!==false ||
+      request.state.publishable!==false || request.state.dispatch_authorized!==false ||
+      !exact(pin,['plan_id','native_file_id','asset_sha256']) ||
+      typeof pin.plan_id!=='string' || !UUID.test(pin.plan_id) ||
+      typeof pin.native_file_id!=='string' || !UUID.test(pin.native_file_id) ||
+      typeof pin.asset_sha256!=='string' || !SHA.test(pin.asset_sha256)) throw new EditorialTransportError();
+  const reply=await signedExchangeBody(EDITORIAL_LIVE_PREVIEW_PATH,
+    {schema_version:1,...request,native_pin:pin},config,fetcher,nowMs,nonce,MAX_BODY);
+  if (!exact(reply,['schema_version','allowed']) || reply.schema_version!==1 ||
+      typeof reply.allowed!=='boolean') throw new EditorialTransportError();
+  return reply.allowed;
 }

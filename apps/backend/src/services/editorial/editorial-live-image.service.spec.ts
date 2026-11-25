@@ -20,6 +20,7 @@ const adapter={type:'LOCAL',writeBuffer:vi.fn(),readFileStream:vi.fn(),removeFil
 const privateStore={write:vi.fn(),read:vi.fn()};
 const storage={getBaseAdapterForOrg:vi.fn(),assertWithinProviderQuota:vi.fn()};
 const fetchImage=vi.fn();
+const check=vi.fn();
 let proof: {manifest: [{asset_id:string;plan_id:string;sha256:string;mime:'image/jpeg';width:number;height:number;size_bytes:number;provider:'fal';model:string}]};
 const wire=()=>({orgId:org,requestKeyHex:'a'.repeat(64),responseKeyHex:'b'.repeat(64),allowLiveImageRead:true});
 const svc=new EditorialLiveImageService(posts as never,storage as never);
@@ -42,6 +43,9 @@ describe('native fixture image import',()=>{
   privateStore.write.mockResolvedValue(path);
   privateStore.read.mockImplementation(async()=>jpeg);
   fetchImage.mockResolvedValue({proof,bytes:jpeg});
+  check.mockResolvedValue(true);
+  vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED','true');
+  vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED','false');
  });
  afterEach(()=>{vi.unstubAllEnvs();vi.restoreAllMocks();});
  it('requires dedicated opt-in and exact disposable scope',async()=>{
@@ -124,14 +128,30 @@ describe('native fixture image import',()=>{
   const installed={...state,seq:'1',image:{revision:1,sha256:'c'.repeat(64)},image_intent:null,image_compatible:true};
   const current={...ctx,state:installed,media:{file_id:id,path,sha256:sha,size_bytes:jpeg.length,mime:'image/jpeg',revision:1,asset:proof.manifest[0]}};
   posts.readLiveImageContext.mockResolvedValue(current);
-  expect(await svc.preview(org,pid,task,target,installed)).toBeUndefined();
+  expect(await svc.preview(org,pid,task,target,installed,wire,check)).toBeUndefined();
   expect(posts.readLiveImageContext).not.toHaveBeenCalled();
   vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED','true');
-  const preview=await svc.preview(org,pid,task,target,installed);
+  const preview=await svc.preview(org,pid,task,target,installed,wire,check);
   expect(preview).toEqual({bytes:jpeg,mime:'image/jpeg',file_id:id,revision:1,sha256:sha,compatible:true,
-    remote_current_verified:false,...flags});
-  expect(posts.readLiveImageContext).toHaveBeenCalledTimes(2);
+    remote_current_verified:true,...flags});
+  expect(posts.readLiveImageContext).toHaveBeenCalledTimes(3);
+  expect(check).toHaveBeenCalledTimes(2);
+  expect(check).toHaveBeenCalledWith({org_id:org,task_id:task,channel_id:'12',state:installed},
+    {plan_id:token,native_file_id:id,asset_sha256:sha},wire());
   expect(fetchImage).not.toHaveBeenCalled();
+  expect(privateStore.write).not.toHaveBeenCalled();
+ });
+ it('does not read bytes when remote grant is absent; denies revocation after read',async()=>{
+  vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED','true');
+  const installed={...state,seq:'1',image:{revision:1,sha256:'c'.repeat(64)},image_intent:null,image_compatible:true};
+  const current={...ctx,state:installed,media:{file_id:id,path,sha256:sha,size_bytes:jpeg.length,mime:'image/jpeg',revision:1,asset:proof.manifest[0]}};
+  posts.readLiveImageContext.mockResolvedValue(current);
+  check.mockResolvedValueOnce(false);
+  await expect(svc.preview(org,pid,task,target,installed,wire,check)).rejects.toThrow('editorial_image_preview_unavailable');
+  expect(privateStore.read).not.toHaveBeenCalled();
+  check.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  await expect(svc.preview(org,pid,task,target,installed,wire,check)).rejects.toThrow('editorial_image_preview_unavailable');
+  expect(privateStore.read).toHaveBeenCalledTimes(1);
   expect(privateStore.write).not.toHaveBeenCalled();
  });
  it('preview fails closed on stale state, corrupted bytes, or a changed receipt during read',async()=>{
@@ -139,12 +159,12 @@ describe('native fixture image import',()=>{
   const installed={...state,seq:'1',image:{revision:1,sha256:'c'.repeat(64)},image_intent:null,image_compatible:true};
   const current={...ctx,state:installed,media:{file_id:id,path,sha256:sha,size_bytes:jpeg.length,mime:'image/jpeg',revision:1,asset:proof.manifest[0]}};
   posts.readLiveImageContext.mockResolvedValue(current);
-  await expect(svc.preview(org,pid,task,target,{...installed,seq:'0'})).rejects.toThrow('editorial_image_preview_unavailable');
+  await expect(svc.preview(org,pid,task,target,{...installed,seq:'0'},wire,check)).rejects.toThrow('editorial_image_preview_unavailable');
   expect(privateStore.read).not.toHaveBeenCalled();
   privateStore.read.mockResolvedValueOnce(Buffer.from('tampered'));
-  await expect(svc.preview(org,pid,task,target,installed)).rejects.toThrow('editorial_image_preview_unavailable');
+  await expect(svc.preview(org,pid,task,target,installed,wire,check)).rejects.toThrow('editorial_image_preview_unavailable');
   posts.readLiveImageContext.mockResolvedValueOnce(current).mockResolvedValueOnce({...current,state:{...installed,seq:'2'}});
-  await expect(svc.preview(org,pid,task,target,installed)).rejects.toThrow('editorial_image_preview_unavailable');
+  await expect(svc.preview(org,pid,task,target,installed,wire,check)).rejects.toThrow('editorial_image_preview_unavailable');
   expect(privateStore.write).not.toHaveBeenCalled();
   expect(posts.reserveLiveImageImport).not.toHaveBeenCalled();
  });

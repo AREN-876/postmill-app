@@ -347,3 +347,6 @@ browser command fields are command_id, expected_seq, action, feedback. 06B-4A
 does not call the 06B-3C delivery service, authorize paid work or grant
 publication. Before enabling, review cookie CSRF coverage, RBAC bypass
 possibilities, target allowlist and actual deployed PostgreSQL migrations.
+
+### Editorial private JPEG preview
+Only POST /editorial/review/:postId/:taskId/live-image/preview with cookie session, CSRF, explicit org membership/posts:read, exact test target and expected_seq. Requires independent preview/import/review flags. Never expose opaque storage keys or generic media URL. Signed read-only peer authority check before/after bounded local decode, exact native receipt/snapshot recheck, then membership recheck. Return binary JPEG with private no-store, nosniff and same-origin CORP; no publication permission. Point-in-time checks cannot revoke bytes already returned; no distributed lease. Existing mock and native release contracts unchanged.

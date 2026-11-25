@@ -4,6 +4,7 @@ import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/role
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
 import { isEditorialTaskId } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-ingress';
 
+import { EditorialLiveImageService,liveImagePreviewEnabled } from './editorial-live-image.service';
 import { EditorialMockImageService, mockImageImportEnabled } from './editorial-mock-image.service';
 
 export const EDITORIAL_HUMAN_REVIEW_CONFIG = Symbol('EDITORIAL_HUMAN_REVIEW_CONFIG');
@@ -58,6 +59,7 @@ export class EditorialHumanReviewService {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(EDITORIAL_HUMAN_REVIEW_CONFIG) private readonly config: EditorialHumanReviewConfig | null,
     @Optional() @Inject(EditorialMockImageService) private readonly images?: EditorialMockImageService,
+    @Optional() @Inject(EditorialLiveImageService) private readonly liveImages?: EditorialLiveImageService,
   ) {}
 
   private configFor(orgId: string): EditorialHumanReviewConfig {
@@ -107,6 +109,29 @@ export class EditorialHumanReviewService {
       if (image !== undefined) return {...result,mock_image:image};
     }
     return result;
+  }
+
+  async previewLiveImage(orgId:string,userId:string,postId:string,taskId:string,body:unknown) {
+    const cfg=this.configFor(orgId);
+    this.validateIds(postId,taskId);
+    await this.authorize(orgId,userId,'read');
+    if (!this.liveImages || !liveImagePreviewEnabled(orgId,cfg.targetInternalId))
+      throw new NotFoundException('editorial_image_preview_disabled');
+    if (!isRecord(body) || Object.keys(body).length!==1 || typeof body.expected_seq!=='string' ||
+        !SEQ.test(body.expected_seq) || (body.expected_seq.length===19 && body.expected_seq>'9223372036854775807'))
+      throw new HttpException('editorial_invalid_request',400);
+    let view:unknown;
+    try { view=await this.posts.readEditorialHuman(orgId,postId,taskId,cfg.targetInternalId); }
+    catch(e) { return fromDatabase(e); }
+    if (!isRecord(view) || !isRecord(view.review) || view.review.status!=='idle' ||
+        !isRecord(view.review.last_confirmed_state) || view.review.last_confirmed_state.seq!==body.expected_seq)
+      throw new HttpException('editorial_review_conflict',409);
+    const preview=await this.liveImages.preview(orgId,postId,taskId,cfg.targetInternalId,view.review.last_confirmed_state);
+    if (!preview || preview.remote_current_verified!==true) throw new HttpException('editorial_image_preview_unavailable',503);
+    // Membership may have changed during the bounded I/O.
+    await this.authorize(orgId,userId,'read');
+    if (!liveImagePreviewEnabled(orgId,cfg.targetInternalId)) throw new NotFoundException('editorial_image_preview_disabled');
+    return preview.bytes;
   }
 
   async importMockImage(orgId: string, userId: string, postId: string, taskId: string, body: unknown) {
