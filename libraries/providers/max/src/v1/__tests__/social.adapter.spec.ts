@@ -782,10 +782,11 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
       });
     });
 
-    it.each(['lost','malformed'] as const)('uses only GET after %s publication response', async scenario => {
+    it.each(['lost','malformed','contradictory202'] as const)('uses only GET after %s publication response', async scenario => {
       await isolated(async () => {
         wire.mockResolvedValueOnce(response(upload(), 201));
         if (scenario === 'lost') wire.mockRejectedValueOnce(Error('fake publication lost'));
+        else if (scenario === 'contradictory202') wire.mockResolvedValueOnce(response(final, 202));
         else wire.mockResolvedValueOnce(response({ ...final, channel_id: '-9' }));
         wire.mockResolvedValueOnce(response(final));
         expect((await provider.postEditorialLiveStory(channel, outbound, photo, context()))[0].postId)

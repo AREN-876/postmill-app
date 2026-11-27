@@ -373,7 +373,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
 
   private async gatewayRequest(
     origin: string, secret: string, method: 'POST' | 'GET',
-    path: string, operationId: string, body?: object,
+    path: string, operationId: string, body?: object, editorial = false,
   ): Promise<any> {
     try {
       const response = await this.fetch(
@@ -398,7 +398,10 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         this.fail('StoryGo Gateway returned an unexpected status.');
       }
       const data = await response.json();
-      if (!data || typeof data !== 'object') this.fail('Invalid StoryGo Gateway receipt.');
+      if (!data || typeof data !== 'object' ||
+          (editorial && response.status === 202 && data.state === 'PUBLISHED')) {
+        this.fail('Invalid StoryGo Gateway receipt.');
+      }
       return data;
     } catch {
       // MAX token, gateway token and upstream error bodies must never escape
@@ -576,7 +579,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     const body = {
       type: 'story',
       channel_id: chatId,
-      external_post_id: post.id,
+      external_post_id: editorial ? editorial.identity.publicationPostId : post.id,
       operation_id: operationId,
       revision: gateway.revision,
       title: story.title,
@@ -606,7 +609,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
           Object.keys(decision).length !== 1 || decision.allowed !== true ||
           process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1' ||
           !editorialUploadCurrent(verified.expires_at, Date.now()) ||
-          verified.upload_id !== uploadId || verified.sha256 !== editorial.identity.photoSha256) {
+          verified.upload_id !== uploadId || verified.sha256 !== editorial.identity.photoSha256 ||
+          post.id !== editorial.identity.publicationPostId) {
         this.fail('StoryGo editorial authority unavailable; operator review required.');
       }
       // No awaited I/O between this final local check and the sole POST.
@@ -614,7 +618,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     let receipt: any;
     try {
       // One and only one remote POST for a claimed occurrence. Never retry it.
-      receipt = await this.gatewayRequest(origin, secret, 'POST', path, operationId, body);
+      receipt = await this.gatewayRequest(origin, secret, 'POST', path, operationId, body, !!editorial);
     } catch {
       // POST outcome may be unknown. GET is read-only and safe to reconcile.
       receipt = null;
@@ -629,7 +633,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         if (!editorial) throw error;
         // Invalid editorial publication receipt: bounded GET-only reconciliation.
       }
-      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
+      if (mid) return [{ id: editorial ? editorial.identity.publicationPostId : post.id,
+        postId: mid, releaseURL: '', status: 'completed' }];
       if (verified && (receipt.state === 'FAILED' || receipt.state === 'NEEDS_REVIEW')) {
         this.fail('StoryGo Gateway has not confirmed delivery; operator review required.');
       }
@@ -641,7 +646,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       let lookup: any;
       try {
         lookup = await this.gatewayRequest(
-          origin, secret, 'GET', path + '/' + operationId, operationId,
+          origin, secret, 'GET', path + '/' + operationId, operationId, undefined, !!editorial,
         );
       } catch {
         continue;
@@ -653,7 +658,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         if (!editorial) throw error;
         continue;
       }
-      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
+      if (mid) return [{ id: editorial ? editorial.identity.publicationPostId : post.id,
+        postId: mid, releaseURL: '', status: 'completed' }];
       if (lookup.state === 'FAILED' || lookup.state === 'NEEDS_REVIEW') break;
     }
     this.fail('StoryGo Gateway delivery unconfirmed; operator review required.');
