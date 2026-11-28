@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { MaxProvider, maxSocialModule } from '../social.adapter';
+import { MaxProvider, maxSocialModule, type EditorialStoryGoDispatchContext } from '../social.adapter';
+import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { isProviderVerified } from '@postmill-ai/provider-kernel';
 import { bot, chat, chatId, member, post, sent, token } from './fixtures';
 import { installTransport, response, timer, wire } from './transport';
@@ -626,6 +627,173 @@ describe('StoryGo Gateway (synthetic HTTPS only)', () => {
       expect(JSON.parse(wire.mock.calls[1][1].body).upload_id).toBe(uploadId);
       expect(JSON.stringify(wire.mock.calls.map(([url, init]) => [url, init.headers])))
         .not.toContain(token);
+    });
+  });
+
+  it.each(['success','upload_timeout','upload_wrong_digest','publish_timeout'] as const)(
+    'keeps JPEG upload and publication one-shot: %s', async (scenario) => {
+      await withGatewayEnv(async () => {
+        // Transport-only fixture; full decode is tested in the private reader.
+        const bytes=Buffer.from('ffd8ffd9','hex');
+        const sha256=createHash('sha256').update(bytes).digest('hex');
+        const uploadId='a8db6639-7ba0-42b7-8587-dd39d630c91b';
+        if(scenario==='upload_timeout') wire.mockRejectedValueOnce(new Error('ambiguous upload'));
+        else {
+          wire.mockResolvedValueOnce(response({upload_id:uploadId,
+            sha256:scenario==='upload_wrong_digest'?'0'.repeat(64):sha256,
+            mime_type:'image/jpeg',bytes:bytes.length},201));
+          if(scenario==='publish_timeout') wire.mockRejectedValueOnce(new Error('ambiguous publish'))
+            .mockResolvedValueOnce(response(receipt('NEEDS_REVIEW')));
+          else wire.mockResolvedValueOnce(response(receipt('PUBLISHED','mid.jpeg')));
+        }
+        const call=provider.post(chatId,token,[{...post,message:'Заголовок',
+          settings:{...settings(),__gateway:{...settings().__gateway,
+            image:{base64:bytes.toString('base64'),mimeType:'image/jpeg',sha256}}}}]);
+        if(scenario==='success') expect((await call)[0].postId).toBe('mid.jpeg');
+        else await expect(call).rejects.toThrow('operator review');
+        const urls=wire.mock.calls.map(([url,init])=>[url,init.method]);
+        const media='https://gateway.example.invalid/gateway/v1/media';
+        const publication='https://gateway.example.invalid/gateway/v1/publications';
+        expect(urls).toEqual(scenario==='success'?[[media,'POST'],[publication,'POST']]:
+          scenario==='publish_timeout'?[[media,'POST'],[publication,'POST'],[publication+'/'+operationId,'GET']]:
+          [[media,'POST']]);
+        expect(wire.mock.calls[0][1].body.toString()).toContain('filename="story.jpg"');
+        expect(wire.mock.calls[0][1].body.includes(bytes)).toBe(true);
+        if(scenario==='success'||scenario==='publish_timeout'){
+          const payload=JSON.parse(wire.mock.calls[1][1].body);
+          expect(payload.upload_id).toBe(uploadId);
+          expect(payload.operation_id).toBe(operationId);
+          expect(JSON.stringify(payload)).not.toContain(bytes.toString('base64'));
+        }
+      });
+    });
+
+
+  describe('028B.4B private editorial transport boundary (fake wire)', () => {
+    const channel = '-73052031470103';
+    const publication = 'b'.repeat(32);
+    const bytes = Buffer.from('ffd8ffd9', 'hex'); // transport fixture; decode is a private reader gate
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const photo = { base64: bytes.toString('base64'), mimeType: 'image/jpeg' as const, sha256 };
+    const now = 1800000000000;
+    const outbound = { ...post, id: publication, message: 'Заголовок\nПервая часть',
+      settings: { mode: 'story', continuationText: settings().continuationText } };
+    const identity = { orgId: 'org-modes', publicationPostId: publication, occurrenceId: revision,
+      attempt: 1 as const, operationId, channelId: channel, fingerprint: 'c'.repeat(64),
+      storyPartsSha256: createHash('sha256').update(JSON.stringify(
+        maxStoryParts(outbound.message, outbound.settings.continuationText))).digest('hex'),
+      photoSha256: sha256 };
+    const upload = (remaining = 300) => ({ upload_id: 'a8db6639-7ba0-42b7-8587-dd39d630c91b',
+      sha256, mime_type: 'image/jpeg', bytes: bytes.length, expires_at: now / 1000 + remaining });
+    const final = { operation_id: operationId, channel_id: channel, state: 'PUBLISHED', message_id: 'mid.fake' };
+    const calls = () => wire.mock.calls.map(([url, init]) => [String(url).split('/gateway/v1/')[1], init.method]);
+    async function isolated(fn: () => Promise<void>) {
+      await withGatewayEnv(async () => {
+        const flag = 'EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED';
+        const saved = process.env[flag];
+        process.env[flag] = '1';
+        process.env.STORYGO_GATEWAY_ALLOWED_CHANNELS = channel;
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+        try { await fn(); } finally {
+          clock.mockRestore();
+          if (saved === undefined) delete process.env[flag]; else process.env[flag] = saved;
+        }
+      });
+    }
+    function context(beforePublication = vi.fn(async () => ({ allowed: true as const }))): EditorialStoryGoDispatchContext {
+      return { kind: 'editorial-live-story', identity, beforePublication };
+    }
+
+    it('allows exactly 300s, validates the receipt before one callback and one POST', async () => {
+      await isolated(async () => {
+        const gate = vi.fn(async () => {
+          expect(calls()).toEqual([['media', 'POST']]);
+          return { allowed: true as const };
+        });
+        wire.mockResolvedValueOnce(response(upload(), 201)).mockResolvedValueOnce(response(final));
+        expect((await provider.postEditorialLiveStory(channel, outbound, photo, context(gate)))[0].postId)
+          .toBe('mid.fake');
+        expect(gate).toHaveBeenCalledExactlyOnceWith(upload());
+        expect(calls()).toEqual([['media', 'POST'], ['publications', 'POST']]);
+        const payload = JSON.parse(wire.mock.calls[1][1].body);
+        expect(payload).toMatchObject({ external_post_id: publication, operation_id: operationId,
+          revision, channel_id: channel, upload_id: upload().upload_id });
+        expect(JSON.stringify(payload)).not.toContain(photo.base64);
+      });
+    });
+
+    it.each(['ttl299','missing','ms','uuid','digest','mime','size','future'] as const)(
+      'holds invalid upload receipt %s before callback', async scenario => {
+        await isolated(async () => {
+          const value: Record<string, unknown> = upload();
+          if (scenario === 'ttl299') value.expires_at = now / 1000 + 299;
+          if (scenario === 'missing') delete value.expires_at;
+          if (scenario === 'ms') value.expires_at = now + 300000;
+          if (scenario === 'uuid') value.upload_id = operationId;
+          if (scenario === 'digest') value.sha256 = 'f'.repeat(64);
+          if (scenario === 'mime') value.mime_type = 'image/png';
+          if (scenario === 'size') value.bytes = bytes.length + 1;
+          if (scenario === 'future') value.expires_at = now / 1000 + 3631;
+          const gate = vi.fn(async () => ({ allowed: true as const }));
+          wire.mockResolvedValueOnce(response(value, 201));
+          await expect(provider.postEditorialLiveStory(channel, outbound, photo, context(gate)))
+            .rejects.toThrow('operator review');
+          expect(gate).not.toHaveBeenCalled();
+          expect(calls()).toEqual([['media', 'POST']]);
+        });
+      });
+
+    it.each(['denied','throw','ttl_after','disabled_after','malformed'] as const)(
+      'holds after upload on authority %s', async scenario => {
+        await isolated(async () => {
+          const gate: EditorialStoryGoDispatchContext['beforePublication'] = vi.fn(async () => {
+            if (scenario === 'throw') throw Error('fake authority timeout');
+            if (scenario === 'ttl_after') vi.mocked(Date.now).mockReturnValue(now + 1000);
+            if (scenario === 'disabled_after') delete process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED;
+            if (scenario === 'denied') return { allowed: false as const };
+            if (scenario === 'malformed') return { allowed: true as const, extra: true };
+            return { allowed: true as const };
+          });
+          wire.mockResolvedValueOnce(response(upload(), 201));
+          await expect(provider.postEditorialLiveStory(channel, outbound, photo,
+            { kind: 'editorial-live-story', identity, beforePublication: gate })).rejects.toThrow('operator review');
+          expect(gate).toHaveBeenCalledTimes(1);
+          expect(calls()).toEqual([['media', 'POST']]);
+        });
+      });
+
+    it('refuses disabled or wrong immutable identity before upload', async () => {
+      await isolated(async () => {
+        await expect(provider.postEditorialLiveStory(channel, outbound, photo,
+          { ...context(), identity: { ...identity, operationId: 'wrong' } })).rejects.toThrow('operator review');
+        delete process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED;
+        await expect(provider.postEditorialLiveStory(channel, outbound, photo, context()))
+          .rejects.toThrow('operator review');
+        expect(wire).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not reupload or POST after lost upload response', async () => {
+      await isolated(async () => {
+        wire.mockRejectedValueOnce(Error('fake upload lost'));
+        await expect(provider.postEditorialLiveStory(channel, outbound, photo, context()))
+          .rejects.toThrow('operator review');
+        expect(calls()).toEqual([['media', 'POST']]);
+      });
+    });
+
+    it.each(['lost','malformed','contradictory202'] as const)('uses only GET after %s publication response', async scenario => {
+      await isolated(async () => {
+        wire.mockResolvedValueOnce(response(upload(), 201));
+        if (scenario === 'lost') wire.mockRejectedValueOnce(Error('fake publication lost'));
+        else if (scenario === 'contradictory202') wire.mockResolvedValueOnce(response(final, 202));
+        else wire.mockResolvedValueOnce(response({ ...final, channel_id: '-9' }));
+        wire.mockResolvedValueOnce(response(final));
+        expect((await provider.postEditorialLiveStory(channel, outbound, photo, context()))[0].postId)
+          .toBe('mid.fake');
+        expect(calls()).toEqual([['media', 'POST'], ['publications', 'POST'],
+          ['publications/' + operationId, 'GET']]);
+      });
     });
   });
 

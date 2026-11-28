@@ -138,6 +138,17 @@ export class PostsRepository {
     return row.result;
   }
 
+  // Internal only: caller must first authenticate the editor and verify private preview.
+  async queueEditorialLiveHuman(org: string, pid: string, task: string, target: string,
+    actor: string, command: { command_id: string; expected_seq: string; action: string; feedback: string }) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_queue_editorial_live_human_v1(
+        ${org}::text,${pid}::text,${task}::text,${target}::text,${actor}::text,${JSON.stringify(command)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
   async readMockImageContext(org: string, pid: string, task: string, target: string) {
     const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
       SELECT public.postmill_mock_image_context_v1(${org}::text,${pid}::text,${task}::text,${target}::text) AS result
@@ -162,6 +173,30 @@ export class PostsRepository {
     return row.result;
   }
 
+  async readLiveImageContext(org: string, pid: string, task: string, target: string) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_live_image_context_v1(${org}::text,${pid}::text,${task}::text,${target}::text) AS result
+    `;
+    return row.result;
+  }
+
+  async reserveLiveImageImport(org: string, pid: string, task: string, target: string, proof: unknown) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_reserve_live_image_import_v1(${org}::text,${pid}::text,${task}::text,
+        ${target}::text,${JSON.stringify(proof)}::jsonb) AS result
+    `;
+    return row.result;
+  }
+
+  async finishLiveImageImport(org: string, pid: string, task: string, target: string,
+    importId: string, token: string, path: string, digest: string, size: number) {
+    const [row] = await this._post.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+      SELECT public.postmill_finish_live_image_import_v1(${org}::text,${pid}::text,${task}::text,
+        ${target}::text,${importId}::text,${token}::text,${path}::text,${digest}::text,${size}::integer) AS result
+    `;
+    return row.result;
+  }
+
   // One explicit release command turns a frozen three-part editorial DRAFT
   // into ONE ordinary, native MAX publishing Post with an immutable association.
   // The SQL function is the authoritative idempotency/revision/target fence;
@@ -181,6 +216,44 @@ export class PostsRepository {
       ) AS result
     `;
     return row.result;
+  }
+
+  // Trusted, default-off live queue command. The service must verify the
+  // signed peer and decode the exact private JPEG before entering this port.
+  // The installed SQL independently checks state/pin/bytes and slot under lock.
+  async releaseLiveEditorialStory(org: string, pid: string, task: string, target: string,
+    actor: string, command: {command_id:string;action:'queue';publish_at:string},
+    state: unknown, pin: unknown, bytes: Buffer) {
+    if (org !== 'org-modes' || target !== 'max:-73052031470103' ||
+        command.action !== 'queue' || process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_ENABLED !== 'true' ||
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1' ||
+        !Buffer.isBuffer(bytes) || bytes.length < 4 || bytes.length > 8388608)
+      throw new Error('editorial_live_release_disabled');
+    return this._transaction.model.$transaction(async tx => {
+      await tx.$queryRaw`SELECT set_config('postmill.editorial_live_release_enabled','on',true)`;
+      // Exact test profile/target, not caller-provided settings or a mutable
+      // alias. The SQL release acquires the native task/channel locks itself.
+      const [scope] = await tx.$queryRaw<Array<{valid:boolean}>>`
+        SELECT EXISTS (
+          SELECT 1 FROM "Post" p JOIN "EditorialDraftReceipt" d ON d."postId"=p.id
+          WHERE p.id=${pid} AND p."organizationId"=${org} AND p."editorialTaskId"=${task}
+            AND d.request->'scope'->>'profile_ref'='review-ci@v77'
+            AND d.request->'scope'->>'integration_id'='mock-review-image-automatic'
+            AND d.request->'scope'->>'campaign_id'='mock-image-crossdb'
+            AND d.request->'scope'->'is_test'='true'::jsonb
+            AND d.request->'scope'->>'image_mode'='automatic'
+        ) AS valid
+      `;
+      if (scope?.valid !== true) throw new Error('editorial_live_release_scope_mismatch');
+      const [row] = await tx.$queryRaw<Array<{result:Prisma.JsonValue}>>`
+        SELECT public.postmill_release_live_editorial_story_v1(
+          ${org}::text,${pid}::text,${task}::text,${target}::text,${actor}::text,
+          ${JSON.stringify(command)}::jsonb,${JSON.stringify(state)}::jsonb,
+          ${JSON.stringify(pin)}::jsonb,${bytes}::bytea
+        ) AS result
+      `;
+      return row.result;
+    }, {isolationLevel:Prisma.TransactionIsolationLevel.ReadCommitted,timeout:5000});
   }
 
   async readEditorialRelease(orgId: string, sourcePostId: string) {
@@ -215,7 +288,7 @@ export class PostsRepository {
   // Only one test organization's frozen MAX story decisions are eligible.
   // This is candidate discovery, NOT permission to submit: every event is
   // revalidated by readPendingEditorialDelivery and the SQL reservation.
-  async listPendingEditorialTestDelivery(orgId: string, target: string) {
+  async listPendingEditorialTestDelivery(orgId: string, target: string, allowLiveReview = false) {
     return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope }>>`
       SELECT p."editorialTaskId" AS task, r.request->'scope' AS scope
       FROM "EditorialDecisionOutbox" o
@@ -224,6 +297,9 @@ export class PostsRepository {
       JOIN "Integration" i ON i.id=p."integrationId"
       LEFT JOIN "EditorialDecisionResult" d ON d."eventId"=o."eventId"
       WHERE d."eventId" IS NULL
+        AND (${allowLiveReview}::boolean OR NOT EXISTS(
+          SELECT 1 FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          WHERE a."postId"=p.id AND a.proof->'manifest'->0->>'mime'='image/jpeg'))
         AND p."organizationId"=${orgId}::text
         AND p.state='DRAFT'
         AND p."editorialTaskId" IS NOT NULL
@@ -270,10 +346,11 @@ export class PostsRepository {
 
   // Exact test-only accepted return requests that still await a newer artifact.
   // Revalidated by the transactional import function after signed lookup.
-  async listPendingEditorialTextRevisions(orgId: string, target: string, allowMock = false) {
-    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string }>>`
+  async listPendingEditorialTextRevisions(orgId: string, target: string, allowMock = false, allowLive = false) {
+    return this._post.$queryRaw<Array<{ task: string; scope: EditorialScope; eventId: string; digest: string; nativePin?: import('./editorial-signed-transport').EditorialLiveReviewPin | null }>>`
       SELECT p."editorialTaskId" AS task, d.request->'scope' AS scope,
-             o."eventId", o."payloadHash" AS digest
+             o."eventId", o."payloadHash" AS digest,
+             public.postmill_live_image_pin_v1(p.id,o.payload->'image') AS "nativePin"
       FROM "EditorialDecisionOutbox" o
       JOIN "EditorialDecisionResult" r ON r."eventId"=o."eventId"
       JOIN "Post" p ON p.id=o."postId"
@@ -286,8 +363,12 @@ export class PostsRepository {
         AND p."editorialTaskId" IS NOT NULL
         AND d.request->'scope'->>'org_id'=${orgId}::text
         AND d.request->'scope'->'is_test'='true'::jsonb
-        AND (d.request->'scope'->>'image_mode'='disabled' OR (${allowMock}::boolean AND
-          public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)))
+        AND ((${allowLive}::boolean AND public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)
+            AND public.postmill_live_image_pin_v1(p.id,o.payload->'image') IS NOT NULL)
+          OR ((d.request->'scope'->>'image_mode'='disabled' OR (${allowMock}::boolean AND
+            public.postmill_mock_image_review_scope_v1(d.request->'scope',${target}::text)))
+            AND NOT EXISTS(SELECT 1 FROM "EditorialImageImport" a JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+              WHERE a."postId"=p.id AND a.proof->'manifest'->0->>'mime'='image/jpeg')))
         AND d."targetSnapshot"->>'internalId'=${target}::text AND i."internalId"=${target}::text
         AND i."providerIdentifier"='max' AND NOT i.disabled AND NOT i."refreshNeeded"
         AND i."deletedAt" IS NULL
@@ -305,6 +386,17 @@ export class PostsRepository {
       SELECT public.postmill_import_editorial_revision_v1(
         ${JSON.stringify(scope)}::jsonb, ${task}::text, ${target}::text,
         ${eventId}::text, ${digest}::text, ${JSON.stringify(proof)}::jsonb
+      ) AS result
+    `;
+    return row.result;
+  }
+
+  async importEditorialLiveTextRevision(scope: EditorialScope,task: string,target: string,
+    eventId: string,digest: string,proof: object,pin: object) {
+    const [row] = await this._post.$queryRaw<Array<{result:Prisma.JsonValue}>>`
+      SELECT public.postmill_import_editorial_live_revision_v1(
+        ${JSON.stringify(scope)}::jsonb,${task}::text,${target}::text,${eventId}::text,${digest}::text,
+        ${JSON.stringify(proof)}::jsonb,${JSON.stringify(pin)}::jsonb
       ) AS result
     `;
     return row.result;
@@ -878,6 +970,86 @@ export class PostsRepository {
         releaseId: String(releaseId),
       },
     });
+  }
+
+  // Classify from the native release/source/import ledger, not job settings.
+  // An incomplete editorial image release must never fall back to ordinary.
+  async classifyEditorialLiveRelease(org: string, publication: string) {
+    const [row] = await this._post.$queryRaw<Array<{ route: string }>>`
+      SELECT CASE
+        WHEN r."publicationPostId" IS NULL THEN 'ordinary'
+        WHEN src.id IS NULL OR d."postId" IS NULL THEN 'blocked'
+        WHEN EXISTS (
+          SELECT 1 FROM "EditorialImageImport" a
+          LEFT JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          WHERE a."postId"=src.id AND
+            (a.proof->'manifest'->0->>'mime'='image/jpeg'
+             OR b."storagePath" LIKE 'editorial-private:v1:%')
+        ) THEN 'live'
+        WHEN d.request->'scope'->>'image_mode'='disabled'
+          AND NOT EXISTS (SELECT 1 FROM "EditorialImageImport" a WHERE a."postId"=src.id)
+          THEN 'ordinary'
+        WHEN EXISTS (
+          SELECT 1 FROM "EditorialImageImport" a
+          JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          JOIN "File" f ON f.id=b."fileId"
+          WHERE a."postId"=src.id AND a.proof->'manifest'->0->>'mime'='image/png'
+            AND f."organizationId"=${org} AND f."deletedAt" IS NULL
+            AND f.metadata->>'internal'='editorial-mock'
+            AND f.path=b."storagePath" AND f.path NOT LIKE 'editorial-private:v1:%'
+            AND dst.settings::jsonb->>'storyImageId'=b."fileId"
+            AND dst.settings::jsonb->>'storyImageSha256'=b."assetSha256"
+        ) THEN 'ordinary'
+        ELSE 'blocked'
+      END AS route
+      FROM "Post" dst
+      LEFT JOIN "EditorialRelease" r ON r."publicationPostId"=dst.id
+      LEFT JOIN "Post" src ON src.id=r."sourcePostId" AND src."organizationId"=dst."organizationId"
+      LEFT JOIN "EditorialDraftReceipt" d ON d."postId"=src.id
+      WHERE dst.id=${publication} AND dst."organizationId"=${org}
+    `;
+    return row?.route === 'ordinary' || row?.route === 'live' ? row.route : 'blocked';
+  }
+
+  // Installed 61 projection. No HTTP or private-file IO in the transaction.
+  async readEditorialLiveReleasePhoto(org: string, publication: string, occurrence: string,
+    expected: { content: string; settings: string; integrationId: string; partsSha256: string },
+    operation?: string) {
+    if (org !== 'org-modes' || !/^[0-9a-f]{32}$/.test(publication) ||
+        !/^max_[0-9a-f]{64}$/.test(occurrence) ||
+        !/^[0-9a-f]{64}$/.test(expected.partsSha256) ||
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1') return null;
+    return this._transaction.model.$transaction(async tx => {
+      await tx.$queryRaw`SELECT set_config('postmill.editorial_live_release_worker_enabled','on',true)`;
+      const [row] = await tx.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+        SELECT public.postmill_read_live_release_photo_v1(
+          ${org}::text,${publication}::text,${occurrence}::text,
+          ${operation !== undefined}::boolean,${operation ?? null}::text
+        ) AS result
+      `;
+      if (!row?.result) return null;
+      const [match] = await tx.$queryRaw<Array<{ valid: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM "Post" p
+          JOIN "EditorialRelease" r ON r."publicationPostId"=p.id
+          JOIN "EditorialDraftReceipt" d ON d."postId"=r."sourcePostId"
+          WHERE p.id=${publication} AND p."organizationId"=${org}
+            AND p.content=${expected.content} AND p.settings=${expected.settings}
+            AND p.image='[]' AND p."integrationId"=${expected.integrationId}
+            AND d.request->'scope'->>'profile_ref'='review-ci@v77'
+            AND d.request->'scope'->>'integration_id'='mock-review-image-automatic'
+            AND d.request->'scope'->>'campaign_id'='mock-image-crossdb'
+            AND d.request->'scope'->'is_test'='true'::jsonb
+            AND (${operation === undefined}::boolean OR EXISTS (
+              SELECT 1 FROM "MaxDeliveryAttempt" a
+              WHERE a."occurrenceId"=${occurrence} AND a.number=1 AND a.state='STARTED'
+                AND a.target->>'storygoOperationId'=${operation ?? null}
+                AND a.target->>'storyPartsSha256'=${expected.partsSha256}
+            ))
+        ) AS valid
+      `;
+      return match?.valid === true ? row.result : null;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 5000 });
   }
 
   private maxOccurrences() { return new MaxOccurrences(this._transaction.model); }

@@ -4,7 +4,7 @@ import { Global, MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthMiddleware } from '@postmill-ai/backend/services/auth/auth.middleware';
 import { CsrfMiddleware } from '@postmill-ai/backend/services/auth/csrf.middleware';
 import { OrgRbacGuard } from '@postmill-ai/backend/services/auth/rbac/org-rbac.guard';
@@ -15,6 +15,7 @@ import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/p
 import {
   EditorialHumanReviewService, EDITORIAL_HUMAN_REVIEW_CONFIG,
 } from '@postmill-ai/backend/services/editorial/editorial-human-review.service';
+import { EditorialLiveImageService } from '@postmill-ai/backend/services/editorial/editorial-live-image.service';
 import { EditorialHumanReviewController } from './editorial-human-review.controller';
 import fs from 'node:fs';
 import nodePath from 'node:path';
@@ -22,11 +23,13 @@ import nodePath from 'node:path';
 const posts = {
   readEditorialHuman: vi.fn(),
   queueEditorialHuman: vi.fn(),
+  queueEditorialLiveHuman: vi.fn(),
 };
 const roles = { getEffectivePermissions: vi.fn() };
 const audit = { record: vi.fn() };
 const resolver = { resolve: vi.fn() };
 const config = { enabled: true, testOrgId: 'org-a', targetInternalId: 'test-channel' };
+const liveImages={preview:vi.fn(),import:vi.fn()};
 const postId = 'a'.repeat(32);
 const path = '/editorial/review/' + postId + '/198';
 const command = {
@@ -47,6 +50,7 @@ class TestSessionAuthMiddleware extends AuthMiddleware {
     EditorialHumanReviewService,
     { provide: OrgRbacGuard, useValue: new OrgRbacGuard(new Reflector(), roles as never, audit as never) },
     { provide: PostsRepository, useValue: posts },
+    { provide: EditorialLiveImageService,useValue:liveImages },
     { provide: RolesService, useValue: roles },
     { provide: AuditService, useValue: audit },
     { provide: AuthContextResolver, useValue: resolver },
@@ -89,8 +93,9 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
   afterAll(async () => { await app?.close(); });
   beforeEach(() => {
     vi.resetAllMocks();
+    config.testOrgId='org-a';config.targetInternalId='test-channel';
     resolver.resolve.mockImplementation(async ({ jwt }: { jwt: string }) => {
-      const orgId = jwt === 'other-org' ? 'org-b' : 'org-a';
+      const orgId = jwt === 'other-org' ? 'org-b' : config.testOrgId;
       return { ok: true, context: { org: { id: orgId }, user: { id: jwt === 'viewer' ? 'viewer' : jwt === 'owner' ? 'owner' : 'editor' },
         impersonated: false, expiresAt: null } };
     });
@@ -113,6 +118,7 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     audit.record.mockResolvedValue(undefined);
   });
 
+  afterEach(()=>vi.unstubAllEnvs());
   it('has the existing cookie/CSRF middleware and fail-closed test-only runtime import', () => {
     const source = fs.readFileSync(nodePath.resolve(__dirname, '../editorial-human-review.module.ts'), 'utf8');
     const runtime = fs.readFileSync(nodePath.resolve(__dirname, '../api.module.ts'), 'utf8');
@@ -176,6 +182,102 @@ describe('06B-4A isolated cookie-only human review HTTP', () => {
     expect((await request('auth=viewer; csrf_token='+csrf)).status).toBe(403);
     expect((await request('')).status).toBe(403);
     expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+  });
+  it('live JPEG preview is default-off, cookie/CSRF/RBAC scoped, binary and no-store',async()=>{
+    const request=(session=cookie,headers:Record<string,string>={},body:unknown={expected_seq:'0'})=>
+      fetch(url+path+'/live-image/preview',{method:'POST',headers:{cookie:session,
+        'content-type':'application/json','x-csrf-token':csrf,...headers},body:JSON.stringify(body)});
+    expect((await request()).status).toBe(404);
+    config.testOrgId='org-modes';config.targetInternalId='max:-73052031470103';
+    for(const name of ['SESSION','LIVE_IMAGE_IMPORT','LIVE_IMAGE_REVIEW','LIVE_IMAGE_PREVIEW'])
+      vi.stubEnv('EDITORIAL_TEST_'+name+'_ENABLED','true');
+    vi.stubEnv('EDITORIAL_TEST_ORG_ID','org-modes');
+    vi.stubEnv('EDITORIAL_TEST_MAX_TARGET',config.targetInternalId);
+    expect((await request('')).status).toBe(403);
+    expect((await request(cookie,{'x-csrf-token':''})).status).toBe(403);
+    expect((await request(cookie,{authorization:'Bearer key'})).status).toBe(403);
+    expect((await request('auth=other-org; csrf_token='+csrf)).status).toBe(404);
+    expect((await request(cookie,{}, {expected_seq:'0',path:'/uploads/a.jpg'})).status).toBe(400);
+    expect((await request(cookie,{}, {expected_seq:'1'})).status).toBe(409);
+    roles.getEffectivePermissions.mockResolvedValueOnce(null);
+    expect((await request()).status).toBe(403);
+    expect(liveImages.preview).not.toHaveBeenCalled();
+    const jpeg=Buffer.from('ffd8ffd9','hex');
+    liveImages.preview.mockResolvedValue({bytes:jpeg,remote_current_verified:true});
+    const result=await request('auth=viewer; csrf_token='+csrf);
+    expect(result.status).toBe(200);
+    expect(result.headers.get('content-type')).toContain('image/jpeg');
+    expect(result.headers.get('cache-control')).toBe('private, no-store');
+    expect(result.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(result.headers.get('cross-origin-resource-policy')).toBe('same-origin');
+    expect(Buffer.from(await result.arrayBuffer())).toEqual(jpeg);
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+  });
+  it('advertises live preview capability only for the explicitly opted-in non-mock target', async () => {
+    expect((await (await read()).json()).live_image_preview_enabled).toBeUndefined();
+    config.testOrgId='org-modes';config.targetInternalId='max:-73052031470103';
+    for (const name of ['SESSION','LIVE_IMAGE_IMPORT','LIVE_IMAGE_REVIEW','LIVE_IMAGE_PREVIEW'])
+      vi.stubEnv('EDITORIAL_TEST_'+name+'_ENABLED','true');
+    vi.stubEnv('EDITORIAL_TEST_ORG_ID',config.testOrgId);
+    vi.stubEnv('EDITORIAL_TEST_MAX_TARGET',config.targetInternalId);
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','false');
+    const enabled = await (await read()).json();
+    expect(enabled.live_image_preview_enabled).toBe(true);
+    expect(enabled.remote_current_verified).toBe(false);
+    expect(enabled.publishable).toBe(false);
+    expect(enabled.dispatch_authorized).toBe(false);
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','true');
+    expect((await (await read()).json()).live_image_preview_enabled).toBeUndefined();
+    expect(liveImages.preview).not.toHaveBeenCalled();
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+  });
+  it('live human writes are independently gated, scoped and native-pinned', async () => {
+    const send=(suffix:string,body:unknown,session=cookie,extra:Record<string,string>={}) =>
+      fetch(url+path+'/live-image/'+suffix,{method:'POST',headers:{cookie:session,
+        'content-type':'application/json','x-csrf-token':csrf,...extra},body:JSON.stringify(body)});
+    config.testOrgId='org-modes';config.targetInternalId='max:-73052031470103';
+    for (const name of ['SESSION','LIVE_IMAGE_IMPORT','LIVE_IMAGE_REVIEW','LIVE_IMAGE_PREVIEW'])
+      vi.stubEnv('EDITORIAL_TEST_'+name+'_ENABLED','true');
+    vi.stubEnv('EDITORIAL_TEST_ORG_ID',config.testOrgId);
+    vi.stubEnv('EDITORIAL_TEST_MAX_TARGET',config.targetInternalId);
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','false');
+    vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_HUMAN_ENABLED','false');
+    expect((await send('import',{expected_seq:'0'})).status).toBe(404);
+    expect((await send('decisions',command)).status).toBe(404);
+    expect((await (await read()).json()).live_image_mutations_enabled).toBeUndefined();
+    vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_HUMAN_ENABLED','true');
+    expect((await (await read()).json()).live_image_mutations_enabled).toBe(true);
+    expect((await send('import',{expected_seq:'0'},'auth=viewer; csrf_token='+csrf)).status).toBe(403);
+    expect((await send('import',{expected_seq:'0'},cookie,{'x-csrf-token':''})).status).toBe(403);
+    expect((await send('import',{expected_seq:'0',file_id:'forged'})).status).toBe(400);
+    expect((await send('import',{expected_seq:'0'},'auth=other-org; csrf_token='+csrf)).status).toBe(404);
+    expect(liveImages.import).not.toHaveBeenCalled();
+    liveImages.import.mockResolvedValue({status:'recorded',publishable:false,dispatch_authorized:false});
+    expect((await send('import',{expected_seq:'0'})).status).toBe(200);
+    expect(liveImages.import).toHaveBeenCalledExactlyOnceWith(config.testOrgId,postId,'198',config.targetInternalId,'0',
+      undefined,undefined,expect.any(Function));
+
+    const state={seq:'1',image:{revision:1,sha256:'a'.repeat(64)},image_compatible:true};
+    posts.readEditorialHuman.mockResolvedValue({review_acknowledged:true,review:{status:'idle',last_confirmed_state:state}});
+    const approve={...command,expected_seq:'1',action:'approve_final'};
+    expect((await send('decisions',{...approve,expected_seq:'0'})).status).toBe(409);
+    expect((await send('decisions',{...approve,native_file_id:'forged'})).status).toBe(400);
+    expect((await send('decisions',approve,'auth=viewer; csrf_token='+csrf)).status).toBe(403);
+    expect(liveImages.preview).not.toHaveBeenCalled();
+    liveImages.preview.mockResolvedValueOnce(undefined);
+    expect((await send('decisions',approve)).status).toBe(409);
+    liveImages.preview.mockResolvedValueOnce({remote_current_verified:true,compatible:false});
+    expect((await send('decisions',approve)).status).toBe(409);
+    expect(posts.queueEditorialLiveHuman).not.toHaveBeenCalled();
+    liveImages.preview.mockResolvedValue({remote_current_verified:true,compatible:true});
+    posts.queueEditorialLiveHuman.mockResolvedValue({status:'queued/unconfirmed',event_id:'22222222-2222-4222-8222-222222222222',replay:false,publishable:false,dispatch_authorized:false});
+    const result=await send('decisions',approve);
+    expect(result.status).toBe(200);
+    expect((await result.json()).publishable).toBe(false);
+    expect(posts.queueEditorialLiveHuman).toHaveBeenCalledExactlyOnceWith(config.testOrgId,postId,'198',config.targetInternalId,'editor',approve);
+    expect(posts.queueEditorialHuman).not.toHaveBeenCalled();
+    vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','true');
+    expect((await send('decisions',approve)).status).toBe(404);
   });
   it('denies viewer mutation through real OrgRbacGuard', async () => {
     const d = await decision(command, {}, 'auth=viewer; csrf_token=' + csrf);

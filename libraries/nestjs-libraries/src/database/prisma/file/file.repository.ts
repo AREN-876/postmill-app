@@ -2,6 +2,7 @@ import { PrismaRepository } from '@postmill-ai/nestjs-libraries/database/prisma/
 import { Injectable, Logger } from '@nestjs/common';
 import { SaveMediaInformationDto } from '@postmill-ai/nestjs-libraries/dtos/file/save.media.information.dto';
 import { Prisma } from '@prisma/client';
+import { EDITORIAL_PRIVATE_IMAGE_PREFIX } from '../posts/editorial-private-image';
 import { stat } from 'fs/promises';
 import { extname, resolve, relative, isAbsolute } from 'path';
 
@@ -239,7 +240,7 @@ export class FileRepository {
     return this._file.model.file.findUnique({
       where: {
         id,
-        organizationId: org,
+        organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
       },
       include: {
         folder: {
@@ -312,7 +313,7 @@ export class FileRepository {
   getFileByPath(org: string, filePath: string) {
     return this._file.model.file.findFirst({
       where: {
-        organizationId: org,
+        organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
         path: filePath,
         deletedAt: null as null,
       },
@@ -349,7 +350,7 @@ export class FileRepository {
   getFilesByPaths(org: string, filePaths: string[]) {
     return this._file.model.file.findMany({
       where: {
-        organizationId: org,
+        organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
         path: { in: filePaths },
         deletedAt: null as null,
       },
@@ -430,6 +431,7 @@ export class FileRepository {
       deletedAt: null as null,
     };
 
+    where.NOT = { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } };
     const and: any[] = [];
     if (!includeAiDesigner) {
       // "metadata->>'aiDesigner' is unset" — AnyNull covers both a missing key
@@ -692,7 +694,7 @@ export class FileRepository {
   async getByIds(org: string, ids: string[]) {
     if (!ids.length) return [];
     return this._file.model.file.findMany({
-      where: { id: { in: ids }, organizationId: org, deletedAt: null as null },
+      where: { id: { in: ids }, organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } }, deletedAt: null as null },
       select: {
         id: true,
         name: true,
@@ -734,7 +736,7 @@ export class FileRepository {
 
   async searchFiles(org: string, query: string, folderId?: string) {
     const where: any = {
-      organizationId: org,
+      organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
       deletedAt: null as null,
       OR: [
         { name: { contains: query, mode: 'insensitive' } },
@@ -773,7 +775,7 @@ export class FileRepository {
     const pageNum = (page || 1) - 1;
 
     const where = {
-      organizationId: org,
+      organizationId: org, NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
       deletedAt: null as null,
       folderId,
     };

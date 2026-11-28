@@ -2,7 +2,7 @@
 """Read-only VPS inventory for Editorial 06B. Never installs, migrates or deploys.
 
 This probes the *running* containers and compares the live migration
-ledger against the reviewed local 59-migration checkout. It does not establish
+ledger against the reviewed local 61-migration checkout. It does not establish
 schema/data identity or readiness to deploy. Does not verify credentials, Postmill route activation,
 MAX safety, backup integrity, or Editorial/PG end-to-end behavior.
 """
@@ -19,7 +19,7 @@ import sys
 POSTMILL = "postmill-postmill-1"
 POSTGRES = "postmill-postgres-1"
 # Local source is required to validate the checksums in _prisma_migrations.
-# It must be the full reviewed fork checkout (59 migration.sql files).
+# It must be the full reviewed fork checkout (61 migration.sql files).
 MIGRATION_ROOT = Path(__file__).resolve().parents[2] / (
     "libraries/nestjs-libraries/src/database/prisma/migrations"
 )
@@ -40,6 +40,8 @@ MIGRATIONS = (
     "20261124140000_editorial_mock_image_import",
     "20261124160000_editorial_mock_image_review",
     "20261124180000_editorial_mock_image_release",
+    "20261124200000_editorial_live_image_import",
+    "20261125200000_editorial_live_image_release",
 )
 
 # Fixed SQL, fixed containers, no user-supplied SQL, credentials, or queries.
@@ -169,9 +171,9 @@ def verify_applied_checksums(db: dict[str, object]) -> dict[str, object]:
     """
     try:
         files = sorted(MIGRATION_ROOT.glob("*/migration.sql"))
-        if (len(files) != 59 or files[43].parent.name != BASELINE_LAST
+        if (len(files) != 61 or files[43].parent.name != BASELINE_LAST
                 or tuple(p.parent.name for p in files[44:]) != MIGRATIONS):
-            raise Refused("local migration checkout is not the reviewed 59-file tree")
+            raise Refused("local migration checkout is not the reviewed 61-file tree")
         expected = {
             p.parent.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in files
@@ -179,7 +181,7 @@ def verify_applied_checksums(db: dict[str, object]) -> dict[str, object]:
     except OSError as exc:
         raise Refused("unable to read reviewed local migration files") from exc
     rows = db.pop("prisma_ledger", None)
-    if not isinstance(rows, list) or len(rows) not in (44, 51, 52, 53, 54, 55, 56, 57, 58, 59):
+    if not isinstance(rows, list) or len(rows) not in (44, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
         raise Refused("unexpected Prisma migration ledger size")
     names = [r.get("name") for r in rows if isinstance(r, dict)]
     if len(names) != len(rows) or len(set(names)) != len(names):

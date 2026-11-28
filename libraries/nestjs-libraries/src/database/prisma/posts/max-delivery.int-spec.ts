@@ -41,7 +41,7 @@ beforeAll(async () => {
       },
     });
   repo = new PostsRepository(
-    { model: db } as any,
+    { model: db, $queryRaw: db.$queryRaw.bind(db) } as any,
     null!,
     null!,
     null!,
@@ -185,6 +185,7 @@ function activity(
   const service = {
     updateTags: async () => [post],
     updateMedia: async () => [],
+    classifyEditorialLiveRelease: repo.classifyEditorialLiveRelease.bind(repo),
     beginMaxDelivery: repo.beginMaxDelivery.bind(repo),
     confirmMaxDelivery: confirmation,
   };
@@ -795,6 +796,41 @@ describe('MAX occurrence recovery with PostgreSQL', () => {
       await db.post.update({ where: { id: post.id }, data: { campaignId: null } });
       await db.campaign.delete({ where: { id: campaign.id } });
     }
+  });
+
+  it('qualifies the initial StoryGo image occurrence identity and one-use claim after plan', async () => {
+    const post = await createPost('max', 'QUEUE');
+    const digest = 'a'.repeat(64);
+    await db.post.update({where:{id:post.id},data:{
+      settings: JSON.stringify({mode:'story',continuationText:'Вторая часть',
+        storyImageId:'synthetic-private-file',storyImageSha256:digest}),
+      content:'Заголовок и первая часть', approvalStatus:'approved',
+    }});
+    const initial=await repo.initialMaxOccurrence(post.id,org);
+    expect(initial.id).toMatch(/^max_[a-f0-9]{64}$/);
+    expect(initial.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const plan=await repo.planMaxOccurrence(post.id,org,initial.id);
+    expect(plan?.current.id).toBe(initial.id);
+    expect(plan?.next).toBeNull();
+    expect((await db.maxDeliveryOccurrence.findUniqueOrThrow({where:{id:initial.id}})).continued).toBe(true);
+    const target={storygoOperationId:'synthetic-operation-id',storyPhotoSha256:digest};
+    // A changed native fingerprint cannot be claimed even with the same ID.
+    await db.maxDeliveryOccurrence.update({where:{id:initial.id},data:{fingerprint:'0'.repeat(64)}});
+    expect((await repo.beginMaxDelivery(post.id,org,target,initial.id,1))?.blocked).toBe(true);
+    await db.maxDeliveryOccurrence.update({where:{id:initial.id},data:{fingerprint:initial.fingerprint}});
+    const results=await Promise.all([
+      repo.beginMaxDelivery(post.id,org,target,initial.id,1),
+      repo.beginMaxDelivery(post.id,org,target,initial.id,1),
+    ]);
+    expect(results.filter(r=>r?.attempt===1)).toHaveLength(1);
+    expect(results.filter(r=>r?.blocked===true)).toHaveLength(1);
+    const attempt=await db.maxDeliveryAttempt.findUniqueOrThrow({where:{occurrenceId_number:{occurrenceId:initial.id,number:1}}});
+    expect(attempt.state).toBe('STARTED');
+    expect(attempt.target).toMatchObject(target);
+    await repo.failMaxOccurrence(post.id,org,initial.id);
+    expect(await repo.authorizeMaxRetry(post.id,org,1,'operator',initial.id)).toBe(false);
+    expect((await repo.beginMaxDelivery(post.id,org,target,initial.id,1))?.blocked).toBe(true);
+    expect(await db.maxDeliveryAttempt.count({where:{occurrenceId:initial.id}})).toBe(1);
   });
 
   it('defers recurring StoryGo successor until preceding Gateway revision is confirmed', async () => {

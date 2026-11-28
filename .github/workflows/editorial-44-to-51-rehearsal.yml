@@ -1,9 +1,10 @@
-name: Editorial upgrade 44 to 59 isolated PostgreSQL 17
+name: Editorial upgrade 44 to 61 isolated PostgreSQL 17
 on:
   pull_request:
     paths:
       - 'tools/deploy/test_editorial_44_to_51_upgrade.sh'
       - 'tools/db/editorial-image-full-assertions.sql'
+      - 'tools/db/editorial-live-image-full-assertions.sql'
       - '.github/workflows/editorial-44-to-51-rehearsal.yml'
       - 'libraries/nestjs-libraries/src/database/prisma/migrations/**'
       - 'libraries/nestjs-libraries/src/database/prisma/schema.prisma'
@@ -12,7 +13,7 @@ permissions:
   contents: read
 jobs:
   baseline-rehearsal:
-    name: 44 migrations, PostgreSQL backup/restore, 59 migrations
+    name: 44 migrations, PostgreSQL backup/restore, 61 migrations
     runs-on: ubuntu-latest
     timeout-minutes: 18
     services:
@@ -37,7 +38,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24.19.0'
-      - name: Rehearse historical 44-to-59 Prisma migration on a restored clone
+      - name: Rehearse historical 44-to-61 Prisma migration on a restored clone
         env:
           EDX_44_51_CI: '1'
           PG_CI_CONTAINER: ${{ job.services.postgres.id }}

@@ -75,7 +75,7 @@ describe('Editorial 06B-4C unmounted session owner', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Утвердить текст' }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(fetcher).toHaveBeenLastCalledWith(path + '/decisions', {
-      method: 'POST', cache: 'no-store',
+      method: 'POST', cache: 'no-store', redirect: 'error',
       body: JSON.stringify({
         command_id: commandId, expected_seq: '0', action: 'approve_text', feedback: '',
       }),

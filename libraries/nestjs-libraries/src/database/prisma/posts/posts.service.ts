@@ -118,6 +118,14 @@ export class PostsService {
   planMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.planMaxOccurrence(id, org, occurrence); }
   pendingMaxOccurrences() { return this._postRepository.pendingMaxOccurrences(); }
   unresolvedStoryGoOccurrences() { return this._postRepository.unresolvedStoryGoOccurrences(); }
+  classifyEditorialLiveRelease(org: string, publication: string) {
+    return this._postRepository.classifyEditorialLiveRelease(org, publication);
+  }
+  readEditorialLiveReleasePhoto(org: string, publication: string, occurrence: string,
+    expected: { content: string; settings: string; integrationId: string; partsSha256: string },
+    operation?: string) {
+    return this._postRepository.readEditorialLiveReleasePhoto(org, publication, occurrence, expected, operation);
+  }
   failMaxOccurrence(id: string, org: string, occurrence: string) { return this._postRepository.failMaxOccurrence(id, org, occurrence); }
   beginMaxDelivery(id: string, org: string, target: Record<string,string>, occurrence?: string, expectedAttempt?: number) {
     return this._postRepository.beginMaxDelivery(id, org, target, occurrence, expectedAttempt);

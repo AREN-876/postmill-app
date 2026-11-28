@@ -4,6 +4,7 @@ import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/role
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
 import { isEditorialTaskId } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-ingress';
 
+import { EditorialLiveImageService,liveImagePreviewEnabled } from './editorial-live-image.service';
 import { EditorialMockImageService, mockImageImportEnabled } from './editorial-mock-image.service';
 
 export const EDITORIAL_HUMAN_REVIEW_CONFIG = Symbol('EDITORIAL_HUMAN_REVIEW_CONFIG');
@@ -12,6 +13,17 @@ export type EditorialHumanReviewConfig = {
   testOrgId: string;
   targetInternalId: string;
 };
+// Independent default-off human write gate; preview alone never enables writes.
+function liveHumanEnabled(org: string, target: string): boolean {
+  return process.env.EDITORIAL_TEST_LIVE_IMAGE_HUMAN_ENABLED === 'true' &&
+    liveImagePreviewEnabled(org,target) && !mockImageImportEnabled(org,target);
+}
+function expectedSeq(body: unknown): string {
+  if (!isRecord(body) || Object.keys(body).length !== 1 || typeof body.expected_seq !== 'string' ||
+      !SEQ.test(body.expected_seq) || (body.expected_seq.length === 19 && body.expected_seq > '9223372036854775807'))
+    throw new HttpException('editorial_invalid_request',400);
+  return body.expected_seq;
+}
 type Action = 'approve_text' | 'request_text_changes' | 'reject' | 'request_image' | 'request_image_changes' | 'confirm_image_reuse' | 'approve_final';
 export type HumanCommand = { command_id: string; expected_seq: string; action: Action; feedback: string };
 const POST_ID = /^[0-9a-f]{32}$/;
@@ -58,6 +70,7 @@ export class EditorialHumanReviewService {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(EDITORIAL_HUMAN_REVIEW_CONFIG) private readonly config: EditorialHumanReviewConfig | null,
     @Optional() @Inject(EditorialMockImageService) private readonly images?: EditorialMockImageService,
+    @Optional() @Inject(EditorialLiveImageService) private readonly liveImages?: EditorialLiveImageService,
   ) {}
 
   private configFor(orgId: string): EditorialHumanReviewConfig {
@@ -106,6 +119,85 @@ export class EditorialHumanReviewService {
       const image = await this.images.preview(orgId,postId,taskId,cfg.targetInternalId,result.review.last_confirmed_state);
       if (image !== undefined) return {...result,mock_image:image};
     }
+    // Capability only, not proof of a current grant. Actual bytes still
+    // require the independent signed preview check on every explicit request.
+    if (this.liveImages && isRecord(result) &&
+        liveImagePreviewEnabled(orgId,cfg.targetInternalId) &&
+        !mockImageImportEnabled(orgId,cfg.targetInternalId)) {
+      return {...result,live_image_preview_enabled:true,
+        ...(liveHumanEnabled(orgId,cfg.targetInternalId) ? {live_image_mutations_enabled:true} : {})};
+    }
+    return result;
+  }
+
+  async previewLiveImage(orgId:string,userId:string,postId:string,taskId:string,body:unknown) {
+    const cfg=this.configFor(orgId);
+    this.validateIds(postId,taskId);
+    await this.authorize(orgId,userId,'read');
+    if (!this.liveImages || !liveImagePreviewEnabled(orgId,cfg.targetInternalId))
+      throw new NotFoundException('editorial_image_preview_disabled');
+    if (!isRecord(body) || Object.keys(body).length!==1 || typeof body.expected_seq!=='string' ||
+        !SEQ.test(body.expected_seq) || (body.expected_seq.length===19 && body.expected_seq>'9223372036854775807'))
+      throw new HttpException('editorial_invalid_request',400);
+    let view:unknown;
+    try { view=await this.posts.readEditorialHuman(orgId,postId,taskId,cfg.targetInternalId); }
+    catch(e) { return fromDatabase(e); }
+    if (!isRecord(view) || !isRecord(view.review) || view.review.status!=='idle' ||
+        !isRecord(view.review.last_confirmed_state) || view.review.last_confirmed_state.seq!==body.expected_seq)
+      throw new HttpException('editorial_review_conflict',409);
+    const preview=await this.liveImages.preview(orgId,postId,taskId,cfg.targetInternalId,view.review.last_confirmed_state);
+    if (!preview || preview.remote_current_verified!==true) throw new HttpException('editorial_image_preview_unavailable',503);
+    // Membership may have changed during the bounded I/O.
+    await this.authorize(orgId,userId,'read');
+    if (!liveImagePreviewEnabled(orgId,cfg.targetInternalId)) throw new NotFoundException('editorial_image_preview_disabled');
+    return preview.bytes;
+  }
+
+  private async liveWriteGuard(org: string, user: string, target: string) {
+    await this.authorize(org,user,'update');
+    if (!this.liveImages || !liveHumanEnabled(org,target))
+      throw new NotFoundException('editorial_live_human_disabled');
+  }
+
+  async importLiveImage(org: string, user: string, pid: string, task: string, body: unknown) {
+    const cfg=this.configFor(org);
+    this.validateIds(pid,task);
+    await this.liveWriteGuard(org,user,cfg.targetInternalId);
+    const seq=expectedSeq(body);
+    // No implicit import retry. The native ledger owns reservation and receipt.
+    return this.liveImages!.import(org,pid,task,cfg.targetInternalId,seq,undefined,undefined,
+      () => this.liveWriteGuard(org,user,cfg.targetInternalId));
+  }
+
+  async queueLiveImage(org: string, user: string, pid: string, task: string, body: unknown) {
+    const cfg=this.configFor(org);
+    this.validateIds(pid,task);
+    await this.liveWriteGuard(org,user,cfg.targetInternalId);
+    const command=checkedCommand(body);
+    let view:unknown;
+    try { view=await this.posts.readEditorialHuman(org,pid,task,cfg.targetInternalId); }
+    catch(e) { return fromDatabase(e); }
+    if (!isRecord(view) || view.review_acknowledged !== true ||
+        !isRecord(view.review) || view.review.status !== 'idle' ||
+        !isRecord(view.review.last_confirmed_state) ||
+        view.review.last_confirmed_state.seq !== command.expected_seq ||
+        !isRecord(view.review.last_confirmed_state.image))
+      throw new HttpException('editorial_review_conflict',409);
+    const state=view.review.last_confirmed_state;
+    // Independently verify remote authority and the exact local private JPEG.
+    // SQL derives the native pin under the existing advisory lock and rejects
+    // stale state; no file id or image hash comes from the client.
+    const preview=await this.liveImages!.preview(org,pid,task,cfg.targetInternalId,state);
+    if (!preview || preview.remote_current_verified !== true ||
+        (command.action === 'confirm_image_reuse' && preview.compatible !== false) ||
+        (command.action === 'approve_final' && preview.compatible !== true))
+      throw new HttpException('editorial_image_review_conflict',409);
+    await this.liveWriteGuard(org,user,cfg.targetInternalId);
+    let result:unknown;
+    try { result=await this.posts.queueEditorialLiveHuman(org,pid,task,cfg.targetInternalId,user,command); }
+    catch(e) { return fromDatabase(e); }
+    if (result === null) throw new NotFoundException('editorial_review_not_found');
+    await this.recordQueueAudit(org,user,pid,task,command,result);
     return result;
   }
 
@@ -144,6 +236,12 @@ export class EditorialHumanReviewService {
         cfg.targetInternalId, userId, command);
     } catch (e) { return fromDatabase(e); }
     if (result === null) throw new NotFoundException('editorial_review_not_found');
+    await this.recordQueueAudit(orgId,userId,postId,taskId,command,result);
+    return result;
+  }
+
+  private async recordQueueAudit(orgId:string,userId:string,postId:string,taskId:string,
+    command:HumanCommand,result:unknown) {
     const response = result as { status: string; event_id: string; replay: boolean };
     // Never log content, feedback, bridge credentials or raw SQL messages.
     try {
@@ -157,6 +255,5 @@ export class EditorialHumanReviewService {
       // Existing Postmill audit convention: best effort, not a reason to
       // repeat an already committed immutable decision.
     }
-    return result;
   }
 }

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, StorageProviderType } from '@prisma/client';
+import { EDITORIAL_PRIVATE_IMAGE_PREFIX } from '../posts/editorial-private-image';
 import { PrismaRepository } from '@postmill-ai/nestjs-libraries/database/prisma/prisma.service';
 
 @Injectable()
@@ -118,12 +119,14 @@ export class StorageRepository {
       return {
         organizationId: orgId,
         deletedAt: null,
+        NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
         OR: [{ folderId: null }, { folder: { storageProviderId: null } }],
       };
     }
     return {
       organizationId: orgId,
       deletedAt: null,
+      NOT: { path: { startsWith: EDITORIAL_PRIVATE_IMAGE_PREFIX } },
       folder: { storageProviderId: source.id },
     };
   }

@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Header, HttpCode, Inject, Param, Post, Body, Req, UseGuards, ForbiddenException,
+  Controller, Get, Header, HttpCode, Inject, Param, Post, Body, Req, UseGuards, ForbiddenException, StreamableFile,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -44,6 +44,60 @@ export class EditorialHumanReviewController {
   ) {
     sessionOnly(req);
     return this.review.read(org.id, user.id, postId, taskId);
+  }
+
+  // POST rather than a public GET URL: requires the existing CSRF boundary.
+  @Post(':postId/:taskId/live-image/preview')
+  @HttpCode(200)
+  @Header('Cache-Control','private, no-store')
+  @Header('Pragma','no-cache')
+  @Header('X-Content-Type-Options','nosniff')
+  @Header('Cross-Origin-Resource-Policy','same-origin')
+  @Header('Referrer-Policy','no-referrer')
+  @RequirePermission('posts','read')
+  async previewLiveImage(
+    @Req() req:Request,
+    @GetOrgFromRequest() org:Organization,
+    @GetUserFromRequest() user:User,
+    @Param('postId') postId:string,
+    @Param('taskId') taskId:string,
+    @Body() body:unknown,
+  ) {
+    sessionOnly(req);
+    const bytes=await this.review.previewLiveImage(org.id,user.id,postId,taskId,body);
+    return new StreamableFile(bytes,{type:'image/jpeg',length:bytes.length,disposition:'inline'});
+  }
+
+  @Post(':postId/:taskId/live-image/import')
+  @HttpCode(200)
+  @Header('Cache-Control','private, no-store')
+  @RequirePermission('posts','update')
+  importLiveImage(
+    @Req() req:Request,
+    @GetOrgFromRequest() org:Organization,
+    @GetUserFromRequest() user:User,
+    @Param('postId') postId:string,
+    @Param('taskId') taskId:string,
+    @Body() body:unknown,
+  ) {
+    sessionOnly(req);
+    return this.review.importLiveImage(org.id,user.id,postId,taskId,body);
+  }
+
+  @Post(':postId/:taskId/live-image/decisions')
+  @HttpCode(200)
+  @Header('Cache-Control','private, no-store')
+  @RequirePermission('posts','update')
+  queueLiveImage(
+    @Req() req:Request,
+    @GetOrgFromRequest() org:Organization,
+    @GetUserFromRequest() user:User,
+    @Param('postId') postId:string,
+    @Param('taskId') taskId:string,
+    @Body() body:unknown,
+  ) {
+    sessionOnly(req);
+    return this.review.queueLiveImage(org.id,user.id,postId,taskId,body);
   }
 
   @Post(':postId/:taskId/image/import')

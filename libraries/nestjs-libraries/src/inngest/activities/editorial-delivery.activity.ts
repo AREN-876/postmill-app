@@ -40,6 +40,8 @@ function runtime() {
     orgId: gate.orgId,
     requestKeyHex, responseKeyHex,
     allowMissingRecovery: process.env.EDITORIAL_TEST_RECOVERY_ENABLED === 'true',
+    ...(gate.orgId==='org-modes' && process.env.EDITORIAL_TEST_LIVE_IMAGE_IMPORT_ENABLED==='true' &&
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED==='true' ? {allowLiveImageReview:true} : {}),
     ...(gate.orgId === 'org-modes' && process.env.EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED === 'true'
       ? {allowMockImageReview: true} : {}),
   };
@@ -60,9 +62,9 @@ export class EditorialDeliveryActivity {
   async sweep() {
     const cfg = runtime();
     if (!cfg) return { status: 'disabled' as const };
-    const candidates = await this.posts.listPendingEditorialTestDelivery(
-      cfg.orgId, cfg.target,
-    );
+    const candidates = 'allowLiveImageReview' in cfg.wire && cfg.wire.allowLiveImageReview===true
+      ? await this.posts.listPendingEditorialTestDelivery(cfg.orgId,cfg.target,true)
+      : await this.posts.listPendingEditorialTestDelivery(cfg.orgId,cfg.target);
     let submitted = 0;
     let lookedUp = 0;
     let confirmed = 0;
@@ -84,19 +86,23 @@ export class EditorialDeliveryActivity {
     let revisionsRecorded = 0;
     let revisionsWaiting = 0;
     if (cfg.revisionsEnabled) {
-      const revisions = cfg.wire.allowMockImageReview
-        ? await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target,true)
-        : await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target);
+      const allowLive=cfg.wire.allowLiveImageReview===true;
+      const revisions = allowLive
+        ? await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target,cfg.wire.allowMockImageReview===true,true)
+        : cfg.wire.allowMockImageReview
+          ? await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target,true)
+          : await this.posts.listPendingEditorialTextRevisions(cfg.orgId,cfg.target);
       for (const item of revisions) {
         if (!item.scope || item.scope.org_id !== cfg.orgId || item.scope.is_test !== true ||
-            (item.scope.image_mode !== 'disabled' && !(cfg.wire.allowMockImageReview &&
+            (item.nativePin && !allowLive) ||
+            (item.scope.image_mode !== 'disabled' && !((item.nativePin ? allowLive : cfg.wire.allowMockImageReview) &&
               item.scope.org_id === 'org-modes' && item.scope.integration_id.startsWith('mock-review-') &&
               ['automatic','manual','after_text_approval'].includes(item.scope.image_mode))) || typeof item.task !== 'string') {
           throw new Error('editorial_revision_scope_mismatch');
         }
-        const result = await this.delivery.reconcileTextRevision(
-          item.scope, item.task, cfg.target, item.eventId, item.digest, cfg.wire,
-        );
+        const result=item.nativePin
+          ? await this.delivery.reconcileTextRevision(item.scope,item.task,cfg.target,item.eventId,item.digest,cfg.wire,undefined,item.nativePin)
+          : await this.delivery.reconcileTextRevision(item.scope,item.task,cfg.target,item.eventId,item.digest,cfg.wire);
         if (result.status === 'recorded') revisionsRecorded++;
         else revisionsWaiting++;
       }

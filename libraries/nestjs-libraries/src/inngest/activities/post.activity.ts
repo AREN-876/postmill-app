@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { MaxProvider } from '@postmill-ai/provider-max';
+import { qualifyPrivateReleaseHandoff } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-private-release-photo';
+import { EditorialPrivateImageStore } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-private-image';
+import { editorialWireConfig, type EditorialWireConfig } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-signed-transport';
 import { v5 as uuidv5 } from 'uuid';
 import { maxStoryParts } from '@postmill-ai/provider-kernel/domains/max-story';
 import { Injectable, Logger } from '@nestjs/common';
@@ -518,6 +523,90 @@ export class PostActivity {
     }
   }
 
+  private editorialLiveWorkerEnabled(integration: Integration): boolean {
+    const env=process.env;
+    return integration.organizationId==='org-modes' &&
+      integration.id==='mock-review-image-automatic' &&
+      integration.internalId==='max:-73052031470103' && integration.providerIdentifier==='max' &&
+      env.EDITORIAL_TEST_SESSION_ENABLED==='true' && env.EDITORIAL_TEST_ORG_ID==='org-modes' &&
+      env.EDITORIAL_TEST_MAX_TARGET==='max:-73052031470103' &&
+      env.EDITORIAL_TEST_RELEASE_ENABLED==='true' &&
+      env.EDITORIAL_TEST_LIVE_IMAGE_IMPORT_ENABLED==='true' &&
+      env.EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED==='true' &&
+      env.EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED==='true' &&
+      env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED==='1';
+  }
+
+  // A native live release never falls through to ordinary media.
+  private async postEditorialLiveRelease(integration: Integration, posts: Post[],
+    occurrence?: string, attempt?: number) {
+    const denied=()=>new BadBodyError('max','{}','','Editorial live release requires operator review');
+    try {
+      if (!this.editorialLiveWorkerEnabled(integration) || posts.length!==1 ||
+          !occurrence || !/^max_[0-9a-f]{64}$/.test(occurrence) || attempt!==1) throw denied();
+      const p=posts[0];
+      if (!/^[0-9a-f]{32}$/.test(p.id) || p.organizationId!==integration.organizationId ||
+          p.integrationId!==integration.id || p.image!=='[]' || typeof p.settings!=='string') throw denied();
+      const settings=JSON.parse(p.settings);
+      if(settings?.mode!=='story' || settings.__gateway!==undefined || settings.__maxMedia!==undefined ||
+          settings.poll || settings.firstComment) throw denied();
+      const org=integration.organizationId;
+      const partsSha256=createHash('sha256').update(JSON.stringify(maxStoryParts(p.content,settings.continuationText))).digest('hex');
+      const expected={content:p.content,settings:p.settings,integrationId:integration.id,partsSha256};
+      const identity={orgId:org,publicationPostId:p.id,occurrenceId:occurrence,attempt:1 as const};
+      const wire:EditorialWireConfig={orgId:org,allowLiveImageRead:true,allowLiveImageReview:true,
+        allowLiveImagePreview:true,
+        requestKeyHex:readFileSync('/run/secrets/postmill_editorial_request_hmac_hex','utf8').trim(),
+        responseKeyHex:readFileSync('/run/secrets/postmill_editorial_response_hmac_hex','utf8').trim()};
+      editorialWireConfig(wire);
+      const provider=await this._integrationManager.getSocialIntegration('max',org,integration.providerVersion);
+      if(!(provider instanceof MaxProvider)) throw denied();
+      const vpn=await this._resolveVpnDispatcher(integration);
+      const read=async(operation?:string)=>{
+        if(!this.editorialLiveWorkerEnabled(integration)) return null;
+        const snapshot=await this._postService.readEditorialLiveReleasePhoto(org,p.id,occurrence,expected,operation);
+        return this.editorialLiveWorkerEnabled(integration)?snapshot:null;
+      };
+      let result: Awaited<ReturnType<MaxProvider['postEditorialLiveStory']>> = [];
+      const status=await qualifyPrivateReleaseHandoff(identity,{
+        read:()=>read(), open:()=>EditorialPrivateImageStore.open(), wire,
+        claim:async(_id,operationId,photoSha256)=>{
+          if(!this.editorialLiveWorkerEnabled(integration)) return null;
+          return this._postService.beginMaxDelivery(p.id,org,{
+            content:p.content,integrationName:integration.name,integrationId:integration.id,
+            chatId:integration.internalId,providerConfigId:integration.providerConfigId ?? null,
+            version:integration.providerVersion ?? 'v1',
+            textSha256:createHash('sha256').update(p.content).digest('hex'),
+            storygoOperationId:operationId,storyPartsSha256:partsSha256,storyPhotoSha256:photoSha256,
+          },occurrence,1);
+        },
+        readStarted:(_id,operationId)=>read(operationId),
+        hold:async()=>{await this._postService.failMaxOccurrence(p.id,org,occurrence);},
+        send:async(payload,authority)=>{
+          if(!this.editorialLiveWorkerEnabled(integration)) throw denied();
+          const response=await runWithVpnDispatcher(vpn,()=>provider.postEditorialLiveStory(
+            integration.internalId,{id:p.id,message:p.content,settings,media:[]},payload.image,{
+              kind:'editorial-live-story',
+              identity:{orgId:org,publicationPostId:p.id,occurrenceId:occurrence,attempt:1,
+                operationId:payload.operationId,channelId:integration.internalId.slice(4),
+                fingerprint:authority.fingerprint,storyPartsSha256:partsSha256,photoSha256:payload.image.sha256},
+              beforePublication:authority.beforePublication,
+            }));
+          if(response.length!==1 || response[0].id!==p.id || !response[0].postId ||
+              response[0].status!=='completed') throw denied();
+          await this._postService.confirmMaxDelivery(p.id,org,1,response[0],occurrence);
+          result=response;
+        },
+      });
+      if(status.status==='not_claimed') return [];
+      if(status.status!=='handoff_returned' || result.length!==1) throw denied();
+      return result;
+    } catch {
+      // No raw exception or private path escapes; STARTED fences ambiguous commits.
+      throw denied();
+    }
+  }
+
   async postSocial(integration: Integration, posts: Post[], maxOccurrenceId?: string, maxDeliveryAttempt?: number) {
     // 06A: refuse inactive managed rows at the provider boundary as well.
     // The row identity cannot be removed or added retroactively in PostgreSQL.
@@ -536,6 +625,15 @@ export class PostActivity {
       if (!subscription) {
         throw new Error('No active subscription found for this organization.');
       }
+    }
+
+    // Native release classification is independent of cached job settings.
+    const routes=await Promise.all(posts.map(p=>
+      this._postService.classifyEditorialLiveRelease(integration.organizationId,p.id)));
+    if(routes.some(route=>route!=='ordinary')) {
+      if(routes.length===1 && routes[0]==='live')
+        return this.postEditorialLiveRelease(integration,posts,maxOccurrenceId,maxDeliveryAttempt);
+      throw new BadBodyError('max','{}','','Editorial release classification unavailable; operator review required');
     }
 
     // 2.5: re-read the decrypted token (slimmed out of step state).

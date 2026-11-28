@@ -335,3 +335,6 @@ Managers live in `apps/backend/src/services/**` when backend-only (`AuthProvider
       secrets/PII in logs or Sentry.
 - [ ] Spec alongside (`<name>.controller.spec.ts` / `*.spec.ts` next to the unit) — see
       `agents/testing.md`.
+
+### Editorial live outbox (inactive test boundary)
+Use the same immutable EditorialDecisionOutbox/EditorialDeliveryReservation/EditorialDecisionResult; never introduce a second send queue. The separate native queue function derives the exact image receipt under the existing org/task advisory lock. The pending SQL envelope contains native_pin only for live and selects the separate signed route; no client-provided pin. A committed reservation permits one submit; unknown permits signed lookup only, never ordinary recovery or mock fallback. The runtime flag is separate and default-off. Human preview/session/RBAC integration and live-specific revision sync are separate gates. See docs/editorial-exchange.md and the paired Editorial Engine 028A.2 document; no native publication authority.

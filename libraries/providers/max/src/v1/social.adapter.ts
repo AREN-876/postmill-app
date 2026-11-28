@@ -32,6 +32,46 @@ const errors = {
     'MAX delivery was not confirmed. Automatic resend is disabled; check the channel before retrying manually.',
 };
 
+// 028B.4B: server-owned in-process context, never serialized or read from settings.
+export type VerifiedStoryGoUpload = Readonly<{
+  upload_id: string; sha256: string; mime_type: 'image/jpeg';
+  bytes: number; expires_at: number;
+}>;
+export type EditorialStoryGoSendIdentity = Readonly<{
+  orgId: string; publicationPostId: string; occurrenceId: string;
+  attempt: 1; operationId: string; channelId: string;
+  fingerprint: string; storyPartsSha256: string; photoSha256: string;
+}>;
+export type EditorialStoryGoDispatchContext = Readonly<{
+  kind: 'editorial-live-story';
+  identity: EditorialStoryGoSendIdentity;
+  beforePublication: (receipt: VerifiedStoryGoUpload) => Promise<{ allowed: true } | { allowed: false }>;
+}>;
+type EditorialStoryPhoto = Readonly<{ base64: string; mimeType: 'image/jpeg'; sha256: string }>;
+const MIN_UPLOAD_REMAINING_SECONDS = 300;
+const EDITORIAL_CALLBACK_TIMEOUT_MS = 10000;
+const HEX_SHA256 = /^[0-9a-f]{64}$/;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+// RFC UUIDv5, NAMESPACE_URL; same native occurrence derivation as Postmill.
+// Use the built-in hash, not a new provider dependency.
+function editorialOperationId(occurrenceId: string): string {
+  const digest = createHash('sha1')
+    .update(Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex'))
+    .update('postmill:max:occurrence:' + occurrenceId, 'utf8').digest().subarray(0, 16);
+  digest[6] = (digest[6] & 15) | 80;
+  digest[8] = (digest[8] & 63) | 128;
+  const hex = digest.toString('hex');
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16),
+    hex.slice(16, 20), hex.slice(20)].join('-');
+}
+
+function editorialUploadCurrent(expires: number, now: number): boolean {
+  return Number.isSafeInteger(expires) && expires > 0 &&
+    Number.isSafeInteger(now) && now > 0 &&
+    expires - Math.ceil(now / 1000) >= MIN_UPLOAD_REMAINING_SECONDS;
+}
+
 /** MAX Bot API: text, one normal media attachment, and StoryGo stories. */
 export class MaxProvider extends SocialAbstract implements SocialProvider {
   identifier = 'max';
@@ -333,7 +373,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
 
   private async gatewayRequest(
     origin: string, secret: string, method: 'POST' | 'GET',
-    path: string, operationId: string, body?: object,
+    path: string, operationId: string, body?: object, editorial = false,
   ): Promise<any> {
     try {
       const response = await this.fetch(
@@ -358,7 +398,10 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         this.fail('StoryGo Gateway returned an unexpected status.');
       }
       const data = await response.json();
-      if (!data || typeof data !== 'object') this.fail('Invalid StoryGo Gateway receipt.');
+      if (!data || typeof data !== 'object' ||
+          (editorial && response.status === 202 && data.state === 'PUBLISHED')) {
+        this.fail('Invalid StoryGo Gateway receipt.');
+      }
       return data;
     } catch {
       // MAX token, gateway token and upstream error bodies must never escape
@@ -407,7 +450,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   private async uploadStoryPhoto(
     origin: string, secret: string, chatId: string,
     image: { base64: string; mimeType: string; sha256: string },
-  ) {
+    editorial = false,
+  ): Promise<{ uploadId: string; verified?: VerifiedStoryGoUpload }> {
     if (!image || typeof image.base64 !== 'string' ||
         !['image/jpeg', 'image/png'].includes(image.mimeType) ||
         typeof image.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(image.sha256)) {
@@ -440,7 +484,19 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
           data.bytes !== bytes.length) {
         this.fail('StoryGo photo receipt does not match the approved image.');
       }
-      return data.upload_id as string;
+      if (!editorial) return { uploadId: data.upload_id as string };
+      const now = Date.now();
+      if (Array.isArray(data) || Object.keys(data).sort().join(',') !== 'bytes,expires_at,mime_type,sha256,upload_id' ||
+          image.mimeType !== 'image/jpeg' || data.mime_type !== 'image/jpeg' ||
+          !UUID_V4.test(data.upload_id) || !Number.isSafeInteger(data.bytes) || data.bytes <= 0 ||
+          !editorialUploadCurrent(data.expires_at, now) ||
+          data.expires_at > Math.floor(now / 1000) + 3600 + 30) {
+        this.fail('StoryGo editorial upload receipt invalid or expiring; operator review required.');
+      }
+      return { uploadId: data.upload_id, verified: Object.freeze({
+        upload_id: data.upload_id, sha256: data.sha256, mime_type: 'image/jpeg',
+        bytes: data.bytes, expires_at: data.expires_at,
+      }) };
     } catch {
       // Gateway may have stored bytes; this is NOT a publication receipt.
       // Do not resend on an uncertain response in the same occurrence.
@@ -448,11 +504,48 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
+  // This method is deliberately not part of generic SocialProvider.post().
+  // A future owned worker must enter only on a fresh acknowledged native CAS.
+  // Never recover this method from a serialized job or a STARTED lookup.
+  async postEditorialLiveStory(
+    id: string, post: PostDetails, image: EditorialStoryPhoto,
+    context: EditorialStoryGoDispatchContext,
+  ): Promise<PostResponse[]> {
+    if (process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1' ||
+        !context || context.kind !== 'editorial-live-story' ||
+        typeof context.beforePublication !== 'function' || !context.identity) {
+      this.fail('StoryGo editorial dispatch disabled; operator review required.');
+    }
+    const chatId = this.chatId(id.startsWith('max:') ? id.slice(4) : id);
+    const identity = Object.freeze({ ...context.identity });
+    if (identity.orgId !== 'org-modes' || chatId !== '-73052031470103' ||
+        identity.channelId !== chatId || identity.attempt !== 1 ||
+        !/^[0-9a-f]{32}$/.test(identity.publicationPostId) ||
+        identity.publicationPostId !== post.id ||
+        !/^max_[0-9a-f]{64}$/.test(identity.occurrenceId) ||
+        identity.operationId !== editorialOperationId(identity.occurrenceId) ||
+        !HEX_SHA256.test(identity.fingerprint) || !HEX_SHA256.test(identity.storyPartsSha256) ||
+        !image || image.mimeType !== 'image/jpeg' || !HEX_SHA256.test(image.sha256) ||
+        identity.photoSha256 !== image.sha256 ||
+        post.settings?.mode !== 'story' || (post.settings as any)?.__gateway !== undefined) {
+      this.fail('StoryGo editorial identity mismatch; operator review required.');
+    }
+    const trusted = Object.freeze({ kind: 'editorial-live-story' as const, identity,
+      beforePublication: context.beforePublication });
+    return this.publishStory(chatId, post, trusted, Object.freeze({ ...image }));
+  }
+
   private async publishStory(
     chatId: string,
     post: PostDetails,
+    editorial?: EditorialStoryGoDispatchContext,
+    editorialPhoto?: EditorialStoryPhoto,
   ): Promise<PostResponse[]> {
-    const gateway = (post.settings as any)?.__gateway;
+    const gateway = editorial ? {
+      operationId: editorial.identity.operationId,
+      externalPostId: editorial.identity.publicationPostId,
+      revision: editorial.identity.occurrenceId, image: editorialPhoto,
+    } : (post.settings as any)?.__gateway;
     const operationId = gateway?.operationId;
     if (typeof operationId !== 'string' ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId) ||
@@ -470,36 +563,79 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     } catch {
       this.fail('StoryGo Gateway rejected malformed story parts.');
     }
+    if (editorial && createHash('sha256').update(JSON.stringify(story)).digest('hex') !==
+        editorial.identity.storyPartsSha256) {
+      this.fail('StoryGo editorial text identity mismatch; operator review required.');
+    }
     const { origin, secret } = this.gatewayConfig(chatId);
     const path = '/gateway/v1/publications';
     // Upload is performed immediately before the single publication POST.
     // upload_id expires in one hour and must never be persisted in Postmill
     // settings days before scheduling.
-    const uploadId = gateway.image
-      ? await this.uploadStoryPhoto(origin, secret, chatId, gateway.image)
+    const uploaded = gateway.image
+      ? await this.uploadStoryPhoto(origin, secret, chatId, gateway.image, !!editorial)
       : undefined;
+    const uploadId = uploaded?.uploadId;
     const body = {
       type: 'story',
       channel_id: chatId,
-      external_post_id: post.id,
+      external_post_id: editorial ? editorial.identity.publicationPostId : post.id,
       operation_id: operationId,
       revision: gateway.revision,
       title: story.title,
       parts: story.parts,
       ...(uploadId ? { upload_id: uploadId } : {}),
     };
+    if (editorial) {
+      const verified = uploaded?.verified;
+      if (!verified || !editorialUploadCurrent(verified.expires_at, Date.now())) {
+        this.fail('StoryGo editorial upload unavailable; operator review required.');
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let decision: { allowed: true } | { allowed: false } | undefined;
+      try {
+        decision = await Promise.race([
+          editorial.beforePublication(verified),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), EDITORIAL_CALLBACK_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {
+        // A callback error is not permission to publish or reupload.
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      if (!decision || typeof decision !== 'object' || Array.isArray(decision) ||
+          Object.keys(decision).length !== 1 || decision.allowed !== true ||
+          process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1' ||
+          !editorialUploadCurrent(verified.expires_at, Date.now()) ||
+          verified.upload_id !== uploadId || verified.sha256 !== editorial.identity.photoSha256 ||
+          post.id !== editorial.identity.publicationPostId) {
+        this.fail('StoryGo editorial authority unavailable; operator review required.');
+      }
+      // No awaited I/O between this final local check and the sole POST.
+    }
     let receipt: any;
     try {
       // One and only one remote POST for a claimed occurrence. Never retry it.
-      receipt = await this.gatewayRequest(origin, secret, 'POST', path, operationId, body);
+      receipt = await this.gatewayRequest(origin, secret, 'POST', path, operationId, body, !!editorial);
     } catch {
       // POST outcome may be unknown. GET is read-only and safe to reconcile.
       receipt = null;
     }
     if (receipt) {
-      const mid = this.verifiedGatewayReceipt(receipt, operationId, chatId);
-      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
-      if (receipt.state === 'FAILED' || receipt.state === 'NEEDS_REVIEW') {
+      let mid: string | null = null;
+      let verified = false;
+      try {
+        mid = this.verifiedGatewayReceipt(receipt, operationId, chatId);
+        verified = true;
+      } catch (error) {
+        if (!editorial) throw error;
+        // Invalid editorial publication receipt: bounded GET-only reconciliation.
+      }
+      if (mid) return [{ id: editorial ? editorial.identity.publicationPostId : post.id,
+        postId: mid, releaseURL: '', status: 'completed' }];
+      if (verified && (receipt.state === 'FAILED' || receipt.state === 'NEEDS_REVIEW')) {
         this.fail('StoryGo Gateway has not confirmed delivery; operator review required.');
       }
     }
@@ -510,13 +646,20 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       let lookup: any;
       try {
         lookup = await this.gatewayRequest(
-          origin, secret, 'GET', path + '/' + operationId, operationId,
+          origin, secret, 'GET', path + '/' + operationId, operationId, undefined, !!editorial,
         );
       } catch {
         continue;
       }
-      const mid = this.verifiedGatewayReceipt(lookup, operationId, chatId);
-      if (mid) return [{ id: post.id, postId: mid, releaseURL: '', status: 'completed' }];
+      let mid: string | null;
+      try {
+        mid = this.verifiedGatewayReceipt(lookup, operationId, chatId);
+      } catch (error) {
+        if (!editorial) throw error;
+        continue;
+      }
+      if (mid) return [{ id: editorial ? editorial.identity.publicationPostId : post.id,
+        postId: mid, releaseURL: '', status: 'completed' }];
       if (lookup.state === 'FAILED' || lookup.state === 'NEEDS_REVIEW') break;
     }
     this.fail('StoryGo Gateway delivery unconfirmed; operator review required.');
