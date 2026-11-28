@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorialReleaseService } from './editorial-release.service';
+import { createHash } from 'node:crypto';
 
 const orgId = 'ci-org';
 const userId = 'ci-editor';
@@ -140,6 +141,87 @@ describe('Editorial 09B explicit release — default disabled, no duplicates', (
     await expect(service.release(orgId, userId, postId, taskId, cmd))
       .rejects.toMatchObject({ status: 503 });
     expect(posts.releaseEditorialStory).toHaveBeenCalledTimes(1);
+    expect(postService.startWorkflow).not.toHaveBeenCalled();
+  });
+});
+
+describe('028B.4C explicit live queue (mock ports, no external calls)',()=>{
+  const org='org-modes',target='max:-73052031470103',integration='mock-review-image-automatic';
+  const scheduled={command_id:commandId,action:'queue' as const,publish_at:'2099-01-01T05:00:00.000Z'};
+  const bytes=Buffer.from('ffd8ffd9','hex'); // decoded-JPEG proof is the existing preview port's responsibility
+  const sha256=createHash('sha256').update(bytes).digest('hex');
+  const file='22222222-2222-4222-8222-222222222222',plan='33333333-3333-4333-8333-333333333333';
+  const binding={org_id:org,post_id:postId,task_id:taskId,is_test:true,integration_id:integration};
+  const state={binding,text:{revision:1,sha256:'c'.repeat(64)},seq:'3',image_mode:'automatic',
+    final_approved:true,rejected:false,text_status:'approved',image_compatible:true,image_intent:null,
+    text_request_id:null,publishable:false,dispatch_authorized:false,image:{revision:1,sha256:'d'.repeat(64)}};
+  const view={receipt:{binding,text:state.text,image_mode:'automatic'},review_acknowledged:true,
+    review:{status:'idle',last_confirmed_state:state}};
+  const ctx={scope:{org_id:org,is_test:true,profile_ref:'review-ci@v77',integration_id:integration,
+    campaign_id:'mock-image-crossdb',image_mode:'automatic',channel_id:'42'},state,status:'idle',
+    publishable:false,dispatch_authorized:false,media:{file_id:file,revision:1,sha256,mime:'image/jpeg',
+      size_bytes:bytes.length,asset:{plan_id:plan,sha256,mime:'image/jpeg',size_bytes:bytes.length}}};
+  const verified={bytes,file_id:file,revision:1,sha256,mime:'image/jpeg',compatible:true,
+    remote_current_verified:true,publishable:false,dispatch_authorized:false};
+  const result={created:true,source_post_id:postId,publication_post_id:publicationId,mode:'queue',
+    publish_at:scheduled.publish_at,provider_version:'v1',status:'recorded',publishable:false,dispatch_authorized:false};
+  const posts={readEditorialHuman:vi.fn(),readEditorialRelease:vi.fn(),readLiveImageContext:vi.fn(),
+    releaseLiveEditorialStory:vi.fn(),releaseEditorialStory:vi.fn()};
+  const postService={previewEditorialStorySlot:vi.fn(),startWorkflow:vi.fn()};
+  const roles={getEffectivePermissions:vi.fn()},audit={record:vi.fn()},images={preview:vi.fn()};
+  let service:EditorialReleaseService;
+  beforeEach(()=>{
+    vi.resetAllMocks();
+    for(const [k,v] of Object.entries({EDITORIAL_TEST_SESSION_ENABLED:'true',EDITORIAL_TEST_ORG_ID:org,
+      EDITORIAL_TEST_MAX_TARGET:target,EDITORIAL_TEST_RELEASE_ENABLED:'true',
+      EDITORIAL_TEST_LIVE_IMAGE_RELEASE_ENABLED:'true',EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED:'1',
+      EDITORIAL_TEST_LIVE_IMAGE_IMPORT_ENABLED:'true',EDITORIAL_TEST_LIVE_IMAGE_REVIEW_ENABLED:'true',
+      EDITORIAL_TEST_LIVE_IMAGE_PREVIEW_ENABLED:'true',EDITORIAL_TEST_LIVE_IMAGE_HUMAN_ENABLED:'true',
+      EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED:'false'}))vi.stubEnv(k,v);
+    posts.readEditorialHuman.mockResolvedValue(view);posts.readEditorialRelease.mockResolvedValue(null);
+    posts.readLiveImageContext.mockResolvedValue(ctx);posts.releaseLiveEditorialStory.mockResolvedValue(result);
+    images.preview.mockResolvedValue(verified);roles.getEffectivePermissions.mockResolvedValue({permissions:['posts:manage']});
+    postService.previewEditorialStorySlot.mockResolvedValue({publishAt:scheduled.publish_at});
+    service=new EditorialReleaseService(posts as never,postService as never,roles as never,audit as never,
+      {enabled:true,testOrgId:org,targetInternalId:target},images as never);
+  });
+  afterEach(()=>vi.unstubAllEnvs());
+  it('only queue, exact state/pin/private bytes, one native schedule after commit',async()=>{
+    expect(await service.release(org,userId,postId,taskId,scheduled)).toMatchObject({created:true,mode:'queue',max_delivery_confirmed:false});
+    expect(images.preview).toHaveBeenCalledExactlyOnceWith(org,postId,taskId,target,state);
+    expect(posts.releaseLiveEditorialStory).toHaveBeenCalledExactlyOnceWith(org,postId,taskId,target,userId,scheduled,
+      state,{plan_id:plan,native_file_id:file,asset_sha256:sha256},bytes);
+    expect(postService.startWorkflow).toHaveBeenCalledExactlyOnceWith('max',publicationId,org,'QUEUE','v1');
+    expect(posts.releaseEditorialStory).not.toHaveBeenCalled();
+  });
+  it('preview offers only queue and never returns private bytes or schedules',async()=>{
+    expect(await service.preview(org,userId,postId,taskId)).toEqual({ready:true,status:'available',
+      next_slot:{publishAt:scheduled.publish_at},allowed_actions:['queue']});
+    expect(posts.releaseLiveEditorialStory).not.toHaveBeenCalled();expect(postService.startWorkflow).not.toHaveBeenCalled();
+  });
+  it.each(['disabled','mock','publish_now','not_final','wrong_profile','revoked','changed','wrong_bytes','lost_membership'] as const)(
+    'fails closed before SQL: %s',async scenario=>{
+      if(scenario==='disabled')vi.stubEnv('EDITORIAL_TEST_LIVE_IMAGE_RELEASE_ENABLED','false');
+      if(scenario==='mock')vi.stubEnv('EDITORIAL_TEST_MOCK_IMAGE_IMPORT_ENABLED','true');
+      if(scenario==='not_final')posts.readEditorialHuman.mockResolvedValue({...view,review:{...view.review,last_confirmed_state:{...state,final_approved:false}}});
+      if(scenario==='wrong_profile')posts.readLiveImageContext.mockResolvedValue({...ctx,scope:{...ctx.scope,profile_ref:'other'}});
+      if(scenario==='revoked')images.preview.mockRejectedValue(new Error('signed denial'));
+      if(scenario==='changed')posts.readLiveImageContext.mockResolvedValueOnce(ctx).mockResolvedValueOnce({...ctx,state:{...state,seq:'4'}});
+      if(scenario==='wrong_bytes')images.preview.mockResolvedValue({...verified,bytes:Buffer.from('00000000','hex')});
+      if(scenario==='lost_membership')roles.getEffectivePermissions.mockResolvedValueOnce({permissions:['posts:update']}).mockResolvedValueOnce(null);
+      await expect(service.release(org,userId,postId,taskId,scenario==='publish_now'?cmd:scheduled)).rejects.toBeDefined();
+      expect(posts.releaseLiveEditorialStory).not.toHaveBeenCalled();expect(posts.releaseEditorialStory).not.toHaveBeenCalled();
+      expect(postService.startWorkflow).not.toHaveBeenCalled();
+    });
+  it('unknown native commit is not replayed; no fallback or scheduler request',async()=>{
+    posts.releaseLiveEditorialStory.mockRejectedValueOnce(Error('lost COMMIT response'));
+    await expect(service.release(org,userId,postId,taskId,scheduled)).rejects.toMatchObject({status:503});
+    expect(posts.releaseLiveEditorialStory).toHaveBeenCalledTimes(1);expect(posts.releaseEditorialStory).not.toHaveBeenCalled();
+    expect(postService.startWorkflow).not.toHaveBeenCalled();
+  });
+  it('native replay never requests a second scheduler event',async()=>{
+    posts.releaseLiveEditorialStory.mockResolvedValueOnce({...result,created:false,status:'already_recorded'});
+    expect(await service.release(org,userId,postId,taskId,scheduled)).toMatchObject({created:false,status:'already_recorded'});
     expect(postService.startWorkflow).not.toHaveBeenCalled();
   });
 });

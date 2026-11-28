@@ -218,6 +218,44 @@ export class PostsRepository {
     return row.result;
   }
 
+  // Trusted, default-off live queue command. The service must verify the
+  // signed peer and decode the exact private JPEG before entering this port.
+  // The installed SQL independently checks state/pin/bytes and slot under lock.
+  async releaseLiveEditorialStory(org: string, pid: string, task: string, target: string,
+    actor: string, command: {command_id:string;action:'queue';publish_at:string},
+    state: unknown, pin: unknown, bytes: Buffer) {
+    if (org !== 'org-modes' || target !== 'max:-73052031470103' ||
+        command.action !== 'queue' || process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_ENABLED !== 'true' ||
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1' ||
+        !Buffer.isBuffer(bytes) || bytes.length < 4 || bytes.length > 8388608)
+      throw new Error('editorial_live_release_disabled');
+    return this._transaction.model.$transaction(async tx => {
+      await tx.$queryRaw`SELECT set_config('postmill.editorial_live_release_enabled','on',true)`;
+      // Exact test profile/target, not caller-provided settings or a mutable
+      // alias. The SQL release acquires the native task/channel locks itself.
+      const [scope] = await tx.$queryRaw<Array<{valid:boolean}>>`
+        SELECT EXISTS (
+          SELECT 1 FROM "Post" p JOIN "EditorialDraftReceipt" d ON d."postId"=p.id
+          WHERE p.id=${pid} AND p."organizationId"=${org} AND p."editorialTaskId"=${task}
+            AND d.request->'scope'->>'profile_ref'='review-ci@v77'
+            AND d.request->'scope'->>'integration_id'='mock-review-image-automatic'
+            AND d.request->'scope'->>'campaign_id'='mock-image-crossdb'
+            AND d.request->'scope'->'is_test'='true'::jsonb
+            AND d.request->'scope'->>'image_mode'='automatic'
+        ) AS valid
+      `;
+      if (scope?.valid !== true) throw new Error('editorial_live_release_scope_mismatch');
+      const [row] = await tx.$queryRaw<Array<{result:Prisma.JsonValue}>>`
+        SELECT public.postmill_release_live_editorial_story_v1(
+          ${org}::text,${pid}::text,${task}::text,${target}::text,${actor}::text,
+          ${JSON.stringify(command)}::jsonb,${JSON.stringify(state)}::jsonb,
+          ${JSON.stringify(pin)}::jsonb,${bytes}::bytea
+        ) AS result
+      `;
+      return row.result;
+    }, {isolationLevel:Prisma.TransactionIsolationLevel.ReadCommitted,timeout:5000});
+  }
+
   async readEditorialRelease(orgId: string, sourcePostId: string) {
     const row = await this._post.model.post.findFirst({
       where: { id: sourcePostId, organizationId: orgId, editorialTaskId: { not: null } },

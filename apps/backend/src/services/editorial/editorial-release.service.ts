@@ -1,11 +1,16 @@
 import {
-  ForbiddenException, HttpException, Inject, Injectable, NotFoundException,
+  ForbiddenException, HttpException, Inject, Injectable, NotFoundException, Optional,
 } from '@nestjs/common';
 import { PostsRepository } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.repository';
 import { PostsService } from '@postmill-ai/nestjs-libraries/database/prisma/posts/posts.service';
 import { RolesService } from '@postmill-ai/nestjs-libraries/database/prisma/roles/roles.service';
 import { AuditService } from '@postmill-ai/nestjs-libraries/database/prisma/audit/audit.service';
 import { isEditorialTaskId } from '@postmill-ai/nestjs-libraries/database/prisma/posts/editorial-ingress';
+
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { EditorialLiveImageService, liveImagePreviewEnabled } from './editorial-live-image.service';
+import { mockImageImportEnabled } from './editorial-mock-image.service';
 
 export const EDITORIAL_RELEASE_CONFIG = Symbol('EDITORIAL_RELEASE_CONFIG');
 export type EditorialReleaseConfig = {
@@ -57,6 +62,7 @@ export class EditorialReleaseService {
     @Inject(RolesService) private readonly roles: RolesService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(EDITORIAL_RELEASE_CONFIG) private readonly config: EditorialReleaseConfig | null,
+    @Optional() @Inject(EditorialLiveImageService) private readonly liveImages?: EditorialLiveImageService,
   ) {}
 
   private configFor(orgId: string): EditorialReleaseConfig {
@@ -84,6 +90,67 @@ export class EditorialReleaseService {
       effective.permissions.includes('posts:' + action))) {
       throw new ForbiddenException('editorial_release_forbidden');
     }
+  }
+
+  private liveEnabled(cfg: EditorialReleaseConfig): boolean {
+    return !!this.liveImages && cfg.testOrgId === 'org-modes' &&
+      cfg.targetInternalId === 'max:-73052031470103' &&
+      process.env.EDITORIAL_TEST_RELEASE_ENABLED === 'true' &&
+      process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_ENABLED === 'true' &&
+      process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED === '1' &&
+      process.env.EDITORIAL_TEST_LIVE_IMAGE_HUMAN_ENABLED === 'true' &&
+      liveImagePreviewEnabled(cfg.testOrgId,cfg.targetInternalId) &&
+      !mockImageImportEnabled(cfg.testOrgId,cfg.targetInternalId);
+  }
+
+  // This is a separate queue-only route. All authority comes from the
+  // committed local receipt + signed Engine current proof, never the body.
+  private async liveEvidence(cfg: EditorialReleaseConfig, postId: string, taskId: string, view: unknown) {
+    const deny = (): never => { throw new HttpException('editorial_live_release_conflict',409); };
+    if (!this.liveEnabled(cfg)) throw new NotFoundException('editorial_live_release_disabled');
+    const org=cfg.testOrgId,target=cfg.targetInternalId;
+    if (!record(view) || !record(view.receipt) || !record(view.review) ||
+        view.review_acknowledged!==true || view.review.status!=='idle' ||
+        !record(view.review.last_confirmed_state)) return deny();
+    const state=view.review.last_confirmed_state;
+    if (state.final_approved!==true || state.rejected!==false || state.text_status!=='approved' ||
+        state.image_mode!=='automatic' || state.image_compatible!==true || state.image_intent!==null ||
+        state.text_request_id!==null || state.publishable!==false || state.dispatch_authorized!==false ||
+        typeof state.seq!=='string' || !isEditorialTaskId(state.seq) || !record(state.image) ||
+        !record(state.binding) || state.binding.org_id!==org || state.binding.post_id!==postId ||
+        state.binding.task_id!==taskId || state.binding.is_test!==true ||
+        state.binding.integration_id!=='mock-review-image-automatic' ||
+        !isDeepStrictEqual(state.binding,view.receipt.binding) ||
+        !isDeepStrictEqual(state.text,view.receipt.text) || view.receipt.image_mode!=='automatic') return deny();
+    const ctx=await this.posts.readLiveImageContext(org,postId,taskId,target);
+    if (!record(ctx) || ctx.status!=='idle' || !isDeepStrictEqual(ctx.state,state) ||
+        ctx.publishable!==false || ctx.dispatch_authorized!==false ||
+        !record(ctx.scope) || ctx.scope.org_id!==org || ctx.scope.is_test!==true ||
+        ctx.scope.profile_ref!=='review-ci@v77' || ctx.scope.integration_id!=='mock-review-image-automatic' ||
+        ctx.scope.campaign_id!=='mock-image-crossdb' || ctx.scope.image_mode!=='automatic' ||
+        typeof ctx.scope.channel_id!=='string' || !isEditorialTaskId(ctx.scope.channel_id) ||
+        !record(ctx.media) || !record(ctx.media.asset)) return deny();
+    const media=ctx.media,asset=media.asset;
+    if (typeof asset.plan_id!=='string' || !UUID.test(asset.plan_id) ||
+        typeof media.file_id!=='string' || !UUID.test(media.file_id) ||
+        typeof asset.sha256!=='string' || !/^[0-9a-f]{64}$/.test(asset.sha256) ||
+        media.sha256!==asset.sha256 || media.mime!=='image/jpeg' || asset.mime!=='image/jpeg' ||
+        typeof media.size_bytes!=='number' || !Number.isSafeInteger(media.size_bytes) ||
+        media.size_bytes<4 || media.size_bytes>8388608 || media.size_bytes!==asset.size_bytes ||
+        media.revision!==state.image.revision) return deny();
+    // Existing preview service checks the signed peer before/after real
+    // private read + JPEG decode and rechecks the full native context.
+    const verified=await this.liveImages!.preview(org,postId,taskId,target,state);
+    if (!verified || verified.remote_current_verified!==true || verified.compatible!==true ||
+        verified.publishable!==false || verified.dispatch_authorized!==false ||
+        verified.file_id!==media.file_id || verified.revision!==media.revision ||
+        verified.mime!=='image/jpeg' || verified.sha256!==asset.sha256 ||
+        !Buffer.isBuffer(verified.bytes) || verified.bytes.length!==media.size_bytes ||
+        createHash('sha256').update(verified.bytes).digest('hex')!==asset.sha256 ||
+        !isDeepStrictEqual(ctx,await this.posts.readLiveImageContext(org,postId,taskId,target)) ||
+        !this.liveEnabled(cfg)) return deny();
+    return {state,ctx,pin:{plan_id:asset.plan_id,native_file_id:media.file_id,asset_sha256:asset.sha256},
+      bytes:verified.bytes,integrationId:ctx.scope.integration_id};
   }
 
   async preview(orgId: string, userId: string, postId: string, taskId: string) {
@@ -124,7 +191,19 @@ export class EditorialReleaseService {
       state?.final_approved === true && state?.rejected === false &&
       state?.image_mode === 'disabled' && state?.text_status === 'approved' &&
       view.receipt?.image_mode === 'disabled';
-    if (!ready) return { ready: false, status: 'not_finally_approved' };
+    if (!ready) {
+      // Read-only, no native release or worker request from preview.
+      if (view.receipt?.image_mode==='automatic' && this.liveEnabled(cfg)) {
+        try {
+          const proof=await this.liveEvidence(cfg,postId,taskId,snapshot);
+          await this.authorize(orgId,userId,'read');
+          const slot=await this.postService.previewEditorialStorySlot(orgId,proof.integrationId);
+          if (!this.liveEnabled(cfg)) return {ready:false,status:'not_finally_approved'};
+          return {ready:!!slot,status:slot?'available':'no_slot',next_slot:slot,allowed_actions:['queue']};
+        } catch { return {ready:false,status:'not_finally_approved'}; }
+      }
+      return { ready: false, status: 'not_finally_approved' };
+    }
     const integrationId = view.receipt?.binding?.integration_id;
     if (!integrationId) throw new HttpException('editorial_release_binding_unknown', 503);
     // Publish-now remains available without a configured grid. Only the
@@ -147,10 +226,39 @@ export class EditorialReleaseService {
     await this.authorize(orgId, userId, 'update');
     let raw: unknown;
     try {
-      raw = await this.posts.releaseEditorialStory(
-        orgId, postId, taskId, cfg.targetInternalId, userId, command,
-      );
-    } catch (e) { return fromDb(e); }
+      // Only the exact pilot can choose the live route. Legacy text-only SQL
+      // remains authoritative and cannot release an image-bearing draft.
+      if (orgId==='org-modes' && cfg.targetInternalId==='max:-73052031470103') {
+        const view=await this.posts.readEditorialHuman(orgId,postId,taskId,cfg.targetInternalId);
+        if (!record(view) || !record(view.receipt)) throw new NotFoundException('editorial_release_not_found');
+        if (view.receipt.image_mode!=='disabled') {
+          if (!this.liveEnabled(cfg)) throw new NotFoundException('editorial_live_release_disabled');
+          if (command.action!=='queue' || typeof command.publish_at!=='string')
+            throw new HttpException('editorial_live_release_queue_only',400);
+          const proof=await this.liveEvidence(cfg,postId,taskId,view);
+          await this.authorize(orgId,userId,'update');
+          if (!isDeepStrictEqual(proof.ctx,await this.posts.readLiveImageContext(orgId,postId,taskId,cfg.targetInternalId)) ||
+              !this.liveEnabled(cfg)) throw new HttpException('editorial_live_release_conflict',409);
+          // No fallback or automatic retry after this native COMMIT boundary.
+          raw=await this.posts.releaseLiveEditorialStory(orgId,postId,taskId,cfg.targetInternalId,userId,
+            {command_id:command.command_id,action:'queue',publish_at:command.publish_at},
+            proof.state,proof.pin,proof.bytes);
+          if (!record(raw) || raw.source_post_id!==postId || raw.publishable!==false ||
+              raw.dispatch_authorized!==false ||
+              raw.status!==(raw.created===true?'recorded':'already_recorded'))
+            throw new HttpException('editorial_release_outcome_unknown',503);
+        } else {
+          raw=await this.posts.releaseEditorialStory(orgId,postId,taskId,cfg.targetInternalId,userId,command);
+        }
+      } else {
+        raw = await this.posts.releaseEditorialStory(
+          orgId, postId, taskId, cfg.targetInternalId, userId, command,
+        );
+      }
+    } catch (e) {
+      if(e instanceof HttpException) throw e;
+      return fromDb(e);
+    }
     if (raw === null) throw new NotFoundException('editorial_release_not_found');
     if (!record(raw) || typeof raw.publication_post_id !== 'string' ||
         !POST_ID.test(raw.publication_post_id) ||
