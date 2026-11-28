@@ -131,7 +131,7 @@ export class EditorialReleaseService {
         typeof ctx.scope.channel_id!=='string' || !isEditorialTaskId(ctx.scope.channel_id) ||
         !record(ctx.media) || !record(ctx.media.asset)) return deny();
     const media=ctx.media,asset=media.asset;
-    if (typeof asset.plan_id!=='string' || !UUID.test(asset.plan_id) ||
+    if (!record(asset) || typeof asset.plan_id!=='string' || !UUID.test(asset.plan_id) ||
         typeof media.file_id!=='string' || !UUID.test(media.file_id) ||
         typeof asset.sha256!=='string' || !/^[0-9a-f]{64}$/.test(asset.sha256) ||
         media.sha256!==asset.sha256 || media.mime!=='image/jpeg' || asset.mime!=='image/jpeg' ||
@@ -243,8 +243,9 @@ export class EditorialReleaseService {
           raw=await this.posts.releaseLiveEditorialStory(orgId,postId,taskId,cfg.targetInternalId,userId,
             {command_id:command.command_id,action:'queue',publish_at:command.publish_at},
             proof.state,proof.pin,proof.bytes);
-          if (!record(raw) || raw.source_post_id!==postId || raw.publishable!==false ||
-              raw.dispatch_authorized!==false ||
+          if (!record(raw) || raw.source_post_id!==postId || raw.publication_post_id===postId ||
+              raw.publishable!==false || raw.dispatch_authorized!==false ||
+              typeof raw.publish_at!=='string' || Date.parse(raw.publish_at)!==Date.parse(command.publish_at) ||
               raw.status!==(raw.created===true?'recorded':'already_recorded'))
             throw new HttpException('editorial_release_outcome_unknown',503);
         } else {

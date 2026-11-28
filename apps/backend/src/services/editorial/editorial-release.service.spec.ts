@@ -219,6 +219,12 @@ describe('028B.4C explicit live queue (mock ports, no external calls)',()=>{
     expect(posts.releaseLiveEditorialStory).toHaveBeenCalledTimes(1);expect(posts.releaseEditorialStory).not.toHaveBeenCalled();
     expect(postService.startWorkflow).not.toHaveBeenCalled();
   });
+  it.each([{publish_at:'2099-01-02T05:00:00.000Z'},{publication_post_id:postId},{dispatch_authorized:true}])(
+    'rejects inconsistent acknowledged release result: %j',async delta=>{
+      posts.releaseLiveEditorialStory.mockResolvedValueOnce({...result,...delta});
+      await expect(service.release(org,userId,postId,taskId,scheduled)).rejects.toMatchObject({status:503});
+      expect(posts.releaseLiveEditorialStory).toHaveBeenCalledTimes(1);expect(postService.startWorkflow).not.toHaveBeenCalled();
+    });
   it('native replay never requests a second scheduler event',async()=>{
     posts.releaseLiveEditorialStory.mockResolvedValueOnce({...result,created:false,status:'already_recorded'});
     expect(await service.release(org,userId,postId,taskId,scheduled)).toMatchObject({created:false,status:'already_recorded'});
