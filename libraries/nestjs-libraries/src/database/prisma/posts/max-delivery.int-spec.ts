@@ -41,7 +41,7 @@ beforeAll(async () => {
       },
     });
   repo = new PostsRepository(
-    { model: db } as any,
+    { model: db, $queryRaw: db.$queryRaw.bind(db) } as any,
     null!,
     null!,
     null!,
@@ -185,6 +185,7 @@ function activity(
   const service = {
     updateTags: async () => [post],
     updateMedia: async () => [],
+    classifyEditorialLiveRelease: repo.classifyEditorialLiveRelease.bind(repo),
     beginMaxDelivery: repo.beginMaxDelivery.bind(repo),
     confirmMaxDelivery: confirmation,
   };
