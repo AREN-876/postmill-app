@@ -21,7 +21,7 @@ function denied(): never { throw new Error('editorial_release_photo_unavailable'
 export type PrivateReleasePhotoIdentity = { orgId:string; publicationPostId:string; occurrenceId:string; attempt:1 };
 type Dependencies = {
   // Must be a fresh native projection, not browser data, a cached job payload,
-  // or a generic File lookup. No runtime projection wired at this stage.
+  // or a generic File lookup. The worker uses the installed 61 projection.
   read: (identity:PrivateReleasePhotoIdentity)=>Promise<unknown>;
   open: ()=>Promise<Pick<EditorialPrivateImageStore,'read'>>;
   wire: EditorialWireConfig;
@@ -77,7 +77,7 @@ export async function prepareEditorialPrivateReleasePhoto(identity:PrivateReleas
 
 type ClaimResult = {attempt?:number;occurrenceId?:string;blocked?:boolean;deferred?:boolean;alreadyConfirmed?:boolean};
 type HandoffDependencies = Dependencies & {
-  // These ports are deliberately not registered. claim must be the committed
+  // claim must be the committed
   // existing native CAS, not a lookup of an already STARTED journal.
   claim: (identity:PrivateReleasePhotoIdentity, operationId:string, photoSha256:string)=>Promise<ClaimResult|null>;
   readStarted: (identity:PrivateReleasePhotoIdentity,operationId:string)=>Promise<unknown>;
@@ -87,7 +87,7 @@ type HandoffDependencies = Dependencies & {
       Promise<{allowed:true}|{allowed:false}> })=>Promise<void>;
 };
 
-// Inactive same-invocation orchestration candidate. A read of STARTED is
+// Same-invocation orchestration. A read of STARTED is
 // never sufficient to enter this function or resume a send. Unknown claim
 // response is fenced by native state; no retry or reopening on any failure.
 // The caller must not persist the in-memory photo or expose this as an RPC.

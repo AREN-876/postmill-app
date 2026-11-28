@@ -564,7 +564,8 @@ export class PostActivity {
       const vpn=await this._resolveVpnDispatcher(integration);
       const read=async(operation?:string)=>{
         if(!this.editorialLiveWorkerEnabled(integration)) return null;
-        return this._postService.readEditorialLiveReleasePhoto(org,p.id,occurrence,expected,operation);
+        const snapshot=await this._postService.readEditorialLiveReleasePhoto(org,p.id,occurrence,expected,operation);
+        return this.editorialLiveWorkerEnabled(integration)?snapshot:null;
       };
       let result: Awaited<ReturnType<MaxProvider['postEditorialLiveStory']>> = [];
       const status=await qualifyPrivateReleaseHandoff(identity,{

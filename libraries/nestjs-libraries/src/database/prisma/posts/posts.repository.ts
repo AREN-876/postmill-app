@@ -959,6 +959,8 @@ export class PostsRepository {
             AND f."organizationId"=${org} AND f."deletedAt" IS NULL
             AND f.metadata->>'internal'='editorial-mock'
             AND f.path=b."storagePath" AND f.path NOT LIKE 'editorial-private:v1:%'
+            AND dst.settings::jsonb->>'storyImageId'=b."fileId"
+            AND dst.settings::jsonb->>'storyImageSha256'=b."assetSha256"
         ) THEN 'ordinary'
         ELSE 'blocked'
       END AS route
