@@ -82,7 +82,9 @@ type HandoffDependencies = Dependencies & {
   claim: (identity:PrivateReleasePhotoIdentity, operationId:string, photoSha256:string)=>Promise<ClaimResult|null>;
   readStarted: (identity:PrivateReleasePhotoIdentity,operationId:string)=>Promise<unknown>;
   hold: (identity:PrivateReleasePhotoIdentity)=>Promise<void>;
-  send: (payload:{operationId:string;externalPostId:string;revision:string;image:{base64:string;mimeType:'image/jpeg';sha256:string}})=>Promise<void>;
+  send: (payload:{operationId:string;externalPostId:string;revision:string;image:{base64:string;mimeType:'image/jpeg';sha256:string}},
+    authority: { fingerprint:string; beforePublication: (receipt: {sha256:string; bytes:number; mime_type:'image/jpeg'}) =>
+      Promise<{allowed:true}|{allowed:false}> })=>Promise<void>;
 };
 
 // Inactive same-invocation orchestration candidate. A read of STARTED is
@@ -106,10 +108,26 @@ export async function qualifyPrivateReleaseHandoff(identity:PrivateReleasePhotoI
       !await (deps.check??checkEditorialLivePreview)(snapshot.request as EditorialLiveImageRequest,
         snapshot.pin as EditorialLiveReviewPin,deps.wire)||
       !isDeepStrictEqual(snapshot,await deps.readStarted(identity,operationId))) denied();
-    // Only the fresh successful claim in this invocation reaches this point.
-    // This is a mockable transport handoff, not a remote publication receipt.
+    // Only this fresh committed claim can create a one-shot final callback.
+    const expected=structuredClone(snapshot);
+    if(!sha(expected.fingerprint)) denied();
+    let used=false;
+    const beforePublication=async(receipt:{sha256:string;bytes:number;mime_type:'image/jpeg'}):
+      Promise<{allowed:true}|{allowed:false}>=>{
+      if(used) return {allowed:false};
+      used=true;
+      try {
+        if(receipt.sha256!==photo.image.sha256 || receipt.mime_type!=='image/jpeg' ||
+            receipt.bytes!==Buffer.byteLength(photo.image.base64,'base64') ||
+            !isDeepStrictEqual(expected,await deps.readStarted(identity,operationId)) ||
+            !await (deps.check??checkEditorialLivePreview)(expected.request as EditorialLiveImageRequest,
+              expected.pin as EditorialLiveReviewPin,deps.wire) ||
+            !isDeepStrictEqual(expected,await deps.readStarted(identity,operationId))) return {allowed:false};
+        return {allowed:true};
+      } catch { return {allowed:false}; }
+    };
     await deps.send({operationId,externalPostId:identity.publicationPostId,
-      revision:identity.occurrenceId,image:photo.image});
+      revision:identity.occurrenceId,image:photo.image},{fingerprint:expected.fingerprint,beforePublication});
     return {status:'handoff_returned' as const};
   } catch {
     // No resend, no READY reset. Completion/reconciliation is native-owned.

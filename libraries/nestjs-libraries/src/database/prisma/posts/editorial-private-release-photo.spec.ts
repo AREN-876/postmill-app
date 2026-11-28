@@ -97,6 +97,26 @@ describe('inactive private release photo preflight',()=>{
   expect(await qualifyPrivateReleaseHandoff(identity,deps)).toEqual({status:'not_claimed'});
   expect(send).toHaveBeenCalledTimes(scenario==='unknown_send'?1:0);
  });
+
+ it.each(['allow','revoked','changed','wrong_receipt'] as const)('checks current after upload: %s',async scenario=>{
+  let afterUpload=false;
+  const readStarted=vi.fn(async()=>afterUpload && scenario==='changed'?null:structuredClone(projection));
+  const signed=vi.fn(async()=>!(afterUpload&&scenario==='revoked'));
+  const hold=vi.fn();
+  const send=vi.fn(async(_payload:any,authority:any)=>{
+    afterUpload=true;
+    const receipt={sha256:scenario==='wrong_receipt'?'0'.repeat(64):projection.media.sha256,bytes:bytes.length,mime_type:'image/jpeg'};
+    const first=await authority.beforePublication(receipt);
+    expect(await authority.beforePublication(receipt)).toEqual({allowed:false});
+    expect(first).toEqual({allowed:scenario==='allow'});
+    if(!first.allowed)throw Error('held');
+  });
+  const result=await qualifyPrivateReleaseHandoff(identity,{read,open,wire,check:signed,
+    claim:async()=>({attempt:1,occurrenceId:occurrence}),readStarted,hold,send});
+  expect(result.status).toBe(scenario==='allow'?'handoff_returned':'held');
+  expect(hold).toHaveBeenCalledTimes(scenario==='allow'?0:1);
+ });
+
  it('does not send or synthesize a claim after lost claim response',async()=>{
   const claim=vi.fn().mockRejectedValueOnce(new Error('commit response lost')).mockResolvedValue({blocked:true});
   const readStarted=vi.fn(),hold=vi.fn(),send=vi.fn();

@@ -38,6 +38,7 @@ const build = (over: Partial<Record<string, any>> = {}) => {
     _postsRepository: { isDeleted: vi.fn().mockResolvedValue(false) },
     ...over,
   };
+  deps._postService={ classifyEditorialLiveRelease:vi.fn().mockResolvedValue('ordinary'), ...deps._postService };
   const activity = new PostActivity(
     deps._postService,
     deps._notificationService,
@@ -703,4 +704,20 @@ describe('MAX StoryGo crash-safe receipt recovery', () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(sendMock).not.toHaveBeenCalled();
   });
+});
+
+describe('028B.4B native classification boundary',()=>{
+ it.each(['live','blocked'] as const)('never falls through on disabled or unresolved %s',async route=>{
+  const classifyEditorialLiveRelease=vi.fn().mockResolvedValue(route);
+  const readStoryGoImage=vi.fn(),beginMaxDelivery=vi.fn(),post=vi.fn();
+  const {activity}=build({_postService:{classifyEditorialLiveRelease,readStoryGoImage,beginMaxDelivery},
+    _integrationManager:{getSocialIntegration:vi.fn().mockResolvedValue({post})}});
+  const integration={id:'mock-review-image-automatic',organizationId:'org-modes',
+    providerIdentifier:'max',internalId:'max:-73052031470103'} as any;
+  await expect(activity.postSocial(integration,[{id:'b'.repeat(32),image:'[]',settings:'{}'} as any],
+    'max_'+'a'.repeat(64),1)).rejects.toThrow('operator review');
+  expect(classifyEditorialLiveRelease).toHaveBeenCalledExactlyOnceWith('org-modes','b'.repeat(32));
+  expect(readStoryGoImage).not.toHaveBeenCalled();expect(beginMaxDelivery).not.toHaveBeenCalled();
+  expect(post).not.toHaveBeenCalled();
+ });
 });

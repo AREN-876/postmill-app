@@ -934,6 +934,84 @@ export class PostsRepository {
     });
   }
 
+  // Classify from the native release/source/import ledger, not job settings.
+  // An incomplete editorial image release must never fall back to ordinary.
+  async classifyEditorialLiveRelease(org: string, publication: string) {
+    const [row] = await this._post.$queryRaw<Array<{ route: string }>>`
+      SELECT CASE
+        WHEN r."publicationPostId" IS NULL THEN 'ordinary'
+        WHEN src.id IS NULL OR d."postId" IS NULL THEN 'blocked'
+        WHEN EXISTS (
+          SELECT 1 FROM "EditorialImageImport" a
+          LEFT JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          WHERE a."postId"=src.id AND
+            (a.proof->'manifest'->0->>'mime'='image/jpeg'
+             OR b."storagePath" LIKE 'editorial-private:v1:%')
+        ) THEN 'live'
+        WHEN d.request->'scope'->>'image_mode'='disabled'
+          AND NOT EXISTS (SELECT 1 FROM "EditorialImageImport" a WHERE a."postId"=src.id)
+          THEN 'ordinary'
+        WHEN EXISTS (
+          SELECT 1 FROM "EditorialImageImport" a
+          JOIN "EditorialImageImportReceipt" b ON b."importId"=a.id
+          JOIN "File" f ON f.id=b."fileId"
+          WHERE a."postId"=src.id AND a.proof->'manifest'->0->>'mime'='image/png'
+            AND f."organizationId"=${org} AND f."deletedAt" IS NULL
+            AND f.metadata->>'internal'='editorial-mock'
+            AND f.path=b."storagePath" AND f.path NOT LIKE 'editorial-private:v1:%'
+        ) THEN 'ordinary'
+        ELSE 'blocked'
+      END AS route
+      FROM "Post" dst
+      LEFT JOIN "EditorialRelease" r ON r."publicationPostId"=dst.id
+      LEFT JOIN "Post" src ON src.id=r."sourcePostId" AND src."organizationId"=dst."organizationId"
+      LEFT JOIN "EditorialDraftReceipt" d ON d."postId"=src.id
+      WHERE dst.id=${publication} AND dst."organizationId"=${org}
+    `;
+    return row?.route === 'ordinary' || row?.route === 'live' ? row.route : 'blocked';
+  }
+
+  // Installed 61 projection. No HTTP or private-file IO in the transaction.
+  async readEditorialLiveReleasePhoto(org: string, publication: string, occurrence: string,
+    expected: { content: string; settings: string; integrationId: string; partsSha256: string },
+    operation?: string) {
+    if (org !== 'org-modes' || !/^[0-9a-f]{32}$/.test(publication) ||
+        !/^max_[0-9a-f]{64}$/.test(occurrence) ||
+        !/^[0-9a-f]{64}$/.test(expected.partsSha256) ||
+        process.env.EDITORIAL_TEST_LIVE_IMAGE_RELEASE_WORKER_ENABLED !== '1') return null;
+    return this._transaction.model.$transaction(async tx => {
+      await tx.$queryRaw`SELECT set_config('postmill.editorial_live_release_worker_enabled','on',true)`;
+      const [row] = await tx.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+        SELECT public.postmill_read_live_release_photo_v1(
+          ${org}::text,${publication}::text,${occurrence}::text,
+          ${operation !== undefined}::boolean,${operation ?? null}::text
+        ) AS result
+      `;
+      if (!row?.result) return null;
+      const [match] = await tx.$queryRaw<Array<{ valid: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM "Post" p
+          JOIN "EditorialRelease" r ON r."publicationPostId"=p.id
+          JOIN "EditorialDraftReceipt" d ON d."postId"=r."sourcePostId"
+          WHERE p.id=${publication} AND p."organizationId"=${org}
+            AND p.content=${expected.content} AND p.settings=${expected.settings}
+            AND p.image='[]' AND p."integrationId"=${expected.integrationId}
+            AND d.request->'scope'->>'profile_ref'='review-ci@v77'
+            AND d.request->'scope'->>'integration_id'='mock-review-image-automatic'
+            AND d.request->'scope'->>'campaign_id'='mock-image-crossdb'
+            AND d.request->'scope'->'is_test'='true'::jsonb
+            AND (${operation === undefined}::boolean OR EXISTS (
+              SELECT 1 FROM "MaxDeliveryAttempt" a
+              WHERE a."occurrenceId"=${occurrence} AND a.number=1 AND a.state='STARTED'
+                AND a.target->>'storygoOperationId'=${operation ?? null}
+                AND a.target->>'storyPartsSha256'=${expected.partsSha256}
+            ))
+        ) AS valid
+      `;
+      return match?.valid === true ? row.result : null;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 5000 });
+  }
+
   private maxOccurrences() { return new MaxOccurrences(this._transaction.model); }
   pauseMaxOccurrences(id: string, org: string) { return this.maxOccurrences().pause(id, org); }
   maxWebhookSnapshot(id: string, org: string, occurrence: string) { return this.maxOccurrences().webhookSnapshot(id, org, occurrence); }
